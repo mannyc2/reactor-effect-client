@@ -1,0 +1,192 @@
+---
+title: Installation
+description: "Which packages to install for Node, Bun, the browser and tests, and the Effect version they pin."
+---
+
+import { Aside, Tabs, TabItem } from "@astrojs/starlight/components";
+
+Install the portable core, add one host for where your sessions connect, and pin Effect to the
+release candidate the SDK is built on.
+
+## Which packages
+
+| Package                  | What it holds                                                                                                                                                   | Runs on                                            |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `reactor-effect-client`  | `Reactor`, `Session` and `CoordinatorClient`, the `H3` provider, `Playout` with its sources, and `ReactorTest`                                                  | Node, Bun and browsers                             |
+| `reactor-effect-browser` | `BrowserPeer` on the browser's `RTCPeerConnection`, and `BrowserMedia` to play the session's tracks                                                             | Browsers                                           |
+| `reactor-effect-native`  | `NativePeer` on a Node-API addon over Reactor's `reactor-webrtc` crate (libwebrtc): decoded BGRA frames and 16-bit PCM, in process or in a child process (Node) | Node and Bun, on Linux x64 (glibc) and macOS arm64 |
+
+Every application installs the client. Then pick a host for where sessions connect:
+
+- **Tests and offline runs need no host.** `ReactorTest.layer` provides the HTTP client and the
+  peers, so nothing touches the network.
+- **A page that runs its own session** adds `reactor-effect-browser`.
+- **A server or command line that reads frames** adds `reactor-effect-native`.
+
+The packages share one version and are released together. This site follows the repository's
+`main` branch; check [npm](https://www.npmjs.com/package/reactor-effect-client) for the latest
+published version. The host packages peer on `reactor-effect-client` at exactly their own version,
+so install them at the same version.
+
+## Install
+
+<Tabs syncKey="package-manager">
+<TabItem label="npm">
+
+```sh
+# The core, which is all tests and offline runs need
+npm install --save-exact reactor-effect-client effect@4.0.0-rc.117
+
+# A page that runs its own session
+npm install --save-exact reactor-effect-browser
+
+# Node or Bun with decoded frames
+npm install --save-exact reactor-effect-native @effect/platform-node@4.0.0-rc.117
+```
+
+</TabItem>
+<TabItem label="Bun">
+
+```sh
+# The core, which is all tests and offline runs need
+bun add --exact reactor-effect-client effect@4.0.0-rc.117
+
+# A page that runs its own session
+bun add --exact reactor-effect-browser
+
+# Node or Bun with decoded frames
+bun add --exact reactor-effect-native @effect/platform-node@4.0.0-rc.117
+```
+
+</TabItem>
+<TabItem label="pnpm">
+
+```sh
+# The core, which is all tests and offline runs need
+pnpm add --save-exact reactor-effect-client effect@4.0.0-rc.117
+
+# A page that runs its own session
+pnpm add --save-exact reactor-effect-browser
+
+# Node or Bun with decoded frames
+pnpm add --save-exact reactor-effect-native @effect/platform-node@4.0.0-rc.117
+```
+
+</TabItem>
+</Tabs>
+
+For tests, add `@effect/vitest@4.0.0-rc.117` and `vitest` 5 as development dependencies. See
+[Test offline](/reactor-effect-client/guides/testing-offline/).
+
+Modules are flat. Import one by its subpath, or all of them as namespaces from the root:
+
+```ts
+import * as Playout from "reactor-effect-client/Playout";
+import { H3, Reactor, ReactorTest } from "reactor-effect-client";
+```
+
+Subpath imports resolve through the packages' export maps, so TypeScript needs `moduleResolution`
+set to `NodeNext` or `Bundler`.
+
+The packages are ES modules only. A Node project runs them from `"type": "module"`, which npm 11's
+`npm init` does not set (it writes `"commonjs"`): run `npm pkg set type=module`, or name your files
+`.mts`.
+
+## The native addon
+
+`reactor-effect-native` lists one addon package per platform as an exact-version optional
+dependency, and the package manager installs only the one the host can run:
+
+| Platform package                      | Host                                        |
+| ------------------------------------- | ------------------------------------------- |
+| `reactor-effect-native-linux-x64-gnu` | Linux x64 with glibc                        |
+| `reactor-effect-native-darwin-arm64`  | macOS on Apple silicon, macOS 13.0 or later |
+
+The addon is prebuilt, so no Rust toolchain is needed. On Linux x64, `npm install
+reactor-effect-native@0.9.0` fetched only the Linux package (an 18.5 MB addon), and
+`NativePeer.layer()` then built under Node 24.14 and Bun 1.4.2 (checked 2026-09-30).
+
+Importing `reactor-effect-native` loads nothing. Building `NativePeer.layer()` loads the addon, so a
+host that cannot run it fails there, before any session is allocated: with `UnsupportedHost` when
+no platform package is installed (for example after `--omit=optional`), and with `Native` when the
+addon is of another version or cannot load.
+
+## The Effect version
+
+Every package peers on Effect `4.0.0-rc.117` exactly. Effect 4 is in release candidates, and a
+candidate can move modules: `4.0.0-rc.118` moved the `effect/unstable/*` modules the SDK imports,
+so a later candidate needs a new SDK release. Install `effect` and every `@effect/*` package at
+exactly `4.0.0-rc.117`, with `--save-exact` as above: under a caret range, a later install without
+a lockfile takes a later candidate.
+
+### Pin `@effect/platform-node-shared`
+
+`@effect/platform-node@4.0.0-rc.117` depends on `@effect/platform-node-shared` with a caret range.
+npm, Bun and pnpm all resolve that to a later candidate, which fails to load on Effect rc.117
+(`ERR_MODULE_NOT_FOUND`). A project that installs `@effect/platform-node` pins it in its
+`package.json`:
+
+<Tabs syncKey="package-manager">
+<TabItem label="npm">
+
+```json
+{
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.0-rc.117"
+  }
+}
+```
+
+</TabItem>
+<TabItem label="Bun">
+
+```json
+{
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.0-rc.117"
+  }
+}
+```
+
+</TabItem>
+<TabItem label="pnpm">
+
+```json
+{
+  "pnpm": {
+    "overrides": {
+      "@effect/platform-node-shared": "4.0.0-rc.117"
+    }
+  }
+}
+```
+
+</TabItem>
+</Tabs>
+
+Set it before the first install. Once a lockfile holds the later candidate, delete the lockfile and
+`node_modules` and install again. With `reactor-effect-native` installed, npm alone already resolves
+the right version through the package's exact peer; Bun and pnpm still need the override. Checked
+with npm 11.11, Bun 1.4.2 and pnpm 10.34 on 2026-09-30.
+
+## Runtimes
+
+- **Node 22 or newer.** CI runs the portable suites on Node 22.22 and 24.15 on Ubuntu and on Node
+  24.15 on macOS. Running TypeScript sources directly, as the examples do, needs Node 22.18 or
+  newer.
+- **Bun.** CI runs the portable and native suites on Bun 1.4.2 too. The isolated native host,
+  `NativePeer.layerIsolated()`, needs a Node parent process and refuses to build under Bun.
+- **Browsers** with WebRTC (`RTCPeerConnection`, `MediaStream`) and Web Crypto, on `localhost` or
+  HTTPS. `BrowserPeer.layer` checks for WebRTC when it is built and fails with `UnsupportedHost`
+  without it.
+
+<Aside type="note" title="Strict Node projects without DOM types">
+  Effect `4.0.0-rc.117` names the DOM's `TextDecoderOptions` in its declarations. A Node project
+  that omits DOM types and type-checks library declarations (`skipLibCheck: false`) declares that
+  standard interface itself.
+</Aside>
+
+## Next
+
+- [Quickstart](/reactor-effect-client/start/quickstart/): prompt H3 offline, with no API key.
+- [Going live](/reactor-effect-client/start/going-live/): the same program on hosted H3.

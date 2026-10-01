@@ -1,0 +1,195 @@
+---
+title: Hosted evidence
+description: "What has been measured on hosted Reactor, when, on which commit and for how much."
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Every claim on this site about hosted Reactor rests on a paid run listed here. Each run is one
+check of the [hosted harness](https://github.com/mannyc2/reactor-effect-client/tree/main/integration/hosted),
+an Effect program over the public API, run by the maintainer against hosted H3 Reference Turbo
+Realtime (`reactor/h3-reference-to-video-turbo-realtime`). Its evidence file and summary are
+committed under `integration/hosted/evidence/`, with the session ids, so Reactor can find its side
+of each run.
+
+<Aside type="note" title="Hosted and rehearsed are kept apart">
+  CI runs every check as a rehearsal on `ReactorTest`, the simulated Reactor, and never allocates a
+  paid session. A rehearsal shows the program is right about the contract it simulates; it is not
+  evidence of what hosted Reactor does, and nothing on this page comes from one.
+</Aside>
+
+The harness refuses to run without `--i-authorize-paid-sessions` and a budget. Each run reserves
+its worst case in a ledger before any token exists, and a ledger's total is capped at $10.
+
+## Every run
+
+22 runs, 28 sessions, from 2026-09-24 to 2026-10-01. Every session ended with its termination
+confirmed by an independent read.
+
+| Started (UTC)    | Code                 | Check               | Sessions | Estimate | Result                                                       |
+| ---------------- | -------------------- | ------------------- | -------- | -------- | ------------------------------------------------------------ |
+| 2026-09-24 02:40 | 0.3.0-rc.0, from npm | `vertical`          | 1        | $0.750   | Fail: acceptance seen only by metadata; no ICE pair named    |
+| 2026-09-24 02:42 | 0.3.0-rc.0, from npm | `takeover`          | 1        | $0.750   | Fail: no frames after attaching                              |
+| 2026-09-24 03:18 | 0.3.0-rc.0, from npm | `vertical`          | 1        | $0.750   | Fail: as before; settled H3's reply order                    |
+| 2026-09-24 05:10 | checkout `0255871`   | `vertical`          | 1        | $0.750   | Pass                                                         |
+| 2026-09-24 05:10 | checkout `0255871`   | `takeover`          | 1        | $0.750   | Pass                                                         |
+| 2026-09-25 00:21 | 0.3.1, from npm      | `audio`             | 1        | $0.750   | Pass                                                         |
+| 2026-09-27 19:58 | 0.6.0, from npm      | `scheduler`         | 1        | $0.750   | Fail: a position-zero clip went ahead of the running build   |
+| 2026-09-27 19:59 | 0.6.0, from npm      | `scheduler-renewal` | 2        | $1.500   | Pass                                                         |
+| 2026-09-28 00:16 | 0.7.0, from npm      | `scheduler-edits`   | 1        | $0.750   | Fail: a continued insert missed its place                    |
+| 2026-09-28 00:19 | 0.7.0, from npm      | `scheduler-cut`     | 1        | $0.750   | Fail: position zero again; a second `stop` cut the cutter    |
+| 2026-09-28 02:31 | checkout `aabe52f`   | `scheduler-edits`   | 1        | $0.750   | Pass                                                         |
+| 2026-09-28 04:51 | checkout `8458d08`   | `tokens`            | 1        | $0.275   | Fail: an `INACTIVE` session taken as ended                   |
+| 2026-09-28 05:12 | checkout `f5daf55`   | `tokens`            | 1        | $0.400   | Fail: one criterion of the check's own making                |
+| 2026-09-28 05:14 | checkout `59136a2`   | `cut`               | 1        | $0.250   | Pass, with a moderation probe                                |
+| 2026-09-28 12:03 | checkout `69f34e9`   | `vertical`          | 1        | $0.150   | Fail: the check's live-video rule met H3's end-of-clip frame |
+| 2026-09-28 12:11 | checkout `3539ed4`   | `edits`             | 1        | $0.438   | Pass                                                         |
+| 2026-09-28 15:51 | checkout `799ed3d`   | `adoption`          | 1        | $0.388   | Pass, all 17 criteria                                        |
+| 2026-09-28 16:12 | checkout `c548077`   | `tour`              | 1        | $0.463   | Pass, all 30 criteria                                        |
+| 2026-09-28 23:37 | checkout `87d9f67`   | `show`              | 3        | $1.538   | Pass, all 25 criteria                                        |
+| 2026-09-29 14:00 | checkout `c9f3f96`   | `unconnected`       | 2        | $0.900   | Pass                                                         |
+| 2026-09-29 14:03 | checkout `c9f3f96`   | `show`              | 3        | $1.413   | Pass, every criterion                                        |
+| 2026-10-01 02:01 | checkout `d013d00`   | `showreel`          | 1        | $1.680   | Pass, every criterion; footage on the `media` release        |
+
+The summaries, one per ledger:
+[0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md),
+[0.3.1](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.1/summary.md),
+[0.6.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.6.0/summary.md),
+[0.7.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.7.0/summary.md),
+[0.8.0-dev](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dev/summary.md),
+[0.8.0-api](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+[0.8.0-probe](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-probe/summary.md)
+and [0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-rc/summary.md).
+
+- **Estimates** are the evidence's own, at the rate Reactor's pricing stated then: 125 credits a
+  second, $0.0125. Up to 0.7.0 they count every started minute whole, so they are upper bounds;
+  from 0.8.0 they count seconds. On 2026-09-30 the pricing lists 350 credits a second, so the same
+  sessions would cost 2.8 times the per-second estimates today.
+- **Failures.** Each found cause was fixed before the check ran again to qualify. Most were the
+  library's: 0.3.0-rc.0's acceptance, ICE pair and attach, 0.7.0's misplaced continued insert and
+  doubled `stop`, and an `INACTIVE` session read as ended. Two were criteria of the checks' own
+  making. The third 0.3.0-rc.0 vertical repeated the first on the same bytes, to settle billing and
+  H3's reply order. Position zero, listed below, is H3's own ordering and is still unexplained.
+- **Commits.** The 0.8.0-dev commits were renamed when the branch's messages were reworded, with no
+  change to any tree; the ledger's summary maps each to its new name. The second `show`'s checkout,
+  `c9f3f96`, matches the 0.8.0 release's library source except for its version string.
+
+## Billing records
+
+- The Reactor dashboard listed each session's duration to the second, matching the time from
+  allocation to the `DELETE` within a second (0.8.0-api), and listed a 10-second session at 10 s,
+  so Reactor meters by the second (0.8.0-probe).
+- Whether the meter starts at creation or at `ready` stayed open: `ready` came 0.19–0.38 s after
+  allocation, under the dashboard's one-second resolution.
+- The balance readings fit neither the published rate nor whole minutes. 0.3.0-rc.0's third run
+  moved the balance by $0.03–0.05, against $0.11 at the published rate; 0.8.0-dev's sessions had not
+  moved it hours later; and the $1.09 between the readings around 0.8.0-probe fits neither.
+
+## What the runs measured
+
+**Media and connection** ([0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md),
+[0.3.1](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.1/summary.md),
+[0.8.0-dev](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dev/summary.md)):
+
+- 1344×768 BGRA at 23.7–24.2 fps, all 124 frames of each 5-second clip, none lost; 48 kHz mono
+  audio, none lost; a median 4.9–8.3 Mbps with 20–22 ms round trips over a direct path.
+- Allocation to `ready` in 2.5–2.8 s; an enqueue accepted by its correlated reply 0.03 s after
+  submission; the clip started 2.06–2.18 s later and its first frame came 0.08–0.10 s after that.
+
+**Ownership and tokens** ([0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md),
+[0.8.0-dev](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dev/summary.md),
+[0.8.0-api](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md)):
+
+- A process attached 2.69 s after the owner was killed and received frames 0.21 s later.
+- An owner under Node on the isolated native host was killed 12.7 s into the run: a raw attach was
+  ready 3.06 s after the kill, named the playing clip and closed without ending the session;
+  `H3Source.resume` started 0.57 s after the creating token expired, adopted the session 2.71 s
+  later, and enqueued a clip with a reference image and reference audio on a refreshed 12-second
+  bound token.
+- An expired token was refused with 401 and one without the bind with 403. A 7-hour token was
+  clamped to 6 hours.
+
+**Recovery** ([0.8.0-api](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+[0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-rc/summary.md)):
+
+- A reconnect 2 s after the creating token expired moved to the next connection generation in
+  2.17 s, with the Ready clip kept.
+- A connection cut with 8.07 s of air secured read `ready` again 1.64 s later and showed a fresh
+  frame 1.82 s after the drop, with no replacement session opened (1.84 s and 1.95 s in the second
+  run).
+
+**Playout** ([0.8.0-api](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+[0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-rc/summary.md),
+[0.8.0-dev](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dev/summary.md),
+[0.7.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.7.0/summary.md)):
+
+- One playout over three 75-second sessions: 20 clips and 2,372 frames at 22.2 fps, no frame lost,
+  its reader never behind.
+- In the two `show` runs, seams of 46–169 ms with no dark frame, and a planned switch between
+  sessions with 420 and 432 ms between clips on air.
+- An edit batch in effect 0.91–1.05 s before its boundary; its withdrawn clip never aired.
+- Cues 0–1 ms from due; an `At` item 545–559 ms late, never early.
+- A session ended by moderation was replaced: the clip it had Ready was rebuilt on a session opened
+  3.17 s after the verdict, and aired 5.3 s after the lost clip left the air. A cut lane stopped a
+  clip with one `stop` and a 165–168 ms pause.
+- A continued clip built in 5.2–5.45 s against 2.1–2.2 s for an independent one (0.7.0). In the
+  passing `edits` and `show` runs, the picture at a continued seam changed 2.3–5.8 times the clip's
+  own motion, and at their independent seams 11–20 times; a cut seam elsewhere measured 6.5 times.
+
+**Termination**: every one of the 28 sessions confirmed ended; where timed, `CLOSED` read
+0.63–0.86 s after the `DELETE`.
+
+**The showreel** ([0.9.0-showreel](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.9.0-showreel/summary.md),
+2026-10-01): one `Playout` over one 70 s-capped session aired five 8-second scenes back to back,
+and the decoded frames and audio were recorded in-process under Bun as they arrived: 958 frames at
+1344×768 and 24 fps, the reader never behind, seams of 89–120 ms with no dark frame, gaps on air of
+2–67 ms between scenes, about $1.68. The footage is on the
+[`media` release](https://github.com/mannyc2/reactor-effect-client/releases/tag/media).
+
+## What the runs found about the platform
+
+These are behaviours of hosted Reactor and H3 the runs recorded, worth knowing whatever client you
+use:
+
+- H3 broadcasts the `queue_update` listing a new clip before the enqueue's correlated
+  `clip_queued` reply (0.3.0-rc.0).
+- An attached connection receives no media until it resumes its tracks, as Reactor's sessions page
+  says (0.3.0-rc.0).
+- The deployment reports version `v0.0.0`, where the documented schema is 0.5.5 (0.3.0-rc.0,
+  0.3.1).
+- A position-zero enqueue went ahead of the build in flight, where the schema says the running
+  build is unaffected (0.6.0, 0.7.0). A queue read sent 1 ms behind an enqueue listed the new clip:
+  commands applied in the order sent (0.7.0).
+- `stop` names no clip and lands after its reply; under autoplay it skips to the next clip, so a
+  second `stop` cuts that one (0.7.0).
+- H3 flushes to black at each clip's end by default (`flush_on_clip_end`), one dark frame per seam
+  (0.6.0, 0.7.0); holding the last frame removes it.
+- A session whose last connection has gone reads `INACTIVE` and is still live (0.8.0-dev). One read
+  `ACTIVE` for at least the first 2.1 s after its last connection closed, when the reads stopped
+  (0.8.0-api); another, first read 8.4 s after its owner was killed, was `INACTIVE` (0.8.0-dev).
+- Content moderation's `terminate` verdict came 0.40–1.01 s after the flagged enqueue, which had
+  been answered normally, and named no category, input, command or request (0.8.0-dev, 0.8.0-api).
+- A 16,171-character prompt was accepted, then failed by `clip_failed` 2.39 s later: H3's text
+  budget is enforced at build (0.8.0-api).
+- A clip recording came back `ClipReady` in 2.6 s, but its download timed out at 15.1 s
+  (0.8.0-api).
+- A session allocated and never connected read `ACTIVE` throughout and was ended by Reactor at its
+  60-second cap, 60.09 s after allocation; a second create on a spent single-session token was
+  refused with 403 (0.8.0-probe).
+
+## Not yet run on hosted Reactor
+
+- **Most of 0.9.0.** One paid run has exercised 0.9.0: the one-session `showreel` check, from a
+  checkout with the published linux-x64 addon. `Playout.place` and `follows`, 0.9.0's renewal and
+  its other checks have run only on `ReactorTest`, and its published client packages have not run on
+  hosted Reactor.
+- **The `turn` check**, the vertical from a network that blocks outbound UDP so a relay must carry
+  the media. Every paid run went over a direct path.
+- **`reactor-effect-browser`.** No paid run has used the browser host.
+- **The in-process native host under Node.** It ran under Bun, and Node ran only the isolated host.
+  The quickstart and the terminal viewer use it when run with `node`.
+- **macOS arm64.** Every paid run was on Linux x64.
+- **Long sessions.** The longest paid run lasted under two minutes; no multi-hour renewal soak has
+  run.
+- **Restreaming and native publication.** No run has sent native media on to a browser, to RTMP or
+  to LiveKit.

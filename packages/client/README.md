@@ -1,192 +1,140 @@
 # reactor-effect-client
 
-An independent Effect SDK for Reactor's real-time video models: scoped sessions, the H3 provider, a playout that airs a keyed schedule across renewing sessions, and Reactor simulated in memory for tests. This is the portable core of the [reactor-effect workspace](https://github.com/mannyc2/reactor-effect-client); the browser and native transports are the separate `reactor-effect-browser` and `reactor-effect-native` packages.
+The portable core of [reactor-effect](https://github.com/mannyc2/reactor-effect-client), an
+[Effect](https://effect.website) SDK for [Reactor](https://reactor.inc)'s real-time video models.
+It opens and owns Reactor sessions, drives the H3 model, keeps a channel on air across session caps
+with `Playout`, and simulates Reactor in memory with `ReactorTest`, so an application runs offline
+before it spends anything. It loads no native code and runs on Node, Bun and browsers; a transport
+comes from [`reactor-effect-browser`](https://www.npmjs.com/package/reactor-effect-browser) or
+[`reactor-effect-native`](https://www.npmjs.com/package/reactor-effect-native).
 
-One `Session` owns each allocation or attachment: its commands, connection generations and cleanup evidence. `H3` reads that session and never allocates one. `Playout` gets its sessions from a source and never allocates around it. Application scheduling, pricing, personas and proof of presented output stay with the application.
+**[Documentation](https://mannyc2.github.io/reactor-effect-client/)** ·
+[Quickstart](https://mannyc2.github.io/reactor-effect-client/start/quickstart/) ·
+[Examples](https://github.com/mannyc2/reactor-effect-client/tree/main/examples) ·
+[llms-full.txt](https://mannyc2.github.io/reactor-effect-client/llms-full.txt)
 
-This is not an official Reactor SDK. Protocol material is attributed in [NOTICE](./NOTICE) and [`notices/`](./notices/).
+This is an independent project, not an official Reactor SDK. Protocol material is attributed in
+[NOTICE](./NOTICE) and [`notices/`](./notices/).
 
 ## Install
 
 ```sh
-npm install reactor-effect-client effect@4.0.0-rc.117
+npm install --save-exact reactor-effect-client effect@4.0.0-rc.117
 ```
 
-Effect is a peer dependency at exactly `4.0.0-rc.117`: Effect's release candidates can move modules, and `4.0.0-rc.118` moved the `effect/unstable/*` modules this package imports, so a later rc needs a new SDK release. An application that adds `@effect/platform-node` itself should install it with `--save-exact`, since a later rc of it peers on a later Effect. The platform depends on `@effect/platform-node-shared` with a caret range, under which npm installs a later rc that fails to load on this Effect, so an application without `reactor-effect-native`, which peers on that package exactly, should pin it in its own manifest: `"overrides": { "@effect/platform-node-shared": "4.0.0-rc.117" }`. Every module in this package is portable: importing it selects no host and loads no native code. Add `reactor-effect-browser` or `reactor-effect-native` for a transport, or run on `ReactorTest` without one.
+Effect is a peer dependency at exactly `4.0.0-rc.117`: its release candidates can move modules, so a
+later one needs a new SDK release. Install any `@effect/*` package at the same version with
+`--save-exact`. A project with `@effect/platform-node` also pins `@effect/platform-node-shared` to
+`4.0.0-rc.117` with an override, since the platform's caret range otherwise installs a later
+candidate: always under Bun and pnpm, and under npm unless `reactor-effect-native` is installed.
+[Installation](https://mannyc2.github.io/reactor-effect-client/start/installation/) covers each
+host.
 
-## Modules
-
-Each module is its own subpath, `reactor-effect-client/<Module>`, and the root exports every one as a namespace: `import { Playout, Reactor } from "reactor-effect-client"`. Nothing under `internal/` is reachable.
-
-| Module              | What it is                                                                                                      |
-| ------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `Reactor`           | The service that acquires sessions: `create` allocates one this process owns, `attach` joins one                |
-| `Session`           | One session: its status, events, commands, uploads, recordings, media and close report                          |
-| `CoordinatorClient` | Reactor's HTTP API: pricing, tokens (`Tokens`, `fixedTokens`), inspection, termination and recordings           |
-| `H3`                | The H3 provider over a session: its state and queue, its commands, acceptance evidence and reference validation |
-| `Playout`           | Airs keyed items in priority lanes across sessions it renews, and reports what aired                            |
-| `H3Source`          | A paid H3 session as a playout source: `open`, `resume` and the owner record `Allocation`                       |
-| `LocalSource`       | A playout source rendered in this process by the application's hooks                                            |
-| `Media`             | Decoded frames and platform tracks of one connection generation, and `recorder`                                 |
-| `Peer`              | The transport port a host implements, and the `PeerFactory` service                                             |
-| `ReactorError`      | Every failure the client raises, its tagged reason and its dispatch outcome                                     |
-| `ReactorTest`       | Reactor simulated in memory: the coordinator, peers and an H3 model, driven by the Effect clock                 |
-
-The modules' doc comments state each option's default and bound; this page is the map.
-
-## Sessions
-
-`Reactor.layer()` needs a `CoordinatorClient` and a host's `PeerFactory`; `CoordinatorClient.layer(options)` and `CoordinatorClient.layerConfig` (`REACTOR_API_URL`, and the API key from `REACTOR_API_KEY`) need an Effect `HttpClient`. `reactor.create` returns a connected session in the caller's scope, and closing the scope closes it:
+## A first clip, offline
 
 ```ts
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Layer } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import { CoordinatorClient, H3, Reactor } from "reactor-effect-client";
-import { NativePeer } from "reactor-effect-native";
+import { Console, Effect, Layer, Redacted } from "effect";
+import { CoordinatorClient, H3, Reactor, ReactorTest } from "reactor-effect-client";
 
 const firstClip = Effect.gen(function* () {
   const coordinator = yield* CoordinatorClient.CoordinatorClient;
   const reactor = yield* Reactor.Reactor;
   const session = yield* reactor.create({
     model: H3.modelName,
-    tokens: coordinator.tokens({ modelName: H3.modelName, maxSessionDuration: "5 minutes" }),
+    tokens: coordinator.tokens({ modelName: H3.modelName, maxSessionDuration: "2 minutes" }),
   });
-  const provider = yield* H3.make(session);
-  return yield* provider.enqueue({ prompt: "A slow camera move through a sunlit garden" });
+  const h3 = yield* H3.make(session);
+  yield* h3.setAutoplay(true);
+  const submission = yield* h3.prepare({ prompt: "A paper boat on a rainy street", seconds: 5 });
+  yield* submission.submit;
+  const clip = yield* h3.operation(submission);
+  yield* clip.ended;
+  const report = yield* session.close;
+  yield* Console.log(`termination confirmed: ${report.remote.confirmed}`);
 }).pipe(Effect.scoped);
 
-const ReactorLive = Reactor.layer().pipe(
-  Layer.provideMerge(Layer.mergeAll(CoordinatorClient.layerConfig, NativePeer.layer())),
-  Layer.provide(FetchHttpClient.layer),
+// Reactor simulated in memory at the timing paid runs measured: no key, nothing billed.
+const Simulated = Reactor.layer().pipe(
+  Layer.provideMerge(CoordinatorClient.layer({ apiKey: Redacted.make("demo") })),
+  Layer.provideMerge(ReactorTest.layer({ timing: ReactorTest.Timing.hosted, apiKey: "demo" })),
 );
 
-// The application's entry point provides the layers once. Running it allocates a paid session.
-export const main = firstClip.pipe(Effect.provide(Layer.mergeAll(ReactorLive, NodeServices.layer)));
+firstClip.pipe(
+  // The program's entry point, the one place a layer is provided.
+  // @effect-diagnostics-next-line strictEffectProvide:off
+  Effect.provide(Layer.mergeAll(Simulated, NodeServices.layer)),
+  NodeRuntime.runMain,
+);
 ```
 
-Building a host layer is its preflight: `NativePeer.layer()` loads the addon and `BrowserPeer.layer` detects WebRTC, so a host that cannot run fails before anything is allocated, and the factory's `check` runs again before every allocation. Over `FetchHttpClient`, every coordinator request omits ambient credentials and refuses redirects.
+For hosted H3, provide `Reactor.layer()` with `CoordinatorClient.layerConfig` (the API key from
+`REACTOR_API_KEY`), a host's peer layer and an `HttpClient` instead; the program does not change.
+[Going live](https://mannyc2.github.io/reactor-effect-client/start/going-live/) walks through it.
 
-**Ownership.** `create` allocates a session this process owns: closing it terminates the session and confirms the end with an independent read, since a `DELETE` response alone proves nothing. `onAllocated` runs after allocation and before connecting, so a supervisor can record the owner first; if it fails, the session is closed and the acquisition fails with an `AcquisitionFailure` carrying the close report, the hook's own error kept in its `Redacted` `context.detail`. `attach` joins a session without its remote lifetime; with `adopt: true` it takes that lifetime over, as a process resuming a dead owner's session does. `session.close` returns a `CloseReport`, a Schema you can persist, with the termination verdict and every local cleanup error; a failed acquisition's `AcquisitionFailure` carries the same report. `Session.mayStillBill(report)` says whether its session may still be billing: one this process owned that no read confirmed ended, or an allocation whose outcome, and so whose id, never arrived. Reconnecting keeps a session billing through its drops: an owned session its application never closed, or one a viewer holds after its owner has gone, runs on for as long as the process holding it does, to its cap if it has one; `Reactor.layer({ reconnect: false })` lets a drop end it 30 seconds later. The library keeps no pool of sessions: Effect's `Pool.makeWithTTL` over `reactor.create`, with `min: 0`, and a short `timeToLive`, closes a session left idle, where `Pool.make` keeps every session, and its bill, until the pool's scope closes.
+## Modules
 
-**Tokens.** A session never sees the API key. It runs on `Tokens`: `create`, a token that may create one session, and `bind(sessionId)`, a fresh token bound to an open session. The session keeps one token for all its calls and mints the next with `bind` a minute before it expires, or a quarter of a shorter token's life, so it outlives any one token; Reactor keeps a token at most six hours. `coordinator.tokens({ modelName, maxSessionDuration })` mints both with the key the CoordinatorClient holds. `maxSessionDuration` is required, a duration or `"unlimited"`, because an uncapped session bills until something ends it. `coordinator.mintToken` takes `bind` and `maxSessions` directly and refuses a grant Reactor echoes wider than asked. `CoordinatorClient.fixedTokens(grant)` serves a session shorter than its token, and a browser gets its tokens from a server that holds the key (see the [browser example](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/browser/examples)); that server should bind only sessions its caller created, since a bound token commands, watches and ends its session. Each call has its own credential: `mintToken` and `tokens` use the API key; `inspect`, `terminate` and `downloadClip` use the CoordinatorClient's `credential`, or the key when none is set, so a server holding the key can read and end any session of its account; and a session's own calls use its token.
+Each module is its own subpath, `reactor-effect-client/<Module>`, and the root exports every one as
+a namespace. Nothing under `internal/` is reachable.
 
-**Lifecycle.** A session reads `INACTIVE` while its last connection is gone; it is still live and billed, and Reactor ends it 30 seconds later unless a connection returns. Only `CLOSED` is terminal (`CoordinatorClient.isTerminal`). A session reconnects a dropped connection on its own, owned or attached, whoever reads it: one attempt at once, then more on the `reconnect` schedule, until a connection has stayed ready 10 seconds, the schedule stops, the session is closing or Reactor or moderation ended it, Reactor refuses this client's protocol (`VersionMismatch`), or `reconnectTimeout` (30 seconds) has passed since the drop. A connection that drops sooner is a failed attempt of the same reconnect, so one that keeps dropping is tried on the schedule, not at once. The session stops trying 30 seconds after the first drop, or, if a connection is up then, once that connection drops before it has been ready 10 seconds; Reactor ends the session 30 seconds after its last connection drops. By default the second attempt comes 250 ms after the first fails and each wait doubles, to at most 4 seconds, jittered, and never sooner than a refusal's `Retry-After`, from which it is jittered only upward; a refusal that may lift, a 401 or 403 included, is tried again, with a fresh token only from its `Tokens`, once the current one nears its expiry. A schedule with no delay of its own tries again at once for all of `reconnectTimeout`, with a new peer each time, so space its attempts as the default does. Each failed attempt is a `Diagnostic` event, and a reconnect out of time stops with `Timeout`, the last attempt's failure, or why the connection up as the time ran out dropped, in its `Redacted` `context.detail`. Each attempt is a new connection generation of the same session: it allocates nothing and never replays a command. Meanwhile the status goes `disconnected`, then `connecting`, `waiting` and `ready` on the new generation, and the snapshot's `reconnecting` is true from the drop until a connection is ready or the session stops trying; `disconnected` without it is lasting, and `lastError` says why; a drop no attempt could get past (moderation or Reactor ended the session, or Reactor refuses this client's protocol) is lasting from the drop on. `Reactor.layer({ reconnect: false })` leaves a dropped connection down. `session.reconnect` opens a new connection generation at once, from a ready connection or a lasting drop, within `reconnectTimeout`, and never replays a command. While the session reconnects on its own, `session.reconnect` joins that reconnect rather than begin another: it succeeds once a connection is ready again, and fails as the reconnect stops, with the session's `lastError`, or with `Closed` if the session closes first. One whose connection is replaced while it makes its peer, as the session reconnects a drop or another reconnect asked for takes over, begins nothing either: it succeeds once a later connection is ready, and fails with the session's `lastError` once a later one is down for good, as the session's own reconnect stops or as another reconnect asked for fails meanwhile, whose failure it then takes. It fails with `InvalidState` while another reconnect asked for is under way. It fails with `Closed`, not submitted, if the session's close has begun before it takes the session over, or once its connection is open and becoming ready; one the close overtakes earlier in its negotiation fails with `Aborted`. What a host dies of as it fences or shuts down a peer never fails the session's work: a `ReactorError` is a `Diagnostic` event on that peer's generation, and any other defect goes to the `ErrorReporter`, except at the session's close, whose `CloseReport` keeps it in `localErrors`. A reconnect goes on past a replaced peer that fails to shut down, and a failed attempt fails with its own failure alone. Each generation's media and replies belong to it: a reconnect ends the old generation's readers, and a late reply is published labelled `stale-generation`. A `Moderation` event reports a content-moderation verdict; after `terminate` Reactor ends the session and it is not reconnected (`Moderated`). `session.snapshot`, `session.changes` and `session.observe` read the status: `changes` gives the snapshot at every change, in order, to a reader that falls behind too (its status, generation, `reconnecting`, `lastError`, received tracks and close as that change left them, the rest as the reader takes it), and `observe` pairs a snapshot with every event after it, with no gap.
+| Module                                                                                    | What it is                                                                                         |
+| ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| [`Reactor`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)           | The service that acquires sessions: `create` allocates one this process owns, `attach` joins one   |
+| [`Session`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)           | One session: status, events, commands, uploads, recordings, media, reconnects and its close report |
+| [`CoordinatorClient`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/) | Reactor's HTTP API: pricing, tokens (`tokens`, `fixedTokens`), inspection, termination, recordings |
+| [`H3`](https://mannyc2.github.io/reactor-effect-client/concepts/h3/)                      | The H3 provider over a session: its state and queue, commands, acceptance and reference validation |
+| [`Playout`](https://mannyc2.github.io/reactor-effect-client/concepts/playout/)            | Airs keyed items in priority lanes across sessions it renews, and reports what aired               |
+| [`H3Source`](https://mannyc2.github.io/reactor-effect-client/concepts/sources/)           | A paid H3 session as a playout source: `open`, `resume` and the owner record `Allocation`          |
+| [`LocalSource`](https://mannyc2.github.io/reactor-effect-client/concepts/sources/)        | A playout source rendered in this process by the application's hooks                               |
+| [`Media`](https://mannyc2.github.io/reactor-effect-client/concepts/media/)                | Decoded frames and platform tracks of one connection generation, and `recorder`                    |
+| [`Peer`](https://mannyc2.github.io/reactor-effect-client/reference/modules/)              | The transport port a host implements, and the `PeerFactory` service                                |
+| [`ReactorError`](https://mannyc2.github.io/reactor-effect-client/concepts/errors/)        | Every failure the client raises, its tagged reason and its dispatch outcome                        |
+| [`ReactorTest`](https://mannyc2.github.io/reactor-effect-client/guides/testing-offline/)  | Reactor simulated in memory: the coordinator, peers and an H3 model, driven by the Effect clock    |
 
-**Deadlines.** `Reactor.layer(options)` sets the session deadlines: `replyTimeout`, `uploadTimeout`, `connectTimeout` (3 minutes, the wait for a GPU included, which is not billed), `reconnectTimeout`, `readyTimeout` and `heartbeatInterval`; `reconnect` is the `Schedule` a session reconnects a dropped connection on, or `false` (see Lifecycle). `connectTimeout` and `reconnectTimeout` cut the allocation and the negotiation, not the host's work on either side of them: making a peer, and shutting one down, which the native peer bounds by its `shutdownTimeout`. Every duration is a `Duration.Input`, and a bare number is milliseconds, so write the unit. One that is not a finite, non-negative duration fails with `InvalidInput`, not submitted. `replyTimeout` is the library's own deadline for a reply, not a caller's wait: after dispatch its expiry fails with `Timeout`, outcome `unknown`, and the request stays attributable. To stop waiting without abandoning a command, fork it and bound the join:
+Each module's doc comments state its options' defaults and bounds.
 
-```ts
-import { Effect, Fiber } from "effect";
-import type { Session } from "reactor-effect-client";
+## What to know first
 
-export const seed = (session: Session.Session) =>
-  Effect.gen(function* () {
-    const fiber = yield* Effect.forkScoped(session.command("set_seed", { seed: 1 }));
-    // Later, Fiber.await(fiber) still reads the command's own outcome.
-    return yield* Fiber.join(fiber).pipe(Effect.timeout("2 seconds"));
-  });
-```
-
-**Media.** `session.decoded` is the current generation's decoded media, from the native host or `ReactorTest`; `session.tracks` is its platform tracks, from the browser host. Every frame carries its admission `sequence` on its track, so `Media.recorder(stream)` yields each frame plus a `Lost { after, count }` wherever the host dropped frames. A reader that falls behind its bound fails alone with `Overflow` and is counted in `pressure`'s `readerOverflows`; a preview keeps only the newest frame with `Stream.buffer({ capacity: 1, strategy: "sliding" })`.
-
-Uploads (`session.upload`), recordings (`requestRecordingClip`, `recording`, then `coordinator.downloadClip`) and the deployment's OpenAPI document (`session.schema`) are on the session too.
-
-## Errors
-
-Every failure is one of three classes, each with its own `_tag`: `ReactorError`, `CommandFailure` (a command, with the dispatch evidence its owner established) and `AcquisitionFailure` (a failed acquisition, with its cleanup report). `ReactorError.isReactorFailure` recognizes any of them. Each carries a tagged `reason`: route on it with `Effect.catchReason`, `catchReasons` or `unwrapReason`. A reason's tag is a code such as `Timeout`, `Disconnected`, `InvalidInput` or `Moderated`, or one of the reasons with fields of their own: `Http` (`status`, `retryAfter`, `body`), `Remote` and `RecorderDisabled` (`remoteCode`, `body`), `Native` (`backendMessage`), `IceFailed`, `TransportFailed` and `ClipEnded`.
-
-`context.outcome` says whether the remote may have applied the request: `not-submitted`, `unknown` or `replied`. `isRetryable` is true for backpressure, a connection lost before dispatch, and an HTTP refusal for now (a 5xx, 408, 429 or a named `Retry-After`), and never when the outcome is `unknown`, since the remote may already have applied it. A request whose token could not be had in time was never sent, and a create answered with a 5xx may have allocated a session, so its allocation is `unknown`.
-
-```ts
-import { Effect } from "effect";
-import type { H3 } from "reactor-effect-client";
-
-export const enqueue = (provider: H3.Provider, request: H3.Request) =>
-  provider.enqueue(request).pipe(
-    Effect.map((acceptance) => acceptance.clip.clip_id),
-    // Nothing was sent: this deployment takes no reference audio.
-    Effect.catchReason("CommandFailure", "UnsupportedCapability", () => Effect.succeed(undefined)),
-  );
-```
-
-`message` is written by the library and never holds provider or payload text, so spans and logs that record it stay payload-free. Provider and native text is kept only in `Redacted` fields for explicit inspection (`body`, `backendMessage`, `context.detail`) and never enters the cause chain that exporters render. Persist a failure as `ReactorError.FailureSummary`, never the error itself.
-
-## Tracing
-
-The client traces through Effect's `Tracer`, so any tracer the application provides, such as `OtlpTracer`, receives its spans. An operation a caller can cancel has a client span at the call: `Reactor.create` and `Reactor.attach`, `Session.connect` and `Session.reconnect` (with an event per phase, from `reactor.connect.described` to `reactor.connect.ready`; each attempt of a session's own reconnect is a `Session.reconnect` span too, the root of a trace of its own, linked to the span of the `create` or `attach` that acquired the session; that reconnect runs with the tracer, `ErrorReporter`s and clock the acquisition ran with), `Session.upload` and `Session.close`, and `CoordinatorClient.mintToken`, `pricing`, `inspect` and `terminate`. A request the session owns past its caller's wait, a command or control request (`Session.command`, `Session.control`) or an H3 enqueue (`H3.enqueue`, with `H3.reconcile`), has its span on its own execution, so the span ends with the request's outcome even after the caller stopped waiting. `Playout.submit`, the playout's other edits and `Playout.place` have spans, and so do `H3Source.open` and `H3Source.resume`. Termination returns a verdict rather than failing, so `CoordinatorClient.terminate` and `Session.close` carry it as `reactor.termination.attempted`, `confirmed` and `evidence`: a span that ended without error does not mean a paid session stopped. Spans name identity and outcome only, never a credential, command input, a reply, an upload's name or bytes, or provider text. Frames, streams and heartbeats are not traced.
-
-Playout retains each accepted item's submitting span identity, including its sampling decision, through delayed dispatch, retries and session renewal. Idempotent resubmission keeps the original identity. `Playout.command` runs under that parent and ends with the source command's outcome; item commands retain their ancestry after the submitter stops waiting. Autonomous commands, such as filler and ordinary autoplay, and `Playout.open` start separate traces linked to the playout's acquisition. Workers keep the playout's services and session scope; queued work carries trace identity rather than the caller's service context. Retained identities are removed when item history is forgotten. Applications provide exporters or Effect DevTools at their runtime boundary.
-
-`LocalSource.build` and `LocalSource.present` retain the clip's enqueue parent and sampling decision through their queues, while hooks run with the source's services and the clip's scope. SDK spans record sanitized renderer failures; the original diagnostic stays in the source event's `Redacted` provider field.
-
-H3 control and read spans cover validation, reply interpretation and state synchronization, so a provider refusal fails its H3 span even when `Session.command` successfully received the reply. `H3Source.recover` traces each recovery through reconnect and readback as a root linked to acquisition. Session command, control, upload and close spans carry the known session identity. Locally refused commands record `not-submitted` without creating owned execution. `CoordinatorClient.downloadClip` covers the playlist wait and segment download; its span carries session identity and excludes playlist and segment URLs.
-
-Work that an acquisition sets going and no caller causes starts a trace of its own, linked to the acquisition's span: a session's own `Session.reconnect`, `Playout.open`, an autonomous `Playout.command`, `H3Source.recover`, and the hooks of a `LocalSource` clip enqueued outside any span. Such a trace is unsampled when the acquisition's span was, so a session, source or playout acquired under an unsampled span exports none of its own work; under a sampled one, `MinimumTraceLevel` decides, as for any root.
-
-## H3
-
-`H3.make(session)` is the provider over a connected session created with `H3.modelName`. It targets the documented `0.5.5` schema of `reactor/h3-reference-to-video-turbo-realtime`: prompts with up to nine image references and three audio references, as owned bytes or earlier uploads. It reads the deployment's schema, requires only `enqueue`, `get_state` and `get_queue` to start, and fails any other command the deployment lacks as `UnsupportedCapability` before sending it (`provider.contract` says what it found). A request H3 would refuse is refused locally, `not-submitted`, before anything is uploaded; `H3.validateReference` and `H3.validateAudioReference` check a reference once for reuse, and the profile's constants (`requestSeconds`, `referenceLimits`, `audioReferenceLimits`, `canvases`) state the bounds.
-
-An enqueue is accepted by its correlated reply, or by the clip's metadata: metadata that came before the reply decides once the reply has stayed away `reconcileWindow` (5 seconds), and an enqueue whose reply is lost waits that long for it. One whose outcome stays `unknown` is never sent again, though later evidence within `reconcileWindow`, or on a later connection generation, can still prove its clip. `provider.operation(submission)` follows a committed clip through `accepted`, `reached("generated")`, `reached("started")` and `ended`, each naming the generation of its evidence. H3 replies to a command before it broadcasts the state the command changed, so a command that needs current facts waits for them; `snapshot`, `changes` and `observe` read them. A command's acknowledgement proves receipt, never a state change.
-
-## Playout
-
-`Playout.make(options)` (or `Playout.layer`) airs a schedule: the application submits keyed items into priority lanes, and one plan decides what to build, in what order, what to withdraw and when a replacement session takes over. A pure policy makes every decision; the service applies them one provider command at a time on each session, with sessions' commands running side by side, so a slow command, a filler enqueue's included, holds up only its own session. It wakes on a submission, a session's evidence or the plan's next deadline, and never polls. Sessions come from the `open` effect, called for the first session and for each replacement:
-
-- `H3Source.open({ tokens, canvas, holdLastFrame, onAllocated })` mints a token, allocates, runs `onAllocated` with the owner record (`H3Source.Allocation`, without a token), connects and sets H3 up: autoplay off until the playout turns it on, the last frame held between clips unless `holdLastFrame: false` flushes to black, and the canvas set before the first enqueue. Its lifetime is what remains of the create token's cap when it returns, counted from the allocation request, so the playout never plans past the session's end; an uncapped session never expires and is replaced only when lost. Its session reconnects a dropped connection itself, and the source follows it once, whoever reads its events: it gives the session `recovery` (20 seconds) to be ready again and H3 to be read afresh, waiting out a connection that drops again during that read, and otherwise counts the session lost; a session that will not come back, with `reconnect: false`, once moderation ended it or once it stops trying, is lost at once, with no `Reconnecting` before the loss. The playout sends the session nothing meanwhile.
-- `H3Source.resume({ allocation, tokens })` adopts a session its dead owner recorded, with tokens bound to it; a session the owner already set up gets only reads.
-- `LocalSource.open({ build, present, lifetime })` renders clips in this process, with H3's autoplay semantics, for locally rendered material and demos. `build` makes a clip's value, and its built length when that differs (`LocalSource.Rendered`), and `present` plays that value into the source's `video` and `audio`. Both run in a scope the clip owns, which closes once the clip leaves the source, so a finalizer releases what they made. A hook that fails with the application's own error fails that clip alone, reason `Clip` with the error `Redacted` in `provider`; one that dies stops the source, and the playout replaces its session. Without hooks, `buildRatio` gives a stand-in whose clips build for that share of their length and play for their length. `lifetime` caps the session, as a paid one is capped, so the playout renews it; it is unending by default.
-
-What an application can ask for:
-
-- **Items** (`submit`) in lanes listed highest first. A lane queues (the default), replaces its waiting items make-before-break, or skips while busy (`LaneBusy`), and a `cut: true` lane stops a lower lane's playing clip once its own is Ready. An item starts `Follow` (its lane's next boundary), `Asap`, `Manual` (held until `release`) or `At` a wall-clock instant, within an optional `notBefore`/`startBy` window; `WouldMissDeadline` refuses one the plan cannot start in time. A start already under way at a deadline, a clip the provider holds armed for its seam or a `play` of it in flight, may still land, up to a command's round trip past it. A request outside H3's documented limits, its references included and its metadata counted as sent, wrapped with the item's key and H3's own identity, is refused with `InvalidItem`, naming each field and limit, and nothing is sent for it.
-- **Edits**: `submitGroup` (parts that build in order and air back to back), `insert` before or after any item (it takes the anchor's lane, place, group and start; after an `At` anchor, past the anchor's time it airs at the next boundary rather than go with the anchor's staleness), `replace` a queued item make-before-break (the replacement keeps the clip the item `follows`; if the item starts first, the replacement is dropped as `withdrawn`), `edit` for several edits applied together with the old clips as cover until the new ones are Ready, `withdraw` and `drain`. A batch holds what it adds behind the clips queued until all of it is Ready, though with nothing else to air the provider may start one first, and a replacement builds ahead of every other item waiting in its lane except an `Asap` one, so an insert batched with a replacement airs only once both are Ready, and one with a firm `startBy` is likely refused or dropped `late`. Send an urgent insert alone, and a replacement that should air after it as a second edit once the insert is `Building`. Keys are idempotent: the same spec returns the same handle, a changed one fails with `KeyMismatch`. Withdrawing a group key answers `withdrawn` if any part was, else `already-started` if any started; once the playout has stopped, a withdrawal answers from what became of the item or the parts.
-- **Filler** in the bottom lane keeps a runway of Ready seconds between `floor` and `target`, sized to tile the gap before an `At` anchor, or, where a tile would air past a capped session's cap, to what airs before it. Once three builds were measured, filler's counted, the floor covers one p95 build, so a refill started there is Ready in time. A tile asks for no less than its share, and H3 aligns it up to its frame grid, so the anchor may air up to 0.7 s late for each tile. The plan counts a filler clip not yet sent at the length it asks `filler.clip` for (`FillContext.seconds`), so a callback that returns another length moves that tiling, and `place`'s `startsAt`, by the difference. By default (`protect: "air"`) filler also goes before queue order: an item whose p95 build, at the continued rate if it continues a clip, would outlast the air secured (`state.runwaySeconds`) waits for one filler clip that builds sooner than it does, long enough within `lengths` to cover the rest and a second more, and airing no longer than the item builds unless `lengths.min` is longer, and the floor covers the next such item's build and a second more. An item waits for one such clip at most, and once more on a session it is carried to. One with a time to meet goes at once: one with an `At` start or a `startBy`, and, as its time is now, one with an `Asap` start, a released `Manual` one, or one on a lane that cuts. `protect: "order"` builds each item as soon as it may: it airs sooner, but the air may go dark while it builds. A filler request outside H3's documented limits fails the playout with `InvalidFiller`, naming the clip's index, since asking again would get the same request. `Playout.lineup(filler)` is one `line` lane above it.
-- **Cues** fire at offsets from a clip's observed start or end, and `continuity: "previous"` builds a clip continuing from the one that airs before it.
-- **Placement**, for a clip whose words depend on the clips around it, such as an acknowledgement written for what was just said. `place({ key, seconds, continuity, submitIn })` projects where the clip would land if the caller submits it `submitIn` from now, once it is written: the clip it would follow (`after`), the one projected after it (`before`), when it would start, how to submit it (`anchor`: `insert` after that item, or `"next"`, an `Asap` submission to the lowest lane) and how much of that is projected (`basis`). Submitted with `follows: placement.after`, the clip airs right after that clip, across a renewal too, or is dropped as `displaced`: once that clip goes without airing, once another clip, filler included, starts after it first, as soon as it is projected unable to be Ready by that clip's end, or once it is Ready and would air before that clip. It waits, not airing, until that clip has aired, and is built only while the air ahead of it outlasts its build (before builds are measured, once that clip is Ready ahead of it); autoplay is fenced before its build, once a clip the provider reported starting plays on that session, so an early end cannot air it before that clip. One not Ready, on a session still open, when that clip ends, fails on air or is lost on air with its session, is dropped as `displaced`; a planned switch keeps it. While it waits on a session, that session starts its clips with a provider command, a round trip after each boundary that `startsAt` does not project, so a command whose outcome is unknown can hold the air there dark until the provider's reply deadline. A follower of an item in a pending batch may be built and then dropped before the batch commits. It gets no filler cover, with `continuity` builds independent rather than miss, and a replacement keeps it. A cutting lane refuses it, and a firm window on it is likely refused, since admission projects it behind everything queued. `place` projects the plan as it is, at the median build rates, and reserves nothing: `before` is not enforced, since a clip submitted after the call may come between, and a clip placed after a filler clip not yet sent airs only at the next gap in what ranks above filler. It answers a boundary only with the clip projected Ready a readiness margin and one provider command before it, and on a replacement only if it airs there before that session's cap. It skips an answer whose submission its lane would refuse, or that would drop a clip submitted already, though the plan may change before the caller submits; it answers null when no boundary is makeable. A clip not built yet counts at the length the last clip that asked for as much aired at, so `startsAt` may be off by up to 0.7 s for each clip ahead at a length not asked for before. On a drop, place it and write it again.
-
-The playout reports what happened, kept apart from what was asked. `asRun` gives an item's statuses: Accepted, Building, Ready, Started, Ended, Dropped, Failed, `Unobserved` (acknowledged, start never seen) or `Unknown` (sent, acknowledgement never seen). An `Unknown` is never sent again and no time is invented for it. A handle's `started` resolves with the item's start or how it settled without one (`Playout.NotStarted`), and its `outcome` with how it settled (`Playout.Settled`): Ended, Dropped, Failed, Unobserved, or an `Unknown` once it is terminal. `Failed` says why with a tagged `reason`: `Clip` (the provider failed the clip; its own words stay `Redacted` in `provider`, out of `message`, logs and spans), `Command` (a command for it failed, with its `CommandFailure`; an enqueue refused unsent because its session was not ready is sent there again once what the session reports has changed, as a reconnect changes it, and fails only if refused again while the session reports itself ready), `Lost` (its session was lost while it played, or before it was built twice), `Moderated` (with the verdict's `categories`) or `Closed`. `events` adds cues, session events (`Opened`, `Switched`, `Replaced`, `SetupFailed`, `Moderated`, and `Reconnecting` and `Reconnected { afterMillis }` around a dropped connection), each filler clip's start and end (`Filler`), `ReaderOverflow` when a reader of a session's video or audio falls behind its bound (with the session's `MediaPressure`), and `Starved`. `state` gives the clip on air (`playing`: its key, `"filler"` or `"other"`, when its start was seen, and its length when known), the lanes, the sessions, the runway (the air secured, on the session on air and then on its replacement) and the build estimates it learned. `video` and `audio` are the on-air picture and sound across renewals, as decoded frames, and end when the playout stops; on a host with only platform tracks, such as a browser, they fail with `UnsupportedCapability`. `cleanup` holds the close reports of retired sessions and of opens that failed after allocating: every one that may still bill, and the latest others.
-
-**Renewal.** A capped session builds only what airs before its cap. The replacement opens `lead` (30 seconds) before the cap ends, and never earlier, so what cannot air before the cap waits for it; it takes new work, and takes the air at a boundary once the retiring session is idle and a `grace` (250 ms) has passed since its last clip ended or failed on air. A session lost before a planned switch is closed, and the clips it never aired are rebuilt on the next one. An enqueue whose outcome stays unknown holds no build slot, since H3 builds in order, and after `unknownTimeout` (60 seconds) it makes its session indeterminate, so a replacement takes over. A failed setup, an open that fails or a session lost before any clip sent to it started, is followed by the next open a second later for each failure in a row, but at most `maxSetupFailures` (3) seconds later, and never sooner than a refusal's `Retry-After`. A run of failed setups ends only when a session airs its first clip; more clips on the session already on air don't end it. After `maxSetupFailures` that count, the playout fails and closes every session, unless a session still holds the air. An open refused with nothing allocated, such as with a 4xx, billed nothing: refused while a session holds the air, it counts neither then nor later, and it is asked again after its delay however often it is refused. Once enough that count have failed while a session holds the air, the playout airs on, opens nothing until that session ends, and tries once more, once the last failure's delay and `Retry-After` have passed.
-
-**Supervision.** `failure` completes with why the playout stopped: a session it could not open or keep, `InvalidFiller`, `Moderated`, or `Closed` when its scope closed. A defect that stopped it, such as a throwing `filler.clip`, is the defect `failure` dies with, and every defect the playout catches, in its plan, an open or a source, goes to Effect's `ErrorReporter`, a `Source` method that throws when called included. Whether that command applied is then unknown, and the playout goes on: an enqueue is never sent again, and a replacement takes over unless a read of the session's queues shows its clip within `unknownTimeout`; a `remove` is asked again once the session's queues change, and a `move` a second later; after a `setAutoplay` the session's autoplay is unknown, and the value the playout wants goes again, a second later if it is the one that died and at once if not, while that session is sent nothing else but, as it retires, the removal of its filler once its replacement has an item Ready; a `stop` or `play` ends its cut, and the cutter airs at the next boundary, and a `play` that starts a clip on a session a follower fences is asked again once that session's queues change or a second later. A supervisor restarts a stopped playout by failing with its reason under a `Schedule`, which leaves a defect alone:
-
-```ts
-import { Effect, Schedule } from "effect";
-import { Playout } from "reactor-effect-client";
-
-export const supervised = (options: Playout.Options) =>
-  Effect.gen(function* () {
-    const playout = yield* Playout.make(options);
-    // Submit the programme here; closing the scope closes the playout and its sessions.
-    return yield* Effect.flatMap(playout.failure, Effect.fail);
-  }).pipe(Effect.scoped, Effect.retry(Schedule.exponential("5 seconds")));
-```
-
-**Moderation.** Reactor terminates a session given flagged content, and the verdict names no clip, category or request; hosted H3 sent it about a second after answering the enqueue. The playout blames the item whose enqueue was sent there last, settles it `Failed` with reason `Moderated` and never builds it again, and fails after `maxModerations` (2) moderated sessions rather than keep opening paid ones. A verdict need not come, so a clip lost unbuilt with two sessions in a row fails too; a clip that was built passed screening and is rebuilt however often it is lost.
-
-**On hosted H3.** `stop` names no clip and lands after its reply, so a cut is a step at a time: the playout turns autoplay off, stops the clip it cuts if that still plays, waits for H3 to report it ended, looks again, plays the cutter and restores autoplay. A cutter withdrawn meanwhile is removed instead of played. The stepped cut passed on hosted H3 (the 0.8.0 `show` run) with one `stop` and a 168 ms pause, with no dark frame. A continued build took 5.45 s against about 2.2 s for an independent 5 s clip, so the plan projects it and, when it would be late, continues from the clip that will be playing then. H3 falls back to an independent clip without saying so, so as-run never claims continuity. A `Started` event is a provider fact, not proof that a frame was presented or encoded.
-
-## Testing with ReactorTest
-
-`ReactorTest.layer({ timing })` provides the `HttpClient` and `PeerFactory` that `CoordinatorClient.layer()` and `Reactor.layer()` need, backed by an in-memory coordinator and an H3 model that speaks the real wire protocol, so an application and every SDK layer above it run unchanged without a paid session. `layerCoordinator` is the HTTP API alone, with no host. Every delay is an `Effect.sleep` drawn from `timing`: `Timing.fixed` for a scenario that names the delays it depends on, `Timing.random({ seed })` for wide ranges that repeat for a seed, and `Timing.hosted` for the ranges paid runs measured, for demos. Under `TestClock`, fork `ReactorTest.flow()` into the test's scope and minutes of programme run in milliseconds; on the live clock it plays in real time.
-
-`ReactorTest` keeps Reactor's documented rules and the facts paid runs observed: tokens bound to sessions, expiry and unbound tokens refused, the API key accepted as a bearer only to read and end sessions, several connections per session, `INACTIVE` for 30 seconds after the last one drops, five concurrent sessions and ten a minute refused with `429`, H3's request, reference and metadata limits, a `stop` that lands after its acknowledgement, moderation as observed and per-second billing. The `ReactorTest` service reports `sessions`, `billing` and a `log` of every command, message and request, and `inject` arms a `Fault`: a refused allocation, connect or reconnect, the last with a `Retry-After` if asked, a spent token that allocates again or answers with its session, a create reply that names no session or a create never answered, a dropped or late reply, a stalled or failed build, a disconnect or expiry, a cap Reactor ignores, a slow or ignored `DELETE`, a read that answers 404 for a session still running, black, frozen or absent video, no audio, an invalid image, an over-granting token, a late recording or a moderation verdict. `ReactorTest.pngBytes` and `wavBytes` make reference media H3's local checks accept, and `frameOf` names the clip a simulated frame belongs to. A session on `ReactorTest` reconnects a dropped connection on its own, as on Reactor; `Reactor.layer({ reconnect: false })` keeps a disconnect down.
-
-It models what H3 does, not hosted performance, billing, TURN relays or interop: those need the [hosted checks](https://github.com/mannyc2/reactor-effect-client/tree/main/integration/hosted).
-
-## Declarations without DOM types
-
-Effect `4.0.0-rc.117` itself references the global `TextDecoderOptions` type in its channel declarations. A strict Node project that deliberately omits DOM types may need to declare that standard interface. The workspace's installed-package check first proves this is the sole upstream diagnostic, then applies a test-only declaration; it does not enable `skipLibCheck` or hide SDK declaration errors.
+- **A session belongs to a scope.** Closing the scope closes the session; a session this process
+  created is terminated and the end is confirmed with an independent read. `Session.mayStillBill`
+  says whether a close report leaves anything that may still bill.
+- **A session never sees the API key.** It runs on tokens minted for it and refreshes them before
+  they expire. A creating token must state its session's cap with `maxSessionDuration`.
+- **A dropped connection reconnects on the same session**, as a new connection generation that
+  allocates nothing and replays no command.
+- **Every failure is tagged** with a `reason`, and a failed command carries its dispatch outcome:
+  `not-submitted`, `replied` or `unknown`. Nothing resends an `unknown` command.
+- **H3 plays nothing until told**: call `setAutoplay(true)` or `play`, or let `Playout` drive it.
+- **`Playout` keeps H3 on air**: it renews sessions before their cap and switches at a clip
+  boundary, with lanes, filler, windows, cues, edits and placement. In paid runs of the 0.8.0
+  library on hosted H3 (2026-09-28 and 09-29), seams measured 46–169 ms with no dark frame and a
+  planned switch 420–432 ms. On 0.9.0 only the one-session `showreel` check has run there (seams of
+  89–120 ms, 2026-10-01); its renewal and placement have run only on `ReactorTest`.
+- **`ReactorTest` runs the same application offline**, at hosted timing, or on `TestClock` where
+  an hour of programme with six renewals takes about 20 seconds, with faults to inject.
+- **A provider `Started` fact is not proof** that a frame was presented or encoded.
+- **Every operation a caller can cancel is traced** through Effect's `Tracer`, and queued playout work
+  stays under the span that submitted it. Spans name identity and outcome, never credentials, inputs
+  or provider text. [Tracing](https://mannyc2.github.io/reactor-effect-client/reference/tracing/)
+  lists them.
 
 ## Example
 
-[`examples/`](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/client/examples) is an application service written against `Playout`, run offline on `ReactorTest` and tested on Effect's test clock with faults standing in for a failed build and a lost reply. The repository's [other examples](https://github.com/mannyc2/reactor-effect-client/tree/main/examples) include a server that broadcasts one renewing playout to many browsers.
+[`examples/`](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/client/examples)
+is an application service written against `Playout`, run offline on `ReactorTest` and tested on
+Effect's test clock. The repository's [other examples](https://github.com/mannyc2/reactor-effect-client/tree/main/examples)
+include a terminal viewer and a 24/7 channel broadcast to many browsers.
 
 ## Development
 
-This package is built and tested from the workspace root; see the repository [CONTRIBUTING](https://github.com/mannyc2/reactor-effect-client/blob/main/CONTRIBUTING.md). Inside `packages/client`, `bun run test` runs the portable suite under Vitest and `bun run typecheck` checks the source closure both with browser types and with Node types. The wire codec is generated from the protocol sources in [`wire/`](./wire/README.md).
+This package is built and tested from the workspace root; see the repository's
+[CONTRIBUTING](https://github.com/mannyc2/reactor-effect-client/blob/main/CONTRIBUTING.md). Inside
+`packages/client`, `bun run test` runs the portable suite and `bun run typecheck` checks the source
+closure with browser types and with Node types. The wire codec is generated from the protocol
+sources in [`wire/`](./wire/README.md).
 
 ## License
 
-Apache-2.0. Third-party and derived-source notices are retained in [NOTICE](./NOTICE) and [`notices/`](./notices/).
+Apache-2.0. Third-party and derived-source notices are retained in [NOTICE](./NOTICE) and
+[`notices/`](./notices/).

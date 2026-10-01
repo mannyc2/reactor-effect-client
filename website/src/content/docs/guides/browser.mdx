@@ -1,0 +1,314 @@
+---
+title: Sessions in the browser
+description: "A page that runs its own session over RTCPeerConnection, with a server that only mints tokens."
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Give each visitor a session of their own: the page allocates and connects an H3 session over the
+browser's WebRTC and plays it, and your server's only job is to mint the session's tokens.
+
+## The pieces
+
+- **A token server.** It holds the API key and answers one request: without a session id, a token
+  that may create one session, capped; with one, a fresh token bound to that open session. The
+  page never sees the key.
+- **The page's `Tokens`.** `reactor.create` takes `tokens: { create, bind }`, two effects that ask
+  your server. The session starts on `create`'s token and asks `bind` for the next before each
+  expires, so it outlives its first token.
+- **One runtime.** `ManagedRuntime.make(layer)` builds the SDK's services once; button handlers are
+  ordinary DOM code that call `runtime.runPromise`. Building `BrowserPeer.layer` checks for
+  `RTCPeerConnection` and `MediaStream` and fails with `UnsupportedHost` without them, before any
+  session is paid for.
+- **Crypto.** `H3` needs Effect's `Crypto` service for request identities. Effect's
+  `@effect/platform-browser` provides it as `BrowserCrypto.layer`; this page builds the same layer
+  over Web Crypto, so it needs no further package.
+- **Tracks.** `BrowserMedia.tracks(session)` gives the current connection's tracks as the browser's
+  own `MediaStreamTrack`s, and `BrowserMedia.play(track, element)` plays a clone of one in a media
+  element until its scope closes.
+- **A scope the page holds.** The session, its peer, its tracks and their playback all live in one
+  `Scope` the page keeps between clicks, so one close releases everything.
+
+## Build the page
+
+<Steps>
+
+1. **The token endpoint's contract,** shared by the server and the page as an Effect `HttpApi`:
+
+   ```ts
+   // Api.ts
+   import { Schema } from "effect";
+   import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+
+   /** A session token, as the page's `Tokens` needs it. */
+   export const SessionToken = Schema.Struct({
+     jwt: Schema.String,
+     expiresAt: Schema.Finite,
+     maxSessionSeconds: Schema.optionalKey(Schema.Int),
+   });
+
+   export class TokenUnavailable extends Schema.TaggedError<TokenUnavailable>()(
+     "TokenUnavailable",
+     { message: Schema.String },
+     { httpApiStatus: 503 },
+   ) {}
+
+   /** Without `session`, a token that may create one session; with it, one bound to that session. */
+   export class Api extends HttpApi.make("tokens").add(
+     HttpApiGroup.make("session", { topLevel: true }).add(
+       HttpApiEndpoint.post("token", "/api/token", {
+         payload: Schema.Struct({ session: Schema.optionalKey(Schema.String) }),
+         success: SessionToken,
+         error: TokenUnavailable,
+       }),
+     ),
+   ) {}
+   ```
+
+2. **The server mints tokens** with the key it reads from `REACTOR_API_KEY`. A creating token caps
+   its session at five minutes, so a page closed without cleanup leaves its session running no
+   longer than that:
+
+   ```ts
+   // server.ts
+   import { Config, Effect, Redacted } from "effect";
+   import { HttpApiBuilder } from "effect/unstable/httpapi";
+   import { CoordinatorClient, H3 } from "reactor-effect-client";
+   import { Api, TokenUnavailable } from "./Api.ts";
+
+   export const TokenHandlers = HttpApiBuilder.group(
+     Api,
+     "session",
+     Effect.fn(function* (handlers) {
+       const apiKey = yield* Config.Redacted("REACTOR_API_KEY");
+       const coordinator = yield* CoordinatorClient.make();
+       const tokens = coordinator.tokens({
+         apiKey,
+         modelName: H3.modelName,
+         maxSessionDuration: "5 minutes",
+         expiresAfter: "6 minutes",
+       });
+       return handlers.handleAll({
+         token: ({ payload }) =>
+           (payload.session === undefined ? tokens.create : tokens.bind(payload.session)).pipe(
+             Effect.map((grant) => ({
+               jwt: Redacted.value(grant.jwt),
+               expiresAt: grant.expiresAt,
+               ...(grant.maxSessionSeconds === undefined
+                 ? {}
+                 : { maxSessionSeconds: grant.maxSessionSeconds }),
+             })),
+             Effect.mapError(() => TokenUnavailable.make({ message: "no session token" })),
+           ),
+       });
+     }),
+   );
+   ```
+
+   Serve `HttpApiBuilder.layer(Api)` with these handlers through `HttpRouter.serve` and
+   `@effect/platform-node`'s `NodeHttpServer`, beside the page and its bundle; it needs an
+   `HttpClient` such as `FetchHttpClient.layer`. A real deployment authenticates and rate-limits
+   this endpoint, and binds only sessions its caller created: a creating token starts a paid
+   session, and a bound token commands, watches and ends its session.
+
+3. **The page's runtime,** built once, with the Web Crypto layer beside it:
+
+   ```ts
+   // WebCrypto.ts
+   import { Crypto, Effect, Layer, PlatformError } from "effect";
+
+   /** Effect's `Crypto` service over Web Crypto, which every secure context has. */
+   export const WebCrypto = Layer.sync(Crypto.Crypto, () =>
+     Crypto.make({
+       randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
+       digest: (algorithm, bytes) =>
+         Effect.tryPromise({
+           try: () =>
+             globalThis.crypto.subtle
+               .digest(algorithm, Uint8Array.from(bytes))
+               .then((digest) => new Uint8Array(digest)),
+           catch: (cause) =>
+             PlatformError.systemError({
+               _tag: "Unknown",
+               module: "Crypto",
+               method: "digest",
+               cause,
+             }),
+         }),
+     }),
+   );
+   ```
+
+   ```ts
+   // page.ts
+   import { Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect";
+   import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+   import { HttpApiClient } from "effect/unstable/httpapi";
+   import { CoordinatorClient, H3, Reactor, ReactorError } from "reactor-effect-client";
+   import type { Session } from "reactor-effect-client";
+   import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
+   import { WebCrypto } from "./WebCrypto.ts";
+   import { Api } from "./Api.ts";
+
+   const runtime = ManagedRuntime.make(
+     Reactor.layer().pipe(
+       Layer.provide(CoordinatorClient.layer()),
+       Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, WebCrypto, BrowserPeer.layer)),
+     ),
+   );
+   ```
+
+   `CoordinatorClient.layer()` talks to `https://api.reactor.inc` with no key: the session's own
+   calls carry its token.
+
+4. **Start a session** on tokens from the server, in a scope the page keeps. The video plays as
+   soon as the session connects:
+
+   ```ts
+   interface Live {
+     readonly scope: Scope.Closeable;
+     readonly session: Session.Session;
+     readonly provider: H3.Provider;
+     readonly media: BrowserMedia.Tracks;
+   }
+
+   const start = Effect.fn("start")(function* (video: HTMLVideoElement) {
+     const api = yield* HttpApiClient.make(Api);
+     const token = (session?: string) =>
+       api.token({ payload: session === undefined ? {} : { session } }).pipe(
+         Effect.map((reply) => ({
+           jwt: Redacted.make(reply.jwt),
+           expiresAt: reply.expiresAt,
+           maxSessionSeconds: reply.maxSessionSeconds,
+         })),
+         Effect.mapError(() => ReactorError.ReactorError.fromCode("Http", "no session token")),
+       );
+     const scope = yield* Scope.make();
+     return yield* Effect.gen(function* () {
+       const reactor = yield* Reactor.Reactor;
+       const session = yield* reactor.create({
+         model: H3.modelName,
+         tokens: { create: token(), bind: token },
+       });
+       const provider = yield* H3.make(session);
+       yield* provider.setAutoplay(true);
+       const media = yield* BrowserMedia.tracks(session);
+       yield* BrowserMedia.play(yield* media.track("main_video"), video);
+       const live: Live = { scope, session, provider, media };
+       return live;
+     }).pipe(
+       Scope.provide(scope),
+       Effect.onError(() => Scope.close(scope, Exit.void)),
+     );
+   });
+   ```
+
+   A failed start closes the scope at once, which ends a session that was allocated.
+
+5. **Sound on its own click.** Browsers refuse unmuted playback that starts seconds after the
+   gesture that asked for it, and connecting takes seconds. So the video element is muted
+   (`<video autoplay muted playsinline>`) and plays at connect, and the audio waits for a click of
+   its own, in the session's scope:
+
+   ```ts
+   const soundOn = (live: Live, audio: HTMLAudioElement) =>
+     runtime.runPromise(
+       Effect.gen(function* () {
+         yield* BrowserMedia.play(yield* live.media.track("main_audio"), audio);
+       }).pipe(Scope.provide(live.scope)),
+     );
+   ```
+
+6. **Stop, and on `pagehide`.** Closing the session terminates it and returns its `CloseReport`;
+   closing the scope then stops the tracks and playback. Leaving the page does the same, then
+   disposes of the runtime. A start in progress is never doubled: a second Start would open a
+   second paid session that nothing could stop.
+
+   ```ts
+   const stop = (live: Live) =>
+     runtime.runPromise(
+       live.session.close.pipe(Effect.tap(() => Scope.close(live.scope, Exit.void))),
+     );
+
+   // The DOM side.
+   const video = document.querySelector("video");
+   const audio = document.querySelector("audio");
+   let live: Live | undefined;
+   let starting = false;
+
+   document.querySelector("#start")?.addEventListener("click", () => {
+     if (video === null || starting || live !== undefined) return;
+     starting = true;
+     runtime.runPromise(start(video)).then(
+       (started) => {
+         live = started;
+         starting = false;
+       },
+       () => {
+         starting = false;
+       },
+     );
+   });
+
+   document.querySelector("#sound")?.addEventListener("click", () => {
+     if (live !== undefined && audio !== null) void soundOn(live, audio);
+   });
+
+   document.querySelector("#stop")?.addEventListener("click", () => {
+     if (live === undefined) return;
+     const current = live;
+     live = undefined;
+     void stop(current).then((report) => {
+       document.title = report.remote.confirmed ? "ended" : "end not confirmed";
+     });
+   });
+
+   window.addEventListener("pagehide", () => {
+     const current = live;
+     live = undefined;
+     const closed = current === undefined ? Promise.resolve() : stop(current);
+     void closed.finally(() => runtime.dispose());
+   });
+   ```
+
+   A tab that closes may not finish its requests. The creating token's cap bounds what it leaves
+   running.
+
+</Steps>
+
+Bundle the page for the browser, for example with `bun build page.ts --target=browser`. The bundle
+of this page reaches no Node or native code.
+
+The [Studio example](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/browser/examples)
+is a page built this way, with its token server, that follows each clip from acceptance to its end.
+
+## Reconnects
+
+The session reconnects a dropped connection on its own. Tracks belong to one connection: after a
+reconnect the old clones stop, and `BrowserMedia.tracks(session)` returns the new connection's
+tracks. A page that should keep playing follows `session.changes` to the next snapshot whose status
+is `ready` and calls `BrowserMedia.play` again. `publish`, `unpublish`, `setTrackActive` and
+`setMaxBitrate` act on the connection they came from.
+
+## Pitfalls and limits
+
+- **Not yet run on hosted Reactor.** The browser package has no paid run. Its tests run the peer
+  and playback against DOM fakes on Node and Bun, and real Chrome has exchanged media with the
+  native host locally; see [hosted evidence](/reactor-effect-client/reference/hosted-evidence/).
+- **One session per visitor.** Each page holds a paid session, and an account runs five at once by
+  default. For many viewers of the same picture, run one
+  [channel](/reactor-effect-client/guides/channel/) on a server and stream it.
+- **No decoded frames.** A browser host has platform tracks only: `session.decoded` and a playout's
+  `video` and `audio` fail with `UnsupportedCapability`.
+- **Playing is not seeing.** `BrowserMedia.play` resolves once the element has started playing. It
+  refuses a track that is not live and an element that already has a source, and fails with
+  `Timeout` when starting takes longer than `playTimeout` (10 seconds by default).
+- **Message bounds.** The peer fails the connection with `Overflow` for a message larger than the
+  data channel's negotiated bound (at most 256 KiB), and refuses a send while more than 1 MiB waits
+  in the channel's buffer.
+- **Secure context.** WebRTC and Web Crypto need `localhost` or HTTPS.
+
+<Aside type="caution">
+  Anyone who can reach the token endpoint can start paid sessions on your account. Authenticate it,
+  rate-limit it, and keep the creating token's cap short.
+</Aside>

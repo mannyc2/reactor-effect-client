@@ -125,7 +125,7 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
     lines.push(`**Builds:** ${queue.builds.map((ms) => seconds(ms)).join(", ")}`);
     for (const [index, boundary] of queue.boundaries.entries())
       lines.push(
-        `**Boundary ${index + 1}:** ${boundary.edit} ${boundary.aimMs} ms before the end${boundary.refused === true ? " (refused)" : ""}; next ${boundary.nextClipId === boundary.expectedClipId || boundary.expectedClipId === undefined ? "as expected" : "unexpected"}${boundary.pause === undefined ? "" : `; pause ${boundary.pause.durationMs} ms (${boundary.pause.frames} frames, ${boundary.pause.dark} dark)`}`,
+        `**Boundary ${index + 1}:** ${boundary.edit} ${boundary.aimMs} ms before the end${boundary.refused === true ? " (refused)" : ""}; next ${boundary.nextClipId === boundary.expectedClipId || boundary.expectedClipId === undefined ? "as expected" : "unexpected"}${boundary.pause === undefined ? "" : `; pause ${Math.round(boundary.pause.durationMs)} ms (${boundary.pause.frames} frames, ${boundary.pause.dark} dark)`}`,
       );
   }
   const playout = evidence.playout;
@@ -133,7 +133,7 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
     lines.push(`**Order:** started ${playout.startOrder.join(", ")}`);
     for (const seam of playout.seams)
       lines.push(
-        `**Seam ${seam.ending} to ${seam.next}${seam.continued ? " (continued)" : ""}:** ${seam.pause === undefined ? "no pause measured" : `pause ${seam.pause.durationMs} ms (${seam.pause.frames} frames, ${seam.pause.dark} dark)`}; ${seam.darkFrames ?? 0} dark frames${seam.jump === undefined ? "" : `; join change ${seam.jump.change} against ${seam.jump.typical} (×${seam.jump.ratio})`}`,
+        `**Seam ${seam.ending} to ${seam.next}${seam.continued ? " (continued)" : ""}:** ${seam.pause === undefined ? "no pause measured" : `pause ${Math.round(seam.pause.durationMs)} ms (${seam.pause.frames} frames, ${seam.pause.dark} dark)`}; ${seam.darkFrames ?? 0} dark frames${seam.jump === undefined ? "" : `; join change ${seam.jump.change} against ${seam.jump.typical} (×${seam.jump.ratio})`}`,
       );
     if (playout.batch !== undefined)
       lines.push(
@@ -267,6 +267,28 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
   }
   const unconnected = evidence.unconnected;
   if (unconnected !== undefined) lines.push(...unconnectedLines(evidence, unconnected));
+  const showreel = evidence.showreel;
+  if (showreel !== undefined) lines.push(...showreelLines(showreel));
+  return lines;
+};
+
+/** `showreel`'s scenes, its seams on air, and its reel and the files made from it. */
+const showreelLines = (showreel: NonNullable<Evidence["showreel"]>): ReadonlyArray<string> => {
+  const lines = [
+    `**Scenes:** ${showreel.scenes.map((scene) => `${scene.key} ${scene.seconds} s`).join(", ")}; gaps on air ${showreel.gaps.map((gap) => `${Math.round(gap.toMs - gap.fromMs)} ms`).join(", ") || "none measured"}`,
+    `**Readers:** ${showreel.readerOverflows.length === 0 ? "never fell behind" : showreel.readerOverflows.map((overflow) => `${overflow.track} at ${seconds(overflow.atMs)}`).join(", ")}`,
+  ];
+  if (showreel.notRecorded !== undefined)
+    lines.push(`**Reel:** not recorded: ${showreel.notRecorded}`);
+  const recording = showreel.recording;
+  if (recording !== undefined)
+    lines.push(
+      `**Reel:** ${recording.frames} frames of ${recording.width}x${recording.height} at 24 fps (${seconds((recording.frames * 1000) / 24)}), ${recording.repeated} repeated, ${recording.superseded} superseded, ${recording.mismatched} of another size dropped; ${recording.audio === undefined ? "no sound" : `sound ${recording.audio.blocks} blocks at ${recording.audio.sampleRate} Hz, ${recording.audio.silenceMs} ms of silence added`}; ${recording.failure ?? `ffmpeg exited ${String(recording.exitCode)}`}`,
+    );
+  if (showreel.files.length > 0)
+    lines.push(
+      `**Files beside the evidence:** ${showreel.files.map((file) => `${file.name} ${(file.bytes / 1024).toFixed(1)} KiB`).join(", ")}${showreel.poster === undefined ? "" : `; poster at ${showreel.poster.atSeconds} s`}${showreel.loop === undefined ? "" : `; loop from ${showreel.loop.fromSeconds} s for ${showreel.loop.seconds} s`}`,
+    );
   return lines;
 };
 

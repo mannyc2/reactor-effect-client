@@ -1,0 +1,125 @@
+---
+title: Examples
+description: "Applications built on reactor-effect, from one clip in a file to a 24/7 channel: what each shows, and how to run it offline or live."
+---
+
+import { Aside, Badge, LinkCard } from "@astrojs/starlight/components";
+
+Every example is a small Effect application in the repository, typechecked against the packages on
+every change. Most run offline on `ReactorTest` with no API key. All but the rundown are written to
+run on hosted H3 with `REACTOR_API_KEY` set, where only the layer changes; no example has run there
+yet, though paid checks ran most of the SDK they use
+([hosted evidence](/reactor-effect-client/reference/hosted-evidence/)). Clone the repository and
+install once:
+
+```sh
+git clone https://github.com/mannyc2/reactor-effect-client && cd reactor-effect-client
+bun install && bun run build
+```
+
+<Aside>
+  Offline, the simulated H3 sends one flat colour per clip, so what you see is the SDK at work, not
+  the model's picture. Live examples need the native addon for your machine: npm brings it prebuilt
+  with `reactor-effect-native`, and in the repository `bun run native:build` builds it.
+</Aside>
+
+## Quickstart <Badge text="offline or live" variant="tip" />
+
+One H3 clip from prompt to its end, with its frames decoded in your process, in one file.
+[The quickstart page](/reactor-effect-client/start/quickstart/) walks through it.
+
+```sh
+node examples/quickstart/src/main.ts
+```
+
+<LinkCard
+  title="examples/quickstart"
+  href="https://github.com/mannyc2/reactor-effect-client/tree/main/examples/quickstart"
+/>
+
+## Terminal viewer <Badge text="offline or live" variant="tip" />
+
+H3 drawn in your terminal. Each frame is decoded in the process and drawn as 24-bit colour text about
+twelve times a second, while every clip of a playlist is followed from acceptance to its end. No
+browser is involved anywhere: this is what `reactor-effect-native` adds to Node and Bun.
+
+```sh
+cd examples/terminal
+node src/main.ts "A lighthouse on a sea cliff at dusk" "A neon-lit alley in the rain"
+```
+
+<LinkCard
+  title="examples/terminal"
+  href="https://github.com/mannyc2/reactor-effect-client/tree/main/examples/terminal"
+/>
+
+## Live channel <Badge text="offline or live" variant="tip" />
+
+Your own 24/7 AI channel. Viewers send prompts from a page, a house rotation fills the gaps, and
+`Playout` renews sessions before their cap so a renewal never takes the channel off air. The server
+decodes one paid session and broadcasts it to many viewers, and can restream it to Twitch, YouTube
+or X over RTMP (so far run against a local RTMP listener only; the channel's live mode has not run
+on hosted Reactor yet). The [channel guide](/reactor-effect-client/guides/channel/) explains each piece.
+
+```sh
+cd examples/livestream
+node src/main.ts            # then open http://127.0.0.1:3000
+```
+
+<LinkCard
+  title="examples/livestream"
+  href="https://github.com/mannyc2/reactor-effect-client/tree/main/examples/livestream"
+/>
+
+## H3 Studio <Badge text="in the browser" variant="tip" />
+
+A page that runs its own session: H3's queue live with its play, move, pop and stop controls,
+reference images validated once and reused, each clip's lifecycle, and failures shown with their
+dispatch outcome. Rehearse a failed build, a lost reply or a moderation verdict with one click.
+
+[Open the playground](/reactor-effect-client/playground/): Studio on `ReactorTest`, running in
+your tab, with no key and nothing billed. With an API key on its server, the same page is built to
+run on hosted H3 over `BrowserPeer`, which has not yet run on a paid session.
+
+```sh
+cd packages/browser/examples
+bun run start               # offline without REACTOR_API_KEY; open http://127.0.0.1:3000
+```
+
+<LinkCard
+  title="packages/browser/examples"
+  href="https://github.com/mannyc2/reactor-effect-client/tree/main/packages/browser/examples"
+/>
+
+## Capture <Badge text="live only" variant="caution" />
+
+A command line that generates one clip and writes its decoded frames and audio to an MP4 through
+ffmpeg, filling any dropped frame explicitly. It prints the most the run can cost before it
+allocates anything.
+
+```sh
+cd packages/native/examples
+REACTOR_API_KEY=rk_... node src/capture.ts --prompt "A red kite over a green hill" --out kite.mp4
+```
+
+<LinkCard
+  title="packages/native/examples"
+  href="https://github.com/mannyc2/reactor-effect-client/tree/main/packages/native/examples"
+/>
+
+## Rundown <Badge text="offline" variant="tip" />
+
+An application service written against `Playout`: it plays an ordered list of prompts and reports
+what became of each. Its tests run it on `ReactorTest` under `TestClock`, with faults standing in for
+a failed build and a lost reply, in a fraction of a second of real time.
+[Test offline with ReactorTest](/reactor-effect-client/guides/testing-offline/) builds on it.
+
+```sh
+cd packages/client/examples
+bun run start && bun run test
+```
+
+<LinkCard
+  title="packages/client/examples"
+  href="https://github.com/mannyc2/reactor-effect-client/tree/main/packages/client/examples"
+/>

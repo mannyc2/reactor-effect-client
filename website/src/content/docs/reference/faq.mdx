@@ -1,0 +1,92 @@
+---
+title: FAQ
+description: "Common questions about reactor-effect and Reactor."
+---
+
+## Is this an official Reactor SDK?
+
+No. reactor-effect is an independent project, Apache-2.0 licensed, and published to npm with
+provenance. The sessions it creates name it in their client info as
+`typescript-effect-independent`.
+
+## How does it relate to `@reactor-team/js-sdk`?
+
+They complement each other. Reactor's JavaScript SDK is the official client for browser contexts:
+it runs on Reactor's shared Rust core as WebAssembly, with typed packages per model, React hooks,
+awaited command replies and a typed error hierarchy.
+
+reactor-effect is for Effect applications, and adds:
+
+- sessions, tokens and failures as Effect services, scopes and typed error channels, where closing
+  a scope ends the session and confirms the end;
+- decoded frames and PCM in Node and Bun through a Node-API addon over Reactor's `reactor-webrtc`
+  crate, with no browser;
+- `Playout`, which keeps a channel on air across capped sessions;
+- `ReactorTest`, Reactor simulated in memory, so an application and its tests run offline.
+
+## Which models does it support?
+
+H3 Reference Turbo Realtime (`reactor/h3-reference-to-video-turbo-realtime`). FastH3 and Reactor's
+other models are not supported yet: `Reactor` and `Session` take any model name, but only H3 has a
+provider, a playout source and hosted runs. See
+[Limits](/reactor-effect-client/reference/limits/#models).
+
+## Do I need to know Effect?
+
+It helps. The SDK is written the way Effect's own packages are: services provided by layers, work in
+scopes, failures in the type. The [quickstart](/reactor-effect-client/start/quickstart/) is mostly
+`Effect.gen` and `yield*`, with a few `Stream`, `Config` and `Layer` calls and
+`NodeRuntime.runMain`. From ordinary code, such as a page's button handlers, build a
+`ManagedRuntime` once and call `runtime.runPromise`; the
+[browser guide](/reactor-effect-client/guides/browser/) does exactly that. Effect's own
+documentation is at [effect.website](https://effect.website).
+
+## What does it cost to try?
+
+Nothing, offline. `ReactorTest` runs every test, and every example but the capture, with no API key
+and no network. On hosted H3 a session bills from `ready` until it ends. Reactor's pricing API
+stated H3's rate as $0.035 a second on 2026-09-30 (its billing page still says per session-minute),
+so a session capped at two minutes costs at most $4.20. Reactor gives new accounts free credits,
+which expire 90 days after they are issued ([billing](https://docs.reactor.inc/resources/billing)).
+See [Going live](/reactor-effect-client/start/going-live/).
+
+## Which version does this site describe?
+
+This site follows the repository's `main` branch, which can include changes awaiting release.
+Check [npm](https://www.npmjs.com/package/reactor-effect-client) for the latest published version
+and the [changelog](https://github.com/mannyc2/reactor-effect-client/blob/main/CHANGELOG.md) for
+its changes. The three packages share one version; pin it, and Effect, exactly.
+
+## Has it run against hosted Reactor?
+
+Yes: 22 paid runs and 28 sessions from 2026-09-24 to 2026-10-01, on the 0.3.0-rc.0 to 0.9.0
+libraries, each listed with its commit and result in
+[hosted evidence](/reactor-effect-client/reference/hosted-evidence/). On 0.9.0 only the one-session
+`showreel` check has run, from a checkout with the published addon. Its published client packages,
+the browser package and the in-process native host under Node have not run there yet.
+
+## Can I run it in the browser?
+
+Yes, with `reactor-effect-browser`: a page runs its own session over `RTCPeerConnection` on tokens
+from your server. It is built to run on hosted H3; its tests run against DOM fakes, and real Chrome
+has exchanged media with the native host locally, but it has not yet run on a paid session. For
+many viewers of one picture, run a [channel](/reactor-effect-client/guides/channel/) on a server
+instead.
+
+## Do I need a Rust toolchain for the native package?
+
+No. The addon is prebuilt for Linux x64 (glibc) and macOS arm64 and ships in a package per
+platform, which the package manager picks. Building it from source is for working on the addon
+itself.
+
+## How do I report a security issue?
+
+Privately, through the repository's private security advisory reporting, as
+[SECURITY.md](https://github.com/mannyc2/reactor-effect-client/blob/main/SECURITY.md) describes,
+with the affected version, the impact and how to reproduce it. Never put credentials, tokens or
+session material in a public issue.
+
+## Where do I report a bug or ask a question?
+
+In the repository's [issues](https://github.com/mannyc2/reactor-effect-client/issues). For a hosted
+session that misbehaved, include its session id: Reactor can find it from that.

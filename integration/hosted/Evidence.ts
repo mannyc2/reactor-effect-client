@@ -797,6 +797,62 @@ export const ShowRecord = Schema.Struct({
 });
 export type ShowRecord = typeof ShowRecord.Type;
 
+/** What a recording handed ffmpeg, and how ffmpeg ended: counts only, never a frame or a sample. */
+export const Recording = Schema.Struct({
+  width: Schema.Int,
+  height: Schema.Int,
+  /** Frames written, 24 a second from the recording's start. */
+  frames: Schema.Int,
+  /** Written frames that repeat the one before, no new frame having arrived by their time. */
+  repeated: Schema.Int,
+  /** Frames that arrived but were not written, a later one arriving within the same frame's time. */
+  superseded: Schema.Int,
+  /** Frames dropped for a size or format other than the first frame's, which raw video keeps. */
+  mismatched: Schema.Int,
+  audio: Schema.optionalKey(
+    Schema.Struct({
+      sampleRate: Schema.Int,
+      channels: Schema.Int,
+      blocks: Schema.Int,
+      /** Silence written where no sound arrived: before the first block, and for blocks the host dropped. */
+      silenceMs: Ms,
+    }),
+  ),
+  /** How ffmpeg exited; absent when it never ran. */
+  exitCode: Schema.optionalKey(Schema.Int),
+  /** Why the recording failed, in the harness's words. */
+  failure: Schema.optionalKey(Schema.String),
+});
+export type Recording = typeof Recording.Type;
+
+/**
+ * `showreel`: footage recorded on one session. The scenes it asked for, the
+ * gaps between them on air, any reader that fell behind, and what was
+ * recorded and made beside the evidence, by file name and size: never a
+ * path, a frame or a sample. The items and their seams are in `playout`.
+ */
+export const ShowreelRecord = Schema.Struct({
+  /** Each scene's key and the length it asked for, in the order they were submitted. */
+  scenes: Schema.Array(Schema.Struct({ key: Schema.String, seconds: Schema.Finite })),
+  /** Every gap on air between one scene's end and the next one's start. */
+  gaps: Schema.Array(
+    Schema.Struct({ ending: Schema.String, next: Schema.String, fromMs: Ms, toMs: Ms }),
+  ),
+  /** Each reader of the playout's picture or sound that fell behind. */
+  readerOverflows: Schema.Array(Schema.Struct({ track: Schema.String, atMs: Ms })),
+  /** Why nothing was recorded: this machine's ffmpeg cannot, which only a rehearsal accepts. */
+  notRecorded: Schema.optionalKey(Schema.String),
+  /** The reel's span on air: from the first scene's start to the last one's end. */
+  reel: Schema.optionalKey(Schema.Struct({ fromMs: Ms, toMs: Schema.optionalKey(Ms) })),
+  recording: Schema.optionalKey(Recording),
+  /** Each file made beside the evidence: the reel, its poster and its loop. */
+  files: Schema.Array(Schema.Struct({ name: Schema.String, bytes: Schema.Int })),
+  /** Where the poster and the loop come from, in seconds into the reel. */
+  poster: Schema.optionalKey(Schema.Struct({ atSeconds: Schema.Finite })),
+  loop: Schema.optionalKey(Schema.Struct({ fromSeconds: Schema.Finite, seconds: Schema.Finite })),
+});
+export type ShowreelRecord = typeof ShowreelRecord.Type;
+
 /**
  * A create's answer: `allocated`; `the same session` when the reply named the
  * session its token had made; or the reason the create failed with, the SDK's
@@ -1114,6 +1170,7 @@ export const Evidence = Schema.Struct({
   adoption: Schema.optionalKey(AdoptionRecord),
   show: Schema.optionalKey(ShowRecord),
   unconnected: Schema.optionalKey(UnconnectedRecord),
+  showreel: Schema.optionalKey(ShowreelRecord),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -1138,6 +1195,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   adoption: ["adoption"],
   show: ["playout", "show"],
   unconnected: ["unconnected"],
+  showreel: ["playout", "showreel"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */

@@ -1,0 +1,209 @@
+---
+title: Cost control
+description: "Session caps, confirmed termination and budgets: how the SDK keeps a paid session from billing past its use."
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Know the most a session can cost before you allocate it, and know when it has stopped billing, even
+after the process that owned it crashed.
+
+At the rate Reactor's pricing API stated for H3 on 2026-09-30, $0.035 a second, a session bills
+$2.10 a minute and $126 an hour from `ready` until it is terminated, idle or not. See
+[Going live](/reactor-effect-client/start/going-live/) for the rate and Reactor's account limits.
+
+## What the SDK does for you
+
+- **A creating token states its session's cap.** `coordinator.tokens` and `mintToken` refuse a token
+  that may create sessions unless it names `maxSessionDuration`: one second to a day, or
+  `"unlimited"` written out. Reactor terminates a capped session at its cap, after its token expires
+  too. A grant Reactor echoes wider than asked is refused (`Protocol`), and a narrower one caps the
+  session at what it grants.
+- **Termination is confirmed, not assumed.** `session.close` sends the `DELETE`, then reads the
+  session once, independently, since a `DELETE` response alone proves nothing: only a read that
+  finds it gone or `CLOSED` confirms it, and any other answer leaves `confirmed` false and
+  `Session.mayStillBill` true. The `CloseReport`'s `remote` says what happened: `attempted`,
+  `responseReceived`, `confirmed`, the `evidence` (`"absent"` or `"terminal"`), the `DELETE` status
+  and the state read. Only `CLOSED` is terminal: a session that reads `INACTIVE` is still live and
+  billed.
+- **`Session.mayStillBill(report)`** is true when this process owned the session and no read
+  confirmed its end, or when it asked for an allocation whose answer, and so whose id, never came.
+  An `AcquisitionFailure` carries the same report in `cleanup`, and a playout's `cleanup` keeps every
+  report that may still bill.
+- **Owner records.** `onAllocated` runs after allocation and before the session connects, so a
+  supervisor can write down who owns it first. If the hook fails, the session is closed and the
+  acquisition fails with the close report. `H3Source.open` hands it an `H3Source.Allocation`: the
+  session id, the model and `endsAt`, when its cap ends. It holds no token.
+- **A crashed owner's session can be ended or adopted.** With the API key,
+  `coordinator.terminate(sessionId)` ends any session of the account and confirms it.
+  `H3Source.resume({ allocation, tokens })` adopts one with tokens bound to it, and
+  `reactor.attach({ sessionId, tokens, adopt: true })` takes over a raw session's lifetime.
+- **No pool of sessions.** The SDK keeps nothing warm. If you pool sessions, Effect's
+  `Pool.makeWithTTL` over `reactor.create`, with `min: 0` and a short `timeToLive`, closes a session
+  left idle; `Pool.make` keeps every session, and its bill, until the pool's scope closes.
+
+On hosted Reactor, all 27 paid sessions of the 21 runs from 2026-09-24 to 09-29 ended with their
+termination confirmed. Where the runs timed it, `CLOSED` read 0.63–0.86 s after the `DELETE`
+([hosted evidence](/reactor-effect-client/reference/hosted-evidence/)).
+
+## A budgeted, recorded session
+
+<Steps>
+
+1. **Price the cap** before anything is allocated:
+
+   ```ts
+   import { Effect, FileSystem, Ref, Schema } from "effect";
+   import {
+     CoordinatorClient,
+     H3,
+     H3Source,
+     Playout,
+     Reactor,
+     ReactorError,
+     Session,
+   } from "reactor-effect-client";
+
+   const mostItCanCost = Effect.fn("mostItCanCost")(function* (capSeconds: number) {
+     const coordinator = yield* CoordinatorClient.CoordinatorClient;
+     const rate = yield* CoordinatorClient.modelRate(yield* coordinator.pricing, H3.modelName);
+     return (capSeconds * rate.creditsPerSecond) / rate.creditsPerDollar;
+   });
+   ```
+
+   On 2026-09-30, `mostItCanCost(120)` is $4.20.
+
+2. **Record the owner before the session connects.** Each allocation is appended as a line of JSON,
+   encoded by the record's own Schema; if the write fails, the session is closed unconnected:
+
+   ```ts
+   const ownersFile = "owners.jsonl";
+   const OwnerLine = Schema.fromJsonString(H3Source.Allocation);
+
+   const recordOwner = Effect.fn("recordOwner")(function* (allocation: H3Source.Allocation) {
+     const fs = yield* FileSystem.FileSystem;
+     const line = yield* Schema.encodeEffect(OwnerLine)(allocation);
+     yield* fs.writeFileString(ownersFile, `${line}\n`, { flag: "a" });
+   });
+
+   const open = Effect.gen(function* () {
+     const coordinator = yield* CoordinatorClient.CoordinatorClient;
+     return yield* H3Source.open({
+       tokens: coordinator.tokens({ modelName: H3.modelName, maxSessionDuration: "30 minutes" }),
+       onAllocated: ({ allocation }) => recordOwner(allocation),
+     });
+   });
+   ```
+
+   A line reads `{"sessionId":"…","ownership":"owned","model":"reactor/h3-reference-to-video-turbo-realtime","endsAt":1790815443.619}`.
+
+3. **Budget the sessions.** A playout calls `open` for its first session and every replacement.
+   Count them, and refuse past a limit with a failure that allocated nothing:
+
+   ```ts
+   const withSessionBudget = <R>(
+     limit: number,
+     openOne: Effect.Effect<Playout.Source, ReactorError.ReactorFailure, R>,
+   ) =>
+     Effect.map(Ref.make(0), (opened) =>
+       Ref.getAndUpdate(opened, (count) => count + 1).pipe(
+         Effect.flatMap((count) =>
+           count < limit
+             ? openOne
+             : Effect.fail(
+                 ReactorError.AcquisitionFailure.from(
+                   ReactorError.ReactorError.fromCode(
+                     "InvalidState",
+                     "the session budget is spent",
+                   ),
+                   Reactor.noAcquisition,
+                 ),
+               ),
+         ),
+       ),
+     );
+   ```
+
+   `const budgeted = yield* withSessionBudget(4, open)` gives an `open` for `Playout.make`. Past the
+   budget, the playout airs its last session until that session's cap ends, then stops. With
+   30-minute sessions, a budget of 4 bounds the channel at two hours of sessions, $252.
+
+4. **Check what may still bill** whenever a session closes:
+
+   ```ts
+   const closeAndCheck = Effect.fn("closeAndCheck")(function* (session: Session.Session) {
+     const report = yield* session.close;
+     if (Session.mayStillBill(report))
+       yield* Effect.logWarning(
+         "may still bill",
+         report.sessionId ?? "an allocation never identified",
+       );
+     return report;
+   });
+   ```
+
+5. **After a crash, end what the dead owner recorded.** On start-up, before opening anything new,
+   the next process ends every recorded session with the API key. Ending one that already ended is
+   harmless: the read confirms it gone or `CLOSED`.
+
+   ```ts
+   const endRecorded = Effect.gen(function* () {
+     const fs = yield* FileSystem.FileSystem;
+     const coordinator = yield* CoordinatorClient.CoordinatorClient;
+     const lines = (yield* fs.readFileString(ownersFile)).split("\n").filter((line) => line !== "");
+     yield* Effect.forEach(lines, (line) =>
+       Effect.gen(function* () {
+         const allocation = yield* Schema.decodeEffect(OwnerLine)(line);
+         const termination = yield* coordinator.terminate(allocation.sessionId);
+         yield* Effect.logInfo(
+           allocation.sessionId,
+           termination.confirmed ? "ended" : "NOT confirmed",
+         );
+       }),
+     );
+   });
+   ```
+
+   To keep a crashed owner's air instead, pass its record to `H3Source.resume` with tokens bound to
+   the session, while `endsAt` is still ahead.
+
+</Steps>
+
+On the simulated Reactor this ran as described: the price came to $4.20, a budget of two refused a
+third session, the records round-tripped, and every recorded session read `CLOSED` after
+`endRecorded`.
+
+## Practice
+
+- **Cap everything, short where people wander off.** A page's session ends with the page only if
+  the page gets to close it; the cap bounds the rest. The browser guide's token server caps
+  sessions at five minutes.
+- **A dropped connection keeps billing.** Reactor holds a session for 30 seconds after its last
+  connection drops, billed, and the SDK reconnects within that window and keeps the session for as
+  long as the process holding it runs. `Reactor.layer({ reconnect: false })` leaves a drop down, so
+  Reactor ends the session 30 seconds later.
+- **A session nothing connects to bills to its cap.** In a paid probe on 2026-09-29, a session
+  allocated and never connected read `ACTIVE` for its whole minute and was ended by Reactor at its
+  60-second cap, 60.09 s after allocation; the dashboard listed it at 1m 0s. A creator that crashes
+  between allocation and connection leaves exactly this, which is why the owner record comes first.
+- **A spent token creates nothing more.** In the same probe, a second create on a single-session
+  token whose session already existed was refused with `403`. The tokens `coordinator.tokens` mints
+  each create one session, so a retried create cannot allocate a second.
+- **Only a termination stops the meter.** A viewer leaving a shared session does not stop it. In
+  the paid runs, the API key and an adopting process each ended a session they had not created.
+  `reactor.attach` without `adopt` never terminates the session it joined, and closing it leaves the
+  session running.
+- **Renewals overlap.** A playout opens each replacement before the retiring session ends, so two
+  sessions bill together for a few seconds at each renewal: 6 to 9 seconds in the paid `show` runs.
+  Very short caps multiply that.
+- **Rehearse the bill.** `ReactorTest`'s `billing` counts simulated seconds and dollars; pass
+  `creditsPerSecond: 350` for the rate published on 2026-09-30 and assert a budget in a test, as
+  [Test offline](/reactor-effect-client/guides/testing-offline/) does.
+- **Watch the dashboard.** The Reactor dashboard lists each session's duration to the second.
+  Reactor publishes no usage endpoint yet, and the paid runs' balance readings matched neither the
+  published rate nor whole minutes, so read your balance there.
+
+<Aside type="caution">
+  `"unlimited"` is a real option: an uncapped session bills until something terminates it. Use it
+  only with an owner record and a process that will end it.
+</Aside>

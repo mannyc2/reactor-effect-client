@@ -1,0 +1,577 @@
+---
+title: Playout
+description: "A keyed schedule that carries H3 across renewing sessions, switching at a clip boundary: lanes, filler, windows, placement and as-run evidence."
+---
+
+import { Aside, CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+`Playout` airs a schedule of clips across Reactor sessions. You submit keyed items into priority
+lanes; one plan decides what to build, in what order, what to withdraw, and when a fresh session
+takes over before the current one reaches its cap. What actually aired comes back as as-run
+evidence, kept apart from what you asked for.
+
+```ts
+import { Console, Effect } from "effect";
+import {
+  CoordinatorClient,
+  H3,
+  H3Source,
+  Playout,
+} from "reactor-effect-client";
+
+const house = [
+  "A slow dolly shot through a sunlit greenhouse",
+  "Waves on a black sand beach",
+];
+
+export const channel = Effect.gen(function* () {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  const playout = yield* Playout.make({
+    // Called for the first session and for each replacement.
+    open: H3Source.open({
+      tokens: coordinator.tokens({
+        modelName: H3.modelName,
+        maxSessionDuration: "10 minutes",
+      }),
+    }),
+    lanes: [{ name: "breaking", cut: true }, { name: "show" }],
+    filler: {
+      runway: { floor: "5 seconds", target: "10 seconds" },
+      clip: ({ index, seconds }) => ({
+        prompt: house[index % house.length] ?? "",
+        seconds,
+      }),
+    },
+    renewal: { lead: "30 seconds" },
+  });
+  const opening = yield* playout.submit({
+    key: Playout.ItemKey.make("opening"),
+    lane: "show",
+    request: {
+      prompt: "A hand-painted sign that reads OPENING NIGHT",
+      seconds: 5,
+    },
+  });
+  const outcome = yield* opening.outcome;
+  yield* Console.log(`opening: ${outcome._tag}`);
+}).pipe(Effect.scoped);
+```
+
+The same program runs on the simulated Reactor, on paid H3, or on a renderer of your own: only
+the [source](/reactor-effect-client/concepts/sources/) behind `open` changes. A pure policy makes
+every decision, and the service applies them one provider command at a time on each session. It
+wakes on a submission, a session's evidence or the plan's next deadline, and never polls.
+
+## Items and keys
+
+An item is one clip: a key, a lane and an [H3 request](/reactor-effect-client/concepts/h3/),
+with an optional start, window, cues and continuity. `submit` returns an `ItemHandle` whose
+`started` resolves with the clip's start (or how it settled without one) and whose `outcome`
+resolves with how it settled.
+
+Keys make submissions idempotent. Submitting the same spec under a key again returns the same
+handle, and a different spec under it fails with `KeyMismatch`, so a caller can retry a
+submission safely. The playout remembers 4,096 settled keys (`maxHistory`).
+
+A submission is refused before anything is sent with one of these tagged errors:
+
+| Error               | When                                                                    |
+| ------------------- | ----------------------------------------------------------------------- |
+| `InvalidItem`       | The request is outside H3's documented limits, naming each field and limit, or names an unknown lane or anchor |
+| `KeyMismatch`       | The key is in use with a different spec                                 |
+| `LaneBusy`          | The lane skips new items while one waits or plays                       |
+| `WouldMissDeadline` | The plan cannot start the item before its firm `startBy`                |
+| `PlayoutClosed`     | The playout is draining or closed                                       |
+
+An item whose request omits `seconds` is sent at 5 seconds, the length the plan counts it at.
+A filler request without `seconds` is sent at the length passed to its `clip` callback in
+`FillContext.seconds`. A request that names its length is sent unchanged.
+
+## Lanes
+
+Lanes are listed from the highest priority to the lowest, and each has a conflict rule:
+
+```ts
+import type { Playout } from "reactor-effect-client";
+
+export const lanes: ReadonlyArray<Playout.LaneSpec> = [
+  // Stops a lower lane's clip once its own item is Ready.
+  { name: "breaking", cut: true },
+  // Refuses an item while one waits or plays.
+  { name: "viewer", conflict: "skip" },
+  // A new item replaces the one waiting.
+  { name: "ticker", conflict: "replace" },
+  // Waits behind its lane's items: the default.
+  { name: "show" },
+];
+```
+
+- **`queue`** (the default): a new item waits behind its lane's items.
+- **`replace`**: a new item replaces the lane's waiting items, make-before-break. They stay as
+  cover until it is Ready, then settle `Dropped` with reason `replaced`.
+- **`skip`**: a new item is refused with `LaneBusy` while the lane has one waiting or playing.
+- **`cut: true`**: once its own item is Ready, the lane stops a playing clip of a strictly lower
+  lane, or filler, unless that clip ends within a second. A clip is stopped at most once.
+
+On hosted H3, `stop` names no clip and lands after its reply, so a cut goes a step at a time: the
+playout turns autoplay off, stops the clip if it still plays, waits for H3 to report it ended,
+plays the cutter and turns autoplay back on. In the two `show` runs on hosted H3 (2026-09-28 and
+2026-09-29), the cut took one `stop` and paused 168 ms, then 165 ms, with no dark frame.
+
+`Playout.lineup(filler)` is the simplest shape: one lane, `line`, above filler.
+
+## Filler and its runway
+
+Filler is the bottom lane, and nothing is owed to it: the playout asks for a filler clip
+whenever the air it has secured runs low. The air secured, `state.runwaySeconds`, is the rest of the clip playing
+and the Ready clips that will air after it, on the session on air and then on its replacement.
+
+- `runway: { floor, target }`: below `floor`, filler refills up to `target`. Once three builds
+  are measured, the floor covers at least one slow (p95) build, so a refill started there is
+  Ready in time.
+- `clip(context)`: called once per filler clip, with its `index`, the `runwaySeconds` and the
+  `seconds` to ask for. Keep it pure. A request outside H3's limits fails the playout with
+  `InvalidFiller`, since asking again would get the same request.
+- `lengths`: the lengths a filler clip may take, H3's request range by default. Before an `At`
+  item, filler tiles the gap in equal clips. Where a tile would air past a capped session's cap,
+  the playout asks for the longest clip that airs before it, if `lengths.min` fits.
+  H3 aligns each up to its frame grid, so the `At` item
+  may air up to 0.7 s late for each tile. The plan counts a filler clip not yet sent at the
+  `seconds` it asks `clip` for, so a callback that returns another length moves the tiling, and
+  `place`'s `startsAt`, by the difference.
+- `protect`: what goes first when an item's build would outlast the air secured. With `"air"`, the
+  default, once three builds are measured, such an item waits for one filler clip that builds
+  sooner and covers the rest. An item with a time to meet (an `At` start, a `startBy`, an `Asap`
+  start, a released `Manual` one or a cutting lane) goes at once. `"order"` builds each item as
+  soon as it may: it airs sooner, but the air may go dark while it builds.
+
+## Starts and windows
+
+An item's `start` says when it may air. Only `Follow` keeps its lane's order.
+
+| `start`             | Airs                                                                                                                       |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `Follow`            | At its lane's next boundary, in order: the default                                                                         |
+| `Asap`              | At the next boundary, ahead of everything waiting in every lane                                                            |
+| `Manual`            | Held until `release(key)`, then as `Asap`; built ahead only while filler holds the runway at its floor, else once released |
+| `At { time, late }` | At the first boundary after `time` (epoch milliseconds, wall clock)                                                        |
+
+`late` says what to do when that boundary comes late: `nextBoundary`, `skipIfLaterThan` a
+duration, or `drop`. A `window` adds `notBefore` and `startBy`, measured from submission on the
+monotonic clock. A `firm` item is dropped at `startBy` with reason `late`, and refused up front
+with `WouldMissDeadline` when the plan cannot make it; a soft one may still air, with
+`lateByMillis` on its start. A start already under way at a deadline, a clip H3 holds armed for
+its seam or a `play` of it in flight, may still land, up to a command's round trip past it.
+
+```ts
+import { Clock, Effect } from "effect";
+import { Playout } from "reactor-effect-client";
+
+export const schedule = Effect.fn("schedule")(function* (
+  playout: Playout.Playout["Service"],
+) {
+  const now = yield* Clock.currentTimeMillis;
+  // The next full minute, skipped if it would start over 2 s late.
+  yield* playout.submit({
+    key: Playout.ItemKey.make("ident"),
+    lane: "show",
+    request: {
+      prompt: "A station ident spinning into view",
+      seconds: 5,
+    },
+    start: {
+      _tag: "At",
+      time: now - (now % 60_000) + 60_000,
+      late: { _tag: "skipIfLaterThan", by: "2 seconds" },
+    },
+  });
+  // Built ahead while filler covers the air; aired when released.
+  yield* playout.submit({
+    key: Playout.ItemKey.make("reveal"),
+    lane: "show",
+    request: {
+      prompt: "A curtain rising on a painted forest",
+      seconds: 8,
+    },
+    start: { _tag: "Manual" },
+  });
+  // Dropped unless it can start within 20 s.
+  yield* playout.submit({
+    key: Playout.ItemKey.make("viewer-17"),
+    lane: "show",
+    request: {
+      prompt: "A paper lantern drifting along a canal",
+      seconds: 5,
+    },
+    window: { startBy: "20 seconds", firm: true },
+  });
+});
+```
+
+On hosted H3, an `At` item aired 559 ms after its time on 2026-09-28 and 545 ms on 2026-09-29,
+at the end of a filler tile H3 had built a little longer than asked, and never before its time.
+
+## Cues and continuity
+
+Cues fire at offsets from a clip's observed start or end, as `Cue` events on `playout.events`.
+`continuity: "previous"` builds the clip continuing from the one that airs just before it.
+
+```ts
+import { Effect, Stream } from "effect";
+import { Playout } from "reactor-effect-client";
+
+export const segment = Effect.fn("segment")(function* (
+  playout: Playout.Playout["Service"],
+) {
+  yield* playout.submit({
+    key: Playout.ItemKey.make("kitchen-2"),
+    lane: "show",
+    request: {
+      prompt: "The chef plates the dish, close up",
+      seconds: 8,
+    },
+    continuity: "previous",
+    cues: [
+      { name: "caption-in", at: { from: "start", offset: "1 second" } },
+      { name: "caption-out", at: { from: "end", offset: "2 seconds" } },
+    ],
+  });
+  return playout.events.pipe(
+    Stream.filter((event) => event._tag === "Cue"),
+    Stream.map((event) => `${event.event.key}: ${event.event.name}`),
+  );
+});
+```
+
+A continued build takes longer: on hosted H3 a continued 5 s clip built in 5.45 s, against about
+2.2 s for an independent one (published 0.7.0, 2026-09-28). When a continued build would be late,
+the playout continues from the clip that will be playing by then instead. It never asks for
+continuity across a switch of sessions, and H3 may build an independent clip without saying so, so
+as-run never claims continuity. In the passing `edits` and `show` runs on hosted H3 (2026-09-28 and
+2026-09-29), a continued seam changed the picture 2.3 to 5.8 times as much as the clip's own motion,
+against 11 to 20 times at their independent seams; one cut seam measured 6.5 times.
+
+## Edits, make-before-break
+
+Every edit is make-before-break: what it replaces stays on air, or ready to air, until what
+replaces it is Ready.
+
+| Method               | What it does                                                                                                                                       |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `submitGroup(group)` | Parts built in order and aired back to back; a higher lane may go between                                                                          |
+| `insert(spec)`       | A clip right `before` or `after` an item, taking its lane, place, group and start                                                                  |
+| `replace(key, next)` | A new clip for a queued item's place; if the item starts first, `next` is dropped as `withdrawn`                                                   |
+| `edit(edits)`        | Several of these, checked together and applied as one change                                                                                       |
+| `withdraw(key)`      | Answers `withdrawn`, `already-started` or `not-found`                                                                                              |
+| `release(key)`       | Airs a held `Manual` item at the next boundary                                                                                                     |
+| `drain({ finish })`  | Admits nothing more. `playing`, the default, withdraws what has not started; `accepted` airs everything accepted first, except held `Manual` items |
+
+```ts
+import { Effect } from "effect";
+import { Playout } from "reactor-effect-client";
+
+export const correct = Effect.fn("correct")(function* (
+  playout: Playout.Playout["Service"],
+) {
+  const batch = yield* playout.edit([
+    { _tag: "Withdraw", key: Playout.ItemKey.make("weather") },
+    {
+      _tag: "Insert",
+      insert: {
+        key: Playout.ItemKey.make("correction"),
+        after: Playout.ItemKey.make("headlines"),
+        request: {
+          prompt: "A newsroom desk with a single corrected headline",
+          seconds: 5,
+        },
+      },
+    },
+  ]);
+  // All it adds is Ready or settled; what it removes went at once.
+  yield* batch.committed;
+});
+```
+
+A batch holds what it adds behind the clips queued until all of it is Ready, though with nothing
+else to air H3 may start one first, and a replacement builds ahead of every other item waiting in
+its lane except an `Asap` one. Send an urgent insert alone, and a
+replacement meant to air after it as a second edit once the insert is `Building`.
+
+In the two `show` runs on hosted H3, an edit batch took effect 0.91 s before its boundary
+(2026-09-28) and 1.05 s before it (2026-09-29), and the clip it withdrew never aired.
+
+## Placement
+
+Some clips depend on the clips around them, such as an acknowledgement written for what just
+aired. `place` projects where a clip would land if you submitted it `submitIn` from now, before
+you write it. Submitted with `follows: placement.after`, the clip airs right after that clip,
+across a renewal too, or is dropped as `displaced`.
+
+```ts
+import { Effect } from "effect";
+import { Playout } from "reactor-effect-client";
+
+export const acknowledge = Effect.fn("acknowledge")(function* (
+  playout: Playout.Playout["Service"],
+  write: (placement: Playout.Placement) => Effect.Effect<string>,
+) {
+  const key = Playout.ItemKey.make("ack-1");
+  const placement = yield* playout.place({
+    key,
+    seconds: 5,
+    submitIn: "3 seconds",
+  });
+  // Null: no boundary can be made yet.
+  if (placement === null) return undefined;
+  const request = { prompt: yield* write(placement), seconds: 5 };
+  const follows = placement.after;
+  return placement.anchor === "next"
+    ? yield* playout.submit({
+        key,
+        lane: "show",
+        request,
+        start: { _tag: "Asap" },
+        follows,
+      })
+    : yield* playout.insert({
+        key,
+        after: placement.anchor,
+        request,
+        follows,
+      });
+});
+```
+
+A `Placement` names the clip it would follow (`after`), the clip projected after it (`before`),
+when it would start (`startsAt`), how to submit it (`anchor`: insert after that item, or
+`"next"`, an `Asap` submission to the lowest lane) and what the projection rests on (`basis`:
+`ready`, `projected` or `unmeasured`).
+
+`place` projects the plan as it is, at the median build rates, and reserves nothing. `before` is
+not enforced, since a clip submitted after the call may come between. A clip not built yet
+counts at the length the last clip that asked for as much aired at, so `startsAt` may be off by
+up to 0.7 s for each clip ahead at a length not asked for before. A `follows` clip gets no filler
+cover, and a cutting lane refuses it.
+
+While a follower waits, autoplay is fenced before its build once a clip H3 reported starting plays
+on that session, so an early end cannot air it before the clip it follows. A follower not Ready,
+on a session still open, when that clip ends, fails on air or is lost on air with its session, is
+dropped as `displaced`; a planned switch keeps it. While it waits, its session starts each clip
+with a provider command, a round trip after the boundary that `startsAt` does not project, so a
+command whose outcome is unknown can hold the air dark there until H3's reply deadline. A follower
+of an item in a pending batch may be built and then dropped before the batch commits. `place`
+answers a boundary only with a clip projected Ready a readiness margin and one provider command
+before it, and on a replacement only if it airs there before that session's cap.
+
+## Renewal across sessions
+
+A capped session builds only what can air before its cap. The replacement opens `lead` before the
+cap, and never earlier, since a replacement opened earlier would bill while it waits to air. It
+builds what cannot air on the retiring session in time, and holds it Ready with autoplay off.
+Once the retiring session has nothing left to play and `grace` has passed since its last clip
+ended, the replacement takes the air at that boundary, and the retiring session is closed.
+
+<figure class="not-content" aria-labelledby="renewal-caption" style={{ margin: "1.75rem 0" }}>
+<div style={{ overflowX: "auto" }}>
+<div style={{ minWidth: "36rem", fontSize: "0.75rem", lineHeight: 1.25 }}>
+<div style={{ display: "flex", alignItems: "flex-end", height: "2.4rem" }}>
+<div style={{ width: "5.5rem", flexShrink: 0 }} />
+<div style={{ position: "relative", flex: 1, height: "100%" }}>
+<span style={{ position: "absolute", left: "26%", bottom: "0.2rem", transform: "translateX(-50%)", whiteSpace: "nowrap", color: "var(--sl-color-gray-2)" }}>cap − lead</span>
+<span style={{ position: "absolute", left: "63.2%", bottom: "0.2rem", transform: "translateX(-50%)", whiteSpace: "nowrap", color: "var(--sl-color-text-accent)", fontWeight: 600 }}>switch</span>
+<span style={{ position: "absolute", left: "92%", bottom: "0.2rem", transform: "translateX(-50%)", whiteSpace: "nowrap", color: "var(--sl-color-gray-2)" }}>A's cap</span>
+</div>
+</div>
+<div style={{ display: "flex", alignItems: "center", height: "2.5rem" }}>
+<div style={{ width: "5.5rem", flexShrink: 0, color: "var(--sl-color-gray-2)" }}>Session A</div>
+<div style={{ position: "relative", flex: 1, height: "100%", borderLeft: "1px solid var(--sl-color-gray-5)" }}>
+<div style={{ position: "absolute", left: "26%", top: 0, bottom: 0, borderLeft: "1px dashed var(--sl-color-gray-4)" }} />
+<div style={{ position: "absolute", left: "63.2%", top: 0, bottom: 0, borderLeft: "2px solid var(--sl-color-accent)" }} />
+<div style={{ position: "absolute", left: "92%", top: 0, bottom: 0, borderLeft: "1px dashed var(--sl-color-gray-4)" }} />
+<div style={{ position: "absolute", left: "0%", width: "19.6%", top: "0.4rem", bottom: "0.4rem", borderRadius: "0.3rem", background: "var(--sl-color-accent)", color: "var(--sl-color-black)", fontWeight: 600, display: "flex", alignItems: "center", paddingLeft: "0.4rem", whiteSpace: "nowrap", overflow: "hidden" }}>clip 1</div>
+<div style={{ position: "absolute", left: "20%", width: "19.6%", top: "0.4rem", bottom: "0.4rem", borderRadius: "0.3rem", background: "var(--sl-color-accent)", color: "var(--sl-color-black)", fontWeight: 600, display: "flex", alignItems: "center", paddingLeft: "0.4rem", whiteSpace: "nowrap", overflow: "hidden" }}>clip 2</div>
+<div style={{ position: "absolute", left: "40%", width: "22.4%", top: "0.4rem", bottom: "0.4rem", borderRadius: "0.3rem", background: "var(--sl-color-gray-5)", color: "var(--sl-color-white)", display: "flex", alignItems: "center", paddingLeft: "0.4rem", whiteSpace: "nowrap", overflow: "hidden" }}>filler</div>
+<div style={{ position: "absolute", left: "64.6%", top: "0.4rem", bottom: "0.4rem", display: "flex", alignItems: "center", whiteSpace: "nowrap", color: "var(--sl-color-gray-3)" }}>closed</div>
+</div>
+</div>
+<div style={{ display: "flex", alignItems: "center", height: "2.5rem" }}>
+<div style={{ width: "5.5rem", flexShrink: 0, color: "var(--sl-color-gray-2)" }}>Session B</div>
+<div style={{ position: "relative", flex: 1, height: "100%", borderLeft: "1px solid var(--sl-color-gray-5)" }}>
+<div style={{ position: "absolute", left: "26%", top: 0, bottom: 0, borderLeft: "1px dashed var(--sl-color-gray-4)" }} />
+<div style={{ position: "absolute", left: "63.2%", top: 0, bottom: 0, borderLeft: "2px solid var(--sl-color-accent)" }} />
+<div style={{ position: "absolute", left: "92%", top: 0, bottom: 0, borderLeft: "1px dashed var(--sl-color-gray-4)" }} />
+<div style={{ position: "absolute", left: "26.2%", width: "7%", top: "0.4rem", bottom: "0.4rem", borderRadius: "0.3rem", border: "1px dashed var(--sl-color-gray-3)", color: "var(--sl-color-gray-2)", display: "flex", alignItems: "center", justifyContent: "center", whiteSpace: "nowrap", overflow: "hidden" }}>opens</div>
+<div style={{ position: "absolute", left: "33.6%", width: "29%", top: "0.4rem", bottom: "0.4rem", borderRadius: "0.3rem", border: "1px dashed var(--sl-color-accent)", color: "var(--sl-color-gray-2)", display: "flex", alignItems: "center", paddingLeft: "0.4rem", whiteSpace: "nowrap", overflow: "hidden" }}>clip 3 built, held</div>
+<div style={{ position: "absolute", left: "64%", width: "20.2%", top: "0.4rem", bottom: "0.4rem", borderRadius: "0.3rem", background: "var(--sl-color-accent)", color: "var(--sl-color-black)", fontWeight: 600, display: "flex", alignItems: "center", paddingLeft: "0.4rem", whiteSpace: "nowrap", overflow: "hidden" }}>clip 3</div>
+<div style={{ position: "absolute", left: "84.6%", width: "15.4%", top: "0.4rem", bottom: "0.4rem", borderRadius: "0.3rem", background: "var(--sl-color-accent)", color: "var(--sl-color-black)", fontWeight: 600, display: "flex", alignItems: "center", paddingLeft: "0.4rem", whiteSpace: "nowrap", overflow: "hidden" }}>clip 4</div>
+</div>
+</div>
+<div style={{ display: "flex", alignItems: "flex-start", height: "2.6rem" }}>
+<div style={{ width: "5.5rem", flexShrink: 0, color: "var(--sl-color-gray-2)", paddingTop: "0.25rem" }}>Billed</div>
+<div style={{ position: "relative", flex: 1, height: "100%" }}>
+<div style={{ position: "absolute", left: "0%", width: "32.8%", top: "0.55rem", height: "0.35rem", borderRadius: "0.2rem", background: "var(--sl-color-gray-4)" }} />
+<div style={{ position: "absolute", left: "33.2%", width: "30.6%", top: "0.55rem", height: "0.35rem", borderRadius: "0.2rem", background: "var(--sl-color-accent)" }} />
+<div style={{ position: "absolute", left: "64.2%", width: "35.8%", top: "0.55rem", height: "0.35rem", borderRadius: "0.2rem", background: "var(--sl-color-gray-4)" }} />
+<span style={{ position: "absolute", left: "48.5%", top: "1.15rem", transform: "translateX(-50%)", whiteSpace: "nowrap", color: "var(--sl-color-text-accent)", fontWeight: 600 }}>A and B together: at most lead</span>
+</div>
+</div>
+</div>
+</div>
+<figcaption id="renewal-caption" style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "var(--sl-color-gray-2)" }}>
+A renewal. B opens <code>lead</code> before A's cap and builds clip 3, which cannot air on A in time, holding it Ready with autoplay off. A airs what it has, here a filler clip. When that clip ends and <code>grace</code> has passed, B takes the air at the boundary and A is closed, so the two sessions bill together only from B's start (its <code>ready</code>, by Reactor's billing page) to A's close.
+</figcaption>
+</figure>
+
+| `renewal` option   | Default    | What it does                                                          |
+| ------------------ | ---------- | --------------------------------------------------------------------- |
+| `lead`             | 30 seconds | Opens the replacement this long before the session's cap             |
+| `grace`            | 250 ms     | Waits this long after the retiring session's last clip before switching |
+| `openTimeout`      | 3 minutes  | Bounds one open, the wait for a GPU included                          |
+| `maxSetupFailures` | 3          | Failed setups in a row that end the playout                           |
+
+A session lost before a planned switch is closed, and the clips it never aired are rebuilt on
+the next one (`Replaced`, with the number `carried`). A failed open is tried again a second later
+for each failure in a row, at most `maxSetupFailures` seconds later, and never sooner than a
+refusal's `Retry-After`. After `maxSetupFailures` failures in a row the playout fails, unless a
+session still holds the air: it then airs on and tries once more when that session ends. An open
+refused with nothing allocated, such as a `4xx`, billed nothing, and while a session holds the
+air it does not count.
+
+When content moderation ends a session, the playout blames the item whose enqueue was sent there
+last, since the verdict names no clip, and fails it as `Moderated`. It stops after
+`maxModerations` (2) moderated sessions rather than keep opening paid ones.
+
+On hosted H3, the planned switch left a gap of 420 ms on air on 2026-09-28, and 432 ms on
+2026-09-29. When moderation ended a session in the first of those runs, the clip it had Ready was
+rebuilt on a new session opened 3.17 s after the verdict, and aired 5.3 s after the lost session's
+clip left the air.
+
+## As-run evidence
+
+`playout.asRun` streams what became of each item, kept apart from what was asked for:
+
+| Status       | Meaning                                                                         |
+| ------------ | ------------------------------------------------------------------------------- |
+| `Accepted`   | Admitted; with `carried` when it is rebuilt after its session was lost          |
+| `Building`   | Sent to a session, building                                                     |
+| `Ready`      | Built, waiting to air                                                           |
+| `Started`    | Seen to start: `at`, `sessionId`, `seconds`, and `lateByMillis` for a late soft window |
+| `Ended`      | `finished` or `stopped`, with `airedSeconds`                                    |
+| `Dropped`    | `late`, `withdrawn`, `replaced` or `displaced`                                  |
+| `Failed`     | With a `reason`: `Clip`, `Command`, `Lost`, `Moderated` or `Closed`             |
+| `Unobserved` | Acknowledged, but its start was never seen                                      |
+| `Unknown`    | Sent, but its acknowledgement was never seen; `terminal` once nothing can settle it |
+
+An `Unknown` item is never sent again, and no time is invented for it. A `Clip` failure keeps the
+provider's own words `Redacted` in `provider`, out of messages, logs and spans.
+
+```ts
+import { Console, Stream } from "effect";
+import type { Playout } from "reactor-effect-client";
+
+export const asRunLog = (playout: Playout.Playout["Service"]) =>
+  playout.asRun.pipe(
+    Stream.map(({ key, status }) =>
+      status._tag === "Started"
+        ? `${key} started on ${status.sessionId}`
+        : `${key} ${status._tag}`,
+    ),
+    Stream.runForEach(Console.log),
+  );
+```
+
+`playout.events` adds cues, session events (`Opened`, `Switched`, `Replaced`, `SetupFailed`,
+`Moderated`, `Reconnecting` and `Reconnected`), each filler clip's start and end, a
+`ReaderOverflow` when a reader of the picture or sound falls behind, and `Starved` when nothing is
+left to play. `playout.state` holds the clip on air, the lanes, each session's role (`on-air`,
+`replacement` or `retiring`), the runway and the build estimates the playout has learned.
+`playout.video` and `playout.audio` are the on-air picture and sound as decoded frames, continuing
+across renewals.
+
+On hosted H3, one playout aired 20 clips over three 75 s sessions, with filler holding the air:
+2,372 frames at 22.2 fps, none lost, and seams of 53–169 ms with no dark frame. A second run, on
+the 0.8.0 release candidate, measured seams of 46–168 ms. Both passed every criterion
+([0.8.0-api](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+2026-09-28; [0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-rc/summary.md),
+2026-09-29).
+
+## Failure and cleanup
+
+`playout.failure` completes with why the playout stopped: a session it could not open or keep,
+`InvalidFiller`, `Moderated`, or `Closed` when its scope closed. A supervisor restarts it by
+failing with that reason under a `Schedule`:
+
+```ts
+import { Effect, Schedule } from "effect";
+import { Playout } from "reactor-effect-client";
+
+export const supervised = Effect.fn("supervised")(
+  function* <R>(options: Playout.Options<R>) {
+    const playout = yield* Playout.make(options);
+    // Submit the programme here. Closing the scope closes the
+    // playout and its sessions.
+    return yield* Effect.flatMap(playout.failure, Effect.fail);
+  },
+  Effect.scoped,
+  Effect.retry(Schedule.exponential("5 seconds")),
+);
+```
+
+`playout.cleanup` holds the close reports of retired sessions and of opens that failed after
+allocating: every one that may still bill, and the latest others. Closing the playout's scope
+retires every session.
+
+| Option              | Default    | What it does                                                        |
+| ------------------- | ---------- | ------------------------------------------------------------------- |
+| `maxBuildsInFlight` | 1          | Builds at once on the session that takes new work                   |
+| `maxHistory`        | 4,096      | Settled keys kept for idempotency                                   |
+| `unknownTimeout`    | 60 seconds | How long an enqueue's outcome may stay unknown before its session is replaced |
+| `maxModerations`    | 2          | Sessions moderation may end before the playout fails                |
+
+An enqueue whose outcome stays unknown holds no build slot meanwhile, since H3 builds in order.
+
+## Limits
+
+- The hosted numbers on this page come from 2026-09-28 and 2026-09-29: the two `show` runs of the
+  0.8.0 playout, each over three 75 s sessions, and one-session `edits` and `cut` runs of 0.7.0 and
+  of 0.8.0 in development. On 0.9.0 only the one-session `showreel` check has run on hosted Reactor
+  (five scenes, seams of 89–120 ms, 2026-10-01): its `place` and `follows`, its renewal and its
+  changes to how the air ahead is counted have run only on the simulated Reactor. No multi-hour run
+  on hosted H3 has been made.
+- A `Started` status is H3's report that a clip started, not proof that a frame was presented or
+  encoded.
+- On a host with only platform tracks, such as a browser, `playout.video` and `playout.audio` fail
+  with `UnsupportedCapability`.
+- Editorial priority, pricing and what counts as on air for your audience stay with your
+  application.
+
+<Aside type="tip">
+Run a whole programme offline first: on `ReactorTest` under `TestClock`, ten minutes of playout
+with a renewal run in about 4 seconds, and an hour with six renewals in about 20. See
+[Test offline](/reactor-effect-client/guides/testing-offline/).
+</Aside>
+
+## Next
+
+<CardGrid>
+  <LinkCard
+    title="Sources"
+    description="H3Source for paid H3, LocalSource for a renderer of your own."
+    href="/reactor-effect-client/concepts/sources/"
+  />
+  <LinkCard
+    title="Run a 24/7 channel"
+    description="One playout broadcast to many viewers."
+    href="/reactor-effect-client/guides/channel/"
+  />
+  <LinkCard
+    title="Hosted evidence"
+    description="Every hosted run, its commit, criteria and cost."
+    href="/reactor-effect-client/reference/hosted-evidence/"
+  />
+  <LinkCard
+    title="Errors"
+    description="Tagged failures and dispatch evidence."
+    href="/reactor-effect-client/concepts/errors/"
+  />
+</CardGrid>

@@ -1,0 +1,117 @@
+---
+title: Quickstart
+description: "Prompt H3 and follow one clip from acceptance to its end, with its frames decoded in your process: offline with no key, then live with one."
+---
+
+import { Aside, Code, Steps, Tabs, TabItem } from "@astrojs/starlight/components";
+import quickstart from "../../../../../examples/quickstart/src/main.ts?raw";
+
+This program asks H3 for one clip, follows it from acceptance to its end, and reads its video as
+decoded frames in your own process. Without an API key it runs on `ReactorTest`, Reactor simulated
+in memory at the timing paid runs measured, so it costs nothing. With a key, only the layer
+changes: the program is written to run on hosted H3, and its pieces ran in paid checks under Bun,
+though it has not run there itself.
+
+<Steps>
+
+1. Start an ES module project. npm 11's `npm init` writes `"type": "commonjs"`, under which Node
+   cannot run this program's `import` statements, so set it to `module`:
+
+   ```sh
+   mkdir reactor-quickstart && cd reactor-quickstart
+   npm init -y && npm pkg set type=module
+   ```
+
+2. Install the client, the native host and Effect, pinned exactly:
+
+   <Tabs syncKey="pm">
+     <TabItem label="npm">
+       ```sh
+       npm install --save-exact reactor-effect-client reactor-effect-native effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
+       ```
+     </TabItem>
+     <TabItem label="bun">
+       ```sh
+       bun add --exact reactor-effect-client reactor-effect-native effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
+       ```
+     </TabItem>
+     <TabItem label="pnpm">
+       ```sh
+       pnpm add --save-exact reactor-effect-client reactor-effect-native effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
+       ```
+     </TabItem>
+   </Tabs>
+
+   Effect 4 is still in release candidates, and a later candidate can move modules, so every
+   package pins it exactly. Under Bun or pnpm, first add an override to `package.json` that pins
+   `@effect/platform-node-shared` to `4.0.0-rc.117` (`"overrides"` for Bun, `"pnpm": { "overrides" }`
+   for pnpm); npm needs none here, since `reactor-effect-native` pins it. [Installation](/reactor-effect-client/start/installation/) covers
+   other hosts.
+
+3. Save this as `main.ts`. It is `examples/quickstart/src/main.ts` in the repository, which CI
+   typechecks against every change.
+
+   <Code code={quickstart} lang="ts" title="main.ts" />
+
+4. Run it offline. Node 22.18 and later run TypeScript directly, and so does Bun:
+
+   ```sh
+   node main.ts
+   ```
+
+   ```text
+   session sess_reactor_test_1 connected
+   clip 00000000-0000-4000-8000-000000000001 accepted
+   frame 0: 320x180 BGRA
+   playing
+   frame 24: 320x180 BGRA
+   ...
+   ended
+   session closed, termination confirmed: true
+   ```
+
+   About 12 seconds pass: the simulated build takes as long as H3's did on hosted runs, then the
+   5-second clip plays.
+
+5. Run it on hosted H3. Create a key in [Reactor's dashboard](https://reactor.inc/dashboard) and:
+
+   ```sh
+   REACTOR_API_KEY=rk_... node main.ts
+   ```
+
+   The frames now arrive at 1344x768 from H3, decoded in your process by the native addon over
+   Reactor's `reactor-webrtc` crate (libwebrtc).
+
+</Steps>
+
+<Aside type="caution" title="What it costs">
+  On September 30, 2026, Reactor's pricing API stated H3's rate as $0.035 a second, or $2.10 a
+  minute, from `ready` until the session ends; its billing page still says per session-minute. The
+  paid vertical check, which does what this program does, held its session 11 to 12 seconds. The
+  token the program mints caps its session at two minutes, so even a crash cannot run it past
+  $4.20.
+</Aside>
+
+## What just happened
+
+- **`Reactor.create`** allocated a session and connected it. The session runs on a token minted for
+  it by `CoordinatorClient.tokens`, never on the API key, and the token caps the session's length.
+- **`H3.make`** read the model's schema, state and queue. H3 plays nothing until told to, so the
+  program turned autoplay on.
+- **`prepare` and `submit`** enqueued the clip. `submit` returns H3's correlated acceptance; if the
+  reply were lost, the SDK would never send the clip again, so a lost reply can never play it twice.
+- **`h3.operation`** followed the clip through its facts: generated, started, ended.
+- **`session.decoded`** streamed owned BGRA frames into JavaScript. On hosted Reactor they come from
+  `reactor-effect-native`'s addon over Reactor's `reactor-webrtc` crate, with no browser involved.
+- **`session.close`** terminated the session and confirmed the termination with an independent
+  read. `Effect.scoped` guarantees it runs however the program ends, including Ctrl-C.
+- **Only the layer differs** between offline and hosted. The program itself names no host.
+
+## Next
+
+- Watch the frames instead of counting them: the
+  [terminal viewer](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/terminal)
+  draws H3 in your terminal.
+- Keep H3 on air across session caps: [Playout](/reactor-effect-client/concepts/playout/) and the
+  [24/7 channel guide](/reactor-effect-client/guides/channel/).
+- Test without paying: [Test offline with ReactorTest](/reactor-effect-client/guides/testing-offline/).

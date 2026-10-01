@@ -1,7 +1,24 @@
 {
   "name": "reactor-effect-native",
   "version": "0.9.1",
-  "description": "Native WebRTC host for reactor-effect-client: the Peer port on a libwebrtc Node-API addon, in process or isolated per connection",
+  "description": "Decoded Reactor video and audio in Node and Bun, no browser needed: reactor-effect-client's transport on a libwebrtc Node-API addon, in process or isolated per connection",
+  "keywords": [
+    "reactor",
+    "reactor.inc",
+    "effect",
+    "effect-ts",
+    "webrtc",
+    "libwebrtc",
+    "node-api",
+    "napi",
+    "real-time video",
+    "video frames",
+    "generative video"
+  ],
+  "homepage": "https://mannyc2.github.io/reactor-effect-client/",
+  "bugs": {
+    "url": "https://github.com/mannyc2/reactor-effect-client/issues"
+  },
   "type": "module",
   "license": "Apache-2.0",
   "repository": {

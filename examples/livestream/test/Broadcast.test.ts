@@ -10,9 +10,10 @@
 import { spawnSync } from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, layer } from "@effect/vitest";
-import { Effect, Layer, Result, Stream } from "effect";
+import { ConfigProvider, Effect, Layer, Result, Stream } from "effect";
 import type { VideoFrame } from "reactor-effect-client/Media";
 import { Broadcast, ChannelMedia } from "../src/Broadcast.ts";
+import { Settings } from "../src/Settings.ts";
 
 /** Two seconds of 64x36 frames, then 48x48 frames: a canvas change. */
 const frames = Stream.fromEffectRepeat(Effect.sleep("40 millis")).pipe(
@@ -46,14 +47,22 @@ const SyntheticMedia = Layer.succeed(
   ChannelMedia.of({ video: frames, audio: Stream.never }),
 );
 
+/** The defaults, read from no environment, so a shell's CHANNEL_RTMP_URL is never sent to. */
+const DefaultSettings = Settings.layer.pipe(
+  Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
+);
+
 const boxType = (bytes: Uint8Array) => String.fromCharCode(...bytes.subarray(4, 8));
 
 const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 
 describe.skipIf(!hasFfmpeg)("Broadcast", () => {
-  layer(Broadcast.layer.pipe(Layer.provide([SyntheticMedia, NodeServices.layer])), {
-    excludeTestServices: true,
-  })((it) => {
+  layer(
+    Broadcast.layer.pipe(Layer.provide([SyntheticMedia, DefaultSettings, NodeServices.layer])),
+    {
+      excludeTestServices: true,
+    },
+  )((it) => {
     it.effect("gives a viewer who reconnects after the format changed a new run", () =>
       Effect.gen(function* () {
         const broadcast = yield* Broadcast;

@@ -12,7 +12,8 @@ import * as Schema from "effect/Schema";
  * playout's `renewal`, `edits` and `cut`, and `tokens` (a session outliving the
  * token that created it). `tour` then walks the raw API through one longer
  * session. `unconnected` asks Reactor a question instead: what becomes of a
- * session nothing connects to.
+ * session nothing connects to. `showreel` records footage rather than
+ * qualifying anything: the playout's picture and sound, to an MP4.
  */
 export const checks = [
   "vertical",
@@ -29,6 +30,7 @@ export const checks = [
   "adoption",
   "show",
   "unconnected",
+  "showreel",
 ] as const;
 export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;
@@ -72,6 +74,9 @@ export const plans: { readonly [C in Check]: Plan } = {
   // 59 s of its request, and a third if that token's second create allocates again, ended
   // within 56 s of that create. Each short one stays within a started minute.
   unconnected: { sessions: 3, seconds: 60, holds: [155, 59, 56] },
+  // Five 8 s scenes air from about 7 s in and end about 47 s in; the cap leaves room for a
+  // slower build and the close. $2.45 at most at 350 credits a second.
+  showreel: { sessions: 1, seconds: 70 },
 };
 
 /** How long each of a check's sessions may run: its cap, unless the check holds it longer. */
@@ -83,15 +88,25 @@ export const tokenSecondsFor = (check: Check): number => Math.max(...holdsFor(ch
 /** A check's work ends this long after allocation, so a slow step fails it before the cap does. */
 export const workSecondsFor = (check: Check): number => plans[check].seconds - 10;
 
+/** The rate the ceilings were reviewed at, counted by the started minute; a run reserves at the live one. */
+const reviewedRate: Rate = { creditsPerSecond: 350, creditsPerDollar: 10_000, per: "minute" };
+
 /**
  * The most a check may spend: every started minute of each of its sessions,
- * for as long as it may run, at the published rate ($0.75 a minute on
- * September 24, 2026), so $0.75 for one 50-second session. Every paid run in a
- * ledger shares the total. The operator's limits may only be lower.
+ * for as long as it may run, at the published rate (350 credits a second at
+ * 10,000 a dollar, $2.10 a minute, on September 30, 2026), so $2.10 for one
+ * 50-second session. Every paid run in a ledger shares the total, which admits
+ * the costliest check, `unconnected`, at that rate per second ($9.45). The
+ * operator's limits may only be lower.
  */
 export const ceilingFor = (check: Check): number =>
-  holdsFor(check).reduce((total, seconds) => total + Math.ceil(seconds / 60) * 0.75, 0);
-export const maxTotalUsd = 5;
+  reservationUsd(
+    holdsFor(check).reduce(
+      (total, seconds) => total + billedUsd({ rate: reviewedRate, seconds }),
+      0,
+    ),
+  );
+export const maxTotalUsd = 10;
 
 /** A gate refused: nothing past it runs, and nothing was spent. */
 export class Refused extends Schema.TaggedError<Refused>(
@@ -169,7 +184,7 @@ export const admit = (input: {
     return refuse(
       `${holds.length} session(s) of up to ${[...new Set(holds)].join(" and ")} s bill up to $${worst.toFixed(4)}, over the $${authorization.budgetUsd} budget`,
     );
-  // A nanodollar of float slack, so five $0.75 runs still fit $3.75.
+  // A nanodollar of float slack, so four $2.10 runs still fit $8.40.
   if (!(reservedUsd + worst <= authorization.totalUsd + 1e-9))
     return refuse(
       `the ledger holds $${reservedUsd.toFixed(4)} of paid runs; one more of up to $${worst.toFixed(4)} exceeds the $${authorization.totalUsd} total`,

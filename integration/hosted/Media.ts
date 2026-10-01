@@ -3,13 +3,25 @@
  * and a coarse thumbnail per video frame, and levels per audio block. Frames
  * and samples are never kept, except half-size copies inside the windows a
  * check opens around the boundaries it expects, which it may write beside the
- * run for a person to look at.
+ * run for a person to look at, and a showreel's recording, which hands them
+ * to ffmpeg as they arrive.
  */
+import type * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import type { AudioFrame, Recorded, VideoFrame } from "reactor-effect-client/Media";
-import type { AudioSummary, Jump, Pause, VideoSummary } from "./Evidence.js";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
+import * as ChildProcess from "effect/unstable/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import { recorder } from "reactor-effect-client/Media";
+import type { AudioFrame, Recorded, VideoFormat, VideoFrame } from "reactor-effect-client/Media";
+import type { AudioSummary, Jump, Pause, Recording, VideoSummary } from "./Evidence.js";
 
 const round = (value: number, places = 1) => Math.round(value * 10 ** places) / 10 ** places;
 
@@ -421,3 +433,381 @@ export const writeSeam = (input: {
     );
     return names;
   });
+
+/** A reel's frame rate: H3's own. */
+const reelFps = 24;
+const frameMs = 1000 / reelFps;
+/** A frame goes to ffmpeg in pieces of at most this many bytes, so counting pieces bounds bytes. */
+const pieceBytes = 64 * 1024;
+/**
+ * The picture waiting for ffmpeg: at most 2048 pieces, 128 MiB, about 32 of
+ * hosted H3's 1344x768 frames, or every frame of a rehearsal's small ones. A
+ * rehearsal's clock runs ahead while ffmpeg works in real time, and its
+ * picture's reader must still never wait on ffmpeg.
+ */
+const queuedPieces = 2048;
+/** The sound waiting for ffmpeg: at most 8192 blocks, 82 s of 10 ms ones. */
+const queuedBlocks = 8192;
+/** How long ffmpeg waits for the first block of sound, once the picture began, before it records none. */
+const soundWait = Duration.seconds(1);
+
+/** A frame or block as it reached a reader. */
+interface Arrival<A> {
+  readonly element: A;
+  /** In epoch milliseconds, on Effect's clock. */
+  readonly atMs: number;
+}
+
+/** A track's elements as they arrive, until `until` completes; a track that fails ends there. */
+const arriving = <A, E>(track: Stream.Stream<A, E>, until: Effect.Effect<unknown>) =>
+  track.pipe(
+    Stream.catch(() => Stream.empty),
+    Stream.mapEffect((element) =>
+      Effect.map(Clock.currentTimeMillis, (atMs): Arrival<A> => ({ element, atMs })),
+    ),
+    Stream.interruptWhen(until),
+  );
+
+/** What a recording counts as it goes, to report once ffmpeg is done. */
+interface Counts {
+  frames: number;
+  repeated: number;
+  superseded: number;
+  mismatched: number;
+  blocks: number;
+  /** Samples of silence written, a channel's worth each. */
+  silence: number;
+}
+
+/** A picture's size and pixel format, which raw video holds to throughout. */
+interface Shape {
+  readonly width: number;
+  readonly height: number;
+  readonly format: VideoFormat;
+}
+
+interface Slots {
+  /** The first frame's size and format, which every frame written keeps. */
+  readonly shape: Shape | undefined;
+  /** The latest frame to arrive, and whether it is yet to be written. */
+  readonly last: VideoFrame | undefined;
+  readonly fresh: boolean;
+  /** The next frame's index from the recording's start. */
+  readonly slot: number;
+}
+
+/**
+ * The picture at 24 frames a second from frames as they arrived: each frame
+ * written is the latest to have arrived by the middle of its time, so a held
+ * frame at a seam, or frames the host dropped, last as long in the file as
+ * they did on air. The first frame also stands for the time before it, back
+ * to `fromMs`. A frame of another size or format than the first is dropped
+ * and counted: hosted H3 has changed a session's size mid-session, and raw
+ * video cannot.
+ */
+const resample = (fromMs: number, counts: Counts) =>
+  Stream.mapAccum(
+    (): Slots => ({ shape: undefined, last: undefined, fresh: false, slot: 0 }),
+    (state, arrival: Arrival<VideoFrame>): readonly [Slots, ReadonlyArray<VideoFrame>] => {
+      const frame = arrival.element;
+      const shape = state.shape ?? {
+        width: frame.width,
+        height: frame.height,
+        format: frame.format,
+      };
+      if (
+        frame.width !== shape.width ||
+        frame.height !== shape.height ||
+        frame.format !== shape.format
+      ) {
+        counts.mismatched++;
+        return [state, []];
+      }
+      const written: Array<VideoFrame> = [];
+      let { fresh, slot } = state;
+      if (state.last !== undefined) {
+        while (fromMs + (slot + 0.5) * frameMs <= arrival.atMs) {
+          written.push(state.last);
+          if (!fresh) counts.repeated++;
+          fresh = false;
+          slot++;
+        }
+        if (fresh) counts.superseded++;
+      }
+      return [{ shape, last: frame, fresh: true, slot }, written];
+    },
+    { onHalt: (state) => (state.last !== undefined && state.fresh ? [state.last] : []) },
+  );
+
+/**
+ * The sound as 16-bit samples: silence first, so that it starts with the
+ * picture at `fromMs` (the first block ends as it arrives), and silence for
+ * each block the host dropped. Sound that arrives keeps its own clock.
+ */
+const align = (fromMs: number, counts: Counts) =>
+  Stream.mapAccum(
+    (): AudioFrame | undefined => undefined,
+    (
+      last,
+      arrival: Arrival<Recorded<AudioFrame>>,
+    ): readonly [AudioFrame | undefined, ReadonlyArray<Int16Array<ArrayBuffer>>] => {
+      const element = arrival.element;
+      if (element._tag === "Lost") {
+        if (last === undefined) return [last, []];
+        const count = Number(element.count);
+        counts.silence += (count * last.samples.length) / last.channels;
+        return [last, Array.from({ length: count }, () => new Int16Array(last.samples.length))];
+      }
+      const block = element.frame;
+      counts.blocks++;
+      if (last !== undefined) return [block, [block.samples]];
+      const lead =
+        Math.round(((arrival.atMs - fromMs) * block.sampleRate) / 1000) -
+        block.samples.length / block.channels;
+      if (lead <= 0) return [block, [block.samples]];
+      counts.silence += lead;
+      return [block, [new Int16Array(lead * block.channels), block.samples]];
+    },
+  );
+
+/** A frame's bytes in pieces of at most `pieceBytes`, sharing its buffer. */
+const piecesOf = (frame: VideoFrame): ReadonlyArray<Uint8Array> => {
+  const pieces: Array<Uint8Array> = [];
+  for (let at = 0; at < frame.data.length; at += pieceBytes)
+    pieces.push(frame.data.subarray(at, at + pieceBytes));
+  return pieces;
+};
+
+/** A recording under way; `finished` waits for ffmpeg to finish the file. */
+export interface Recorder {
+  readonly finished: Effect.Effect<Recording>;
+}
+
+/**
+ * Records a picture and its sound to an MP4 through ffmpeg (H.264 and AAC),
+ * from `fromMs` on Effect's clock until `until` completes, keeping that
+ * clock's timing: 24 frames a second, each the latest to have arrived by its
+ * time, with the sound starting with the picture.
+ *
+ * Both tracks are read at once into queues that ffmpeg's pipes drain, so a
+ * reader never waits on the encoder until a queue is full. ffmpeg starts once
+ * the first frame and the first block of sound (or a second without one) give
+ * it their formats, and finishes the file when the tracks end. The readers
+ * and ffmpeg belong to the caller's scope, so the file can be finished after
+ * the scope that carried the tracks has closed.
+ */
+export const record = Effect.fnUntraced(function* <E, E2>(input: {
+  readonly file: string;
+  readonly video: Stream.Stream<VideoFrame, E>;
+  readonly audio: Stream.Stream<AudioFrame, E2>;
+  readonly fromMs: number;
+  readonly until: Effect.Effect<unknown>;
+}) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const counts: Counts = {
+    frames: 0,
+    repeated: 0,
+    superseded: 0,
+    mismatched: 0,
+    blocks: 0,
+    silence: 0,
+  };
+  const picture = yield* Deferred.make<
+    { readonly width: number; readonly height: number; readonly format: VideoFormat } | undefined
+  >();
+  const sound = yield* Deferred.make<
+    { readonly sampleRate: number; readonly channels: number } | undefined
+  >();
+  const pieces = yield* Queue.bounded<Uint8Array, Cause.Done>(queuedPieces);
+  const blocks = yield* Queue.bounded<Uint8Array, Cause.Done>(queuedBlocks);
+  yield* arriving(input.video, input.until).pipe(
+    resample(input.fromMs, counts),
+    Stream.tap((frame) =>
+      Effect.andThen(
+        Deferred.succeed(picture, {
+          width: frame.width,
+          height: frame.height,
+          format: frame.format,
+        }),
+        Effect.sync(() => {
+          counts.frames++;
+        }),
+      ),
+    ),
+    Stream.map(piecesOf),
+    Stream.flattenIterable,
+    Stream.runIntoQueue(pieces),
+    Effect.ensuring(Deferred.succeed(picture, undefined)),
+    Effect.forkScoped({ startImmediately: true }),
+  );
+  yield* arriving(recorder(input.audio), input.until).pipe(
+    Stream.tap(({ element }) =>
+      element._tag === "Frame"
+        ? Deferred.succeed(sound, {
+            sampleRate: element.frame.sampleRate,
+            channels: element.frame.channels,
+          })
+        : Effect.void,
+    ),
+    align(input.fromMs, counts),
+    Stream.map((samples) => new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength)),
+    Stream.runIntoQueue(blocks),
+    Effect.ensuring(Deferred.succeed(sound, undefined)),
+    Effect.forkScoped({ startImmediately: true }),
+  );
+  const encoder = yield* Effect.gen(function* () {
+    const format = yield* Deferred.await(picture);
+    if (format === undefined)
+      return { width: 0, height: 0, ...frameCounts(counts), failure: "no frame arrived" };
+    const audio = yield* Deferred.await(sound).pipe(
+      Effect.timeoutOption(soundWait),
+      Effect.map(Option.getOrUndefined),
+    );
+    const exit = yield* Effect.scoped(
+      Effect.flatMap(
+        spawner.spawn(
+          ChildProcess.make(
+            "ffmpeg",
+            [
+              ...["-hide_banner", "-loglevel", "error", "-y"],
+              ...["-f", "rawvideo", "-pix_fmt", format.format === "BGRA" ? "bgra" : "rgba"],
+              ...["-s", `${format.width}x${format.height}`, "-r", String(reelFps), "-i", "pipe:0"],
+              ...(audio === undefined
+                ? []
+                : [
+                    ...["-f", "s16le", "-ar", String(audio.sampleRate)],
+                    ...["-ac", String(audio.channels), "-i", "pipe:3"],
+                  ]),
+              ...["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p"],
+              ...(audio === undefined ? [] : ["-c:a", "aac", "-b:a", "160k"]),
+              ...["-movflags", "+faststart", input.file],
+            ],
+            {
+              stdin: Stream.fromQueue(pieces),
+              stdout: "ignore",
+              stderr: "inherit",
+              additionalFds:
+                audio === undefined
+                  ? {}
+                  : { fd3: { type: "input", stream: Stream.fromQueue(blocks) } },
+            },
+          ),
+        ),
+        (handle) => handle.exitCode,
+      ),
+    ).pipe(
+      Effect.match({
+        onFailure: () => ({ failure: "ffmpeg could not run" }),
+        onSuccess: (code) => ({ exitCode: Number(code) }),
+      }),
+    );
+    return {
+      width: format.width,
+      height: format.height,
+      ...frameCounts(counts),
+      ...(audio === undefined
+        ? {}
+        : {
+            audio: {
+              ...audio,
+              blocks: counts.blocks,
+              silenceMs: round((counts.silence * 1000) / audio.sampleRate),
+            },
+          }),
+      ...exit,
+    };
+  }).pipe(
+    // ffmpeg is gone: nothing more is read into the queues, so their readers wait on nothing.
+    Effect.ensuring(Effect.andThen(Queue.shutdown(pieces), Queue.shutdown(blocks))),
+    Effect.forkScoped,
+  );
+  return { finished: Fiber.join(encoder) } satisfies Recorder;
+});
+
+const frameCounts = (counts: Counts) => ({
+  frames: counts.frames,
+  repeated: counts.repeated,
+  superseded: counts.superseded,
+  mismatched: counts.mismatched,
+});
+
+/** The encoders and filters a reel, its poster and its loop need, by how ffmpeg lists each kind. */
+const needs = [
+  { list: "-encoders", flags: 6, names: ["libx264", "aac", "png", "gif"] },
+  { list: "-filters", flags: 3, names: ["fps", "scale", "split", "palettegen", "paletteuse"] },
+] as const;
+
+/**
+ * Why this machine cannot record a reel, or undefined when it can: ffmpeg must
+ * run from the PATH with the encoders and filters that the reel, its poster
+ * and its loop use.
+ */
+export const cannotRecord = Effect.gen(function* () {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const lacking: Array<string> = [];
+  for (const need of needs) {
+    const listed = yield* spawner
+      .string(
+        ChildProcess.make("ffmpeg", ["-hide_banner", need.list], {
+          stdin: "ignore",
+          stderr: "ignore",
+        }),
+      )
+      .pipe(Effect.option);
+    if (Option.isNone(listed)) return "no ffmpeg runs from the PATH";
+    for (const name of need.names)
+      if (!new RegExp(`^ [A-Z.]{${need.flags}} ${name} `, "m").test(listed.value))
+        lacking.push(name);
+  }
+  return lacking.length === 0 ? undefined : `ffmpeg lacks ${lacking.join(", ")}`;
+});
+
+/** ffmpeg on files, with no input from this process: its exit code, undefined when it cannot run. */
+const ffmpeg = (args: ReadonlyArray<string>) =>
+  Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
+    spawner.exitCode(
+      ChildProcess.make(
+        "ffmpeg",
+        ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", ...args],
+        {
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "inherit",
+        },
+      ),
+    ),
+  ).pipe(
+    Effect.match({
+      onFailure: (): number | undefined => undefined,
+      onSuccess: (code) => Number(code),
+    }),
+  );
+
+/** One frame of `reel`, `atSeconds` in, as a PNG of the reel's size. */
+export const poster = (input: {
+  readonly reel: string;
+  readonly file: string;
+  readonly atSeconds: number;
+}) =>
+  ffmpeg([
+    ...["-ss", input.atSeconds.toFixed(3), "-i", input.reel],
+    ...["-frames:v", "1", "-update", "1", input.file],
+  ]);
+
+/**
+ * A loop for a README: `seconds` of `reel` from `fromSeconds`, 720 pixels
+ * wide at 12 frames a second, as a GIF with a palette made from those frames,
+ * each frame after the first storing only the rectangle that changed.
+ */
+export const loop = (input: {
+  readonly reel: string;
+  readonly file: string;
+  readonly fromSeconds: number;
+  readonly seconds: number;
+}) =>
+  ffmpeg([
+    ...["-ss", input.fromSeconds.toFixed(3), "-t", input.seconds.toFixed(3), "-i", input.reel],
+    "-filter_complex",
+    "[0:v]fps=12,scale=720:-1:flags=lanczos,split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle",
+    ...["-loop", "0", input.file],
+  ]);

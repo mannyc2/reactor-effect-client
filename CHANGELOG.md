@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- A documentation site, [mannyc2.github.io/reactor-effect-client](https://mannyc2.github.io/reactor-effect-client/), with concept pages, guides, the hosted evidence, `llms.txt` and `llms-full.txt` for coding agents, and a playground that runs H3 Studio on `ReactorTest` in the browser.
+- An Agent Skill, `skills/reactor-effect`, installable with `npx skills add mannyc2/reactor-effect-client`.
+
+### Changed
+
+- The package READMEs open with what each package is for and link the documentation, which now carries the contracts the client README spelled out; the npm descriptions, keywords, homepage and issue tracker say the same.
+
 ### Fixed
 
 - Near a capped session's cap, the filler covering the wait for an `At` item could go late, or not at all. A clip tiling that wait was too long to air before the cap, so none was sent; as the wait shrank, a clip sized to it came to fit, but nothing woke the playout then, and it went only with the next event, if one came before the cap. The playout now asks at once for the longest clip that airs before the cap, if `lengths.min` does.

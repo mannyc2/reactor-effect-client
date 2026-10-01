@@ -14,7 +14,6 @@ import { assert, describe, layer } from "@effect/vitest";
 import { ConfigProvider, Effect, FileSystem, Layer, Option, Stream, SubscriptionRef } from "effect";
 import { HttpApiClient } from "effect/unstable/httpapi";
 import { Api } from "../src/Api.ts";
-import type { ChannelEvent } from "../src/Api.ts";
 import { Server } from "../src/App.ts";
 
 /**
@@ -69,30 +68,21 @@ const hasFfmpeg = spawnSync("ffmpeg", ["-version"]).status === 0;
 describe.skipIf(!hasFfmpeg)("livestream", () => {
   layer(TestServer, { excludeTestServices: true, timeout: "30 seconds" })((it) => {
     it.effect(
-      "accepts a prompt and shows it starting on the event stream",
+      "accepts a prompt and shows it airing in the status feed",
       () =>
         Effect.gen(function* () {
           const client = yield* HttpApiClient.make(Api);
-          // The feed carries events from when it is opened, so it is opened first.
-          const events = yield* client.channel.events();
+          const feed = yield* client.channel.events();
           const submitted = yield* client.channel.submit({
             payload: { prompt: "A red kite over a green hill" },
           });
-          assert.strictEqual(submitted._tag, "Accepted");
-          if (submitted._tag !== "Accepted") return;
-          const started = yield* events.pipe(
-            Stream.filter(
-              (event): event is Extract<ChannelEvent, { _tag: "Clip" }> =>
-                event._tag === "Clip" && event.clipId === submitted.clipId,
-            ),
-            Stream.filter((event) => event.phase === "Started"),
+          const aired = yield* feed.pipe(
+            Stream.map((status) => status.asRun.find((clip) => clip.key === submitted.key)),
+            Stream.filter((clip) => clip !== undefined && clip.startedAt !== null),
             Stream.runHead,
           );
-          assert.isTrue(Option.isSome(started));
-          assert.strictEqual(
-            Option.getOrUndefined(started)?.prompt,
-            "A red kite over a green hill",
-          );
+          assert.isTrue(Option.isSome(aired));
+          assert.strictEqual(Option.getOrUndefined(aired)?.prompt, "A red kite over a green hill");
         }),
       60_000,
     );
@@ -118,7 +108,7 @@ describe.skipIf(!hasFfmpeg)("livestream", () => {
             Effect.forkScoped,
           );
           const renewal = yield* (yield* client.channel.events()).pipe(
-            Stream.filter((event) => event._tag === "Renewal" && event.phase === "Switched"),
+            Stream.filter((status) => status.switches.length > 0),
             Stream.runHead,
           );
           assert.isTrue(Option.isSome(renewal));
@@ -133,7 +123,7 @@ describe.skipIf(!hasFfmpeg)("livestream", () => {
           );
           assert.isTrue(Option.isSome(after));
           const status = yield* client.channel.status();
-          assert.isNotNull(status.session);
+          assert.isTrue(status.sessions.some((session) => session.role === "on-air"));
         }),
       60_000,
     );

@@ -1,0 +1,272 @@
+---
+title: Test offline with ReactorTest
+description: "Run an application against the simulated Reactor on the Effect clock: hosted timing, faults, and long programmes in seconds."
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Run your application against Reactor simulated in memory, deterministically on Effect's test clock,
+and assert what aired, with no API key, no network and nothing billed.
+
+## The pieces
+
+**`ReactorTest.layer({ timing, ...options })`** provides an `HttpClient`, a `PeerFactory` and the
+`ReactorTest` service. Put it beneath `CoordinatorClient.layer()` and `Reactor.layer()`, where a
+deployment puts `FetchHttpClient.layer` and a host. Everything above it, sessions, `H3`, `Playout`
+and your own code, runs unchanged. `ReactorTest.layerCoordinator` is the HTTP API alone, with no
+peers.
+
+It simulates, at the network edge:
+
+- **The coordinator's HTTP API.** Tokens bound to sessions; expired tokens refused with 401 and
+  unbound ones with 403; the API key accepted as a bearer only to read and end sessions; uploads,
+  recordings (off by default) and pricing.
+- **Sessions.** Several connections per session, a session that reads `INACTIVE` for 30 seconds
+  after its last connection drops and then ends, caps, and billing per second.
+- **The account's limits.** Five sessions at once, and ten created a minute with at most three back
+  to back, refused with `429`.
+- **H3 over the real wire protocol.** Its request, reference and metadata limits; autoplay off at
+  the start; the queue broadcast before an enqueue's reply, and a `stop` that lands after its
+  acknowledgement, as hosted H3 does; moderation verdicts that name nothing, as paid runs saw them.
+- **Media.** Decoded BGRA frames, 16×16 by default, each carrying its clip's identity
+  (`ReactorTest.frameOf(frame)` reads it back), and PCM. A connection receives media only on the
+  tracks it has resumed.
+
+**Timing.** Every delay is an `Effect.sleep` drawn from `timing`:
+
+- `ReactorTest.Timing.fixed({ buildSpeed, ... })`: every delay zero unless named. A scenario test
+  names the delays its outcome depends on.
+- `ReactorTest.Timing.random({ seed })`: ranges deliberately wider than anything measured, builds
+  from a quarter of real time to ten times it, so code tuned to one speed fails. A seed repeats a
+  run.
+- `ReactorTest.Timing.hosted`: ranges paid runs on hosted H3 measured on 2026-09-27 and 09-28:
+  connect steps of 0.2–0.9 s, 5-second clips built about every 2.1 s, seams of 30–110 ms, a stop
+  landing about 20 ms after its acknowledgement, a continued clip built in 5.45 s and a moderation
+  verdict about a second after its enqueue. Use it for demos, not for what a test asserts.
+
+**The clock.** Under `TestClock`, fork `ReactorTest.flow(step)` into the test's scope. It moves the
+clock in steps (5 ms by default), so straight-line test code advances in virtual time. On the live
+clock the simulation plays in real time.
+
+**Faults.** `test.inject(fault)` arms a fault from then on, and `faults` arms them when the layer is
+built. A fault's `nth` counts the occurrences it matches from 1; without it, every one matches.
+
+| Area                  | Faults                                                                                                               |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Allocation            | `RefuseAllocation` (403, or `status`), `StallAllocation`, `UnnamedAllocation`, `IgnoreSessionLimit`, `RepeatSession` |
+| Connections           | `RefuseConnect`, `RefuseReconnect` (`status`, `retryAfter`), `Disconnect` (`after`), `Expire` (`after`)              |
+| Commands              | `DropReply` (`command`, `applied`), `LateReply` (`command`, `after`)                                                 |
+| Builds                | `StallBuild`, `FailBuild` (`reason`), `InvalidImage`                                                                 |
+| Ending a session      | `IgnoreCap`, `SlowDelete` (`for`), `IgnoreDelete`, `MissingSession` (404 for a session still running)                |
+| Media                 | `Video` (`absent`, `black` or `frozen`), `NoAudio`                                                                   |
+| Tokens and recordings | `OverGrant` (`longer`, `uncapped`, `bound`, `expired`, `silent`), `LateRecording` (`by`)                             |
+| Moderation            | `Moderate` (`prompt`, `action`, and `verdict: false` to end the session with no verdict)                             |
+
+**Inspection.** The `ReactorTest` service has `apiKey`, `sessions` (each session's state, whether
+it is connected, the `DELETE`s it received, its grant and the SDK that created it), `billing`
+(seconds and dollars), `log` (every command, message, build, upload, track change and request, in
+order) and `inject`. `ReactorTest.pngBytes` and
+`ReactorTest.wavBytes` make reference images and audio that H3's local checks accept.
+
+## A worked test
+
+The code under test submits a show's prompts to a `Playout` and reports how each settled. The tests
+run it on the simulated Reactor and assert its as-run outcomes.
+
+<Steps>
+
+1. **Install the test runner** beside the SDK:
+
+   ```sh
+   npm install --save-dev --save-exact @effect/vitest@4.0.0-rc.117 vitest@5
+   ```
+
+2. **The code under test.** It asks for `Playout.Playout` and nothing else, so it runs on a paid
+   playout or a simulated one:
+
+   ```ts
+   import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+   import { assert, layer } from "@effect/vitest";
+   import { Effect, Layer, Ref, Stream } from "effect";
+   import type { Duration } from "effect";
+   import {
+     CoordinatorClient,
+     H3,
+     H3Source,
+     Playout,
+     Reactor,
+     ReactorTest,
+   } from "reactor-effect-client";
+
+   /** The code under test: airs a show's prompts in order and reports how each one settled. */
+   const playShow = Effect.fn("playShow")(function* (show: string, prompts: ReadonlyArray<string>) {
+     const playout = yield* Playout.Playout;
+     const handles = yield* Effect.forEach(prompts, (prompt, index) =>
+       playout.submit({
+         key: Playout.ItemKey.make(`${show}-${index}`),
+         lane: "show",
+         request: { prompt, seconds: 5 },
+       }),
+     );
+     return yield* Effect.forEach(handles, (handle) => handle.outcome);
+   });
+   ```
+
+   `handle.outcome` resolves once the item has settled for good: `Ended` (with `termination`
+   `"finished"` or `"stopped"` and its `airedSeconds`), `Dropped`, `Failed` (with a tagged
+   `reason`), `Unobserved`, or a terminal `Unknown`.
+
+3. **The simulated stack.** A playout over capped H3 sessions, on the real client, over
+   `ReactorTest`. The tokens are minted with the simulated Reactor's own key, and the rate is the
+   one Reactor published on 2026-09-30, so `billing` reads in today's dollars:
+
+   ```ts
+   /** H3 sessions capped at `maxSessionDuration`, on tokens from the simulated Reactor's key. */
+   const open = (maxSessionDuration: Duration.Input) =>
+     Effect.gen(function* () {
+       const test = yield* ReactorTest.ReactorTest;
+       const coordinator = yield* CoordinatorClient.CoordinatorClient;
+       return yield* H3Source.open({
+         tokens: coordinator.tokens({
+           apiKey: test.apiKey,
+           modelName: H3.modelName,
+           maxSessionDuration,
+         }),
+       });
+     });
+
+   /** A playout with one lane, over the real client and Reactor simulated in memory. */
+   const SimulatedShow = (cap: Duration.Input) =>
+     Playout.layer({ open: open(cap), lanes: [{ name: "show" }] }).pipe(
+       Layer.provideMerge(Reactor.layer()),
+       Layer.provideMerge(CoordinatorClient.layer()),
+       Layer.provideMerge(
+         ReactorTest.layer({
+           timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "70 millis" }),
+           creditsPerSecond: 350,
+         }),
+       ),
+       Layer.provideMerge(NodeCrypto.layer),
+     );
+   ```
+
+   `buildSpeed: 2.4` builds 2.4 seconds of video a second, close to what hosted H3 did for 5-second
+   clips. `NodeCrypto.layer` supplies the `Crypto` service `H3` uses.
+
+4. **Scenario tests.** `layer(...)` from `@effect/vitest` builds the stack once for the block, with
+   a `TestClock`, and each test forks `ReactorTest.flow` to move it. The second test arms a build
+   failure for the second clip it enqueues:
+
+   ```ts
+   layer(SimulatedShow("10 minutes"))("playShow", (it) => {
+     it.effect("airs every segment to its end, in order", () =>
+       Effect.gen(function* () {
+         yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+         const outcomes = yield* playShow("harbour", ["a lighthouse", "a harbour", "a storm"]);
+         assert.deepStrictEqual(
+           outcomes.map((outcome) => outcome._tag),
+           ["Ended", "Ended", "Ended"],
+         );
+       }),
+     );
+
+     it.effect("fails the segment whose build fails, and airs the rest", () =>
+       Effect.gen(function* () {
+         yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+         const test = yield* ReactorTest.ReactorTest;
+         yield* test.inject({ _tag: "FailBuild", nth: 2 });
+         const [first, second, third] = yield* playShow("faulty", ["one", "two", "three"]);
+         assert.strictEqual(first?._tag, "Ended");
+         assert.strictEqual(second?._tag === "Failed" ? second.reason._tag : second?._tag, "Clip");
+         assert.strictEqual(third?._tag, "Ended");
+       }),
+     );
+   });
+   ```
+
+   A failed build settles its item `Failed` with reason `Clip`; the provider's own words stay in the
+   reason's `Redacted` `provider` field, out of messages and logs.
+
+5. **A longer programme, and its bill.** Twenty 5-second segments on sessions capped at one minute
+   cross several renewals. The test counts the switches and holds the simulated bill to a budget:
+
+   ```ts
+   layer(SimulatedShow("1 minute"))("playShow across sessions", (it) => {
+     it.effect("airs 100 s of programme on one-minute sessions, within budget", () =>
+       Effect.gen(function* () {
+         yield* Effect.forkScoped(ReactorTest.flow("100 millis"));
+         const playout = yield* Playout.Playout;
+         const switches = yield* Ref.make(0);
+         yield* playout.events.pipe(
+           Stream.filter((event) => event._tag === "Session" && event.event._tag === "Switched"),
+           Stream.runForEach(() => Ref.update(switches, (count) => count + 1)),
+           Effect.forkScoped({ startImmediately: true }),
+         );
+         const scenes = Array.from({ length: 20 }, (_, index) => `scene ${index}`);
+         const outcomes = yield* playShow("long", scenes);
+         assert.isTrue(outcomes.every((outcome) => outcome._tag === "Ended"));
+         assert.isAtLeast(yield* Ref.get(switches), 1);
+         const test = yield* ReactorTest.ReactorTest;
+         const billing = yield* test.billing;
+         assert.isBelow(billing.usd, 8);
+       }),
+     );
+   });
+   ```
+
+   The event reader starts at once (`startImmediately`), so it subscribes before anything is
+   submitted. In this run the twenty segments aired in 109 seconds of virtual time; the playout
+   opened four sessions and switched twice, and the simulated bill came to 183 seconds, $6.40.
+   With one-minute caps, each replacement opens 30 seconds before its predecessor's cap and
+   overlaps it, so short caps bill much more than the air. Longer caps waste less.
+
+6. **Run it** with `npx vitest run`, or `bun --bun vitest run` on Bun. On a Linux workstation on
+   2026-09-30 the three tests took 2.3 s on Node and 2.9 s on Bun, start-up included; the third,
+   nearly two minutes of virtual time across four sessions, took about half a second.
+
+</Steps>
+
+## How long a long programme takes
+
+The simulation's cost follows its media, not the clock's steps. Measured on one Linux workstation
+on 2026-09-30: the scenario tests above, and a playout with filler on 10-minute sessions:
+
+| Virtual time                                        | Wall time |
+| --------------------------------------------------- | --------- |
+| About 20 seconds of programme (the scenario tests)  | 50–220 ms |
+| 10 minutes, one renewal                             | 4.4 s     |
+| 1 hour, six renewals                                | 20–22 s   |
+| 1 hour, six renewals, `Video: absent` and `NoAudio` | 3.1 s     |
+
+A test that never reads media can arm `{ _tag: "Video", video: "absent" }` and
+`{ _tag: "NoAudio" }` to run long programmes about seven times faster.
+
+## Pitfalls
+
+- **One playout per block.** `layer(...)` shares its layer, and so one simulated Reactor and one
+  playout, across the tests in its block: sessions and bills accumulate. Item keys are idempotent
+  for a playout's life, so a second test that submits `segment-0` with another prompt fails with
+  `KeyMismatch`. Give each test its own keys, or its own block.
+- **Fork `flow` in every test.** Without it the test clock never moves, and the test waits until
+  Vitest's timeout.
+- **Assert on fixed timing.** `Timing.hosted` and `Timing.random` draw from ranges; a scenario that
+  depends on a delay names it in `Timing.fixed`.
+- **Today's rate.** `creditsPerSecond` defaults to 350, H3's rate on Reactor's pricing endpoint on
+  2026-09-30, so a simulated bill matches what a paid session would cost today.
+- **The account's limits apply.** A test that opens more than five sessions at once, or creates
+  them faster than ten a minute of virtual time (three back to back), gets `429`, as it would on
+  Reactor.
+- **A rehearsal is not a hosted run.** `ReactorTest` models what H3 does, with delays drawn from
+  paid runs, not hosted latency as a real network varies it, billing as Reactor charges it, TURN
+  relays or interop. Those claims rest on
+  [hosted evidence](/reactor-effect-client/reference/hosted-evidence/).
+
+<Aside type="tip">
+  The repository's paid checks run as rehearsals on `ReactorTest` in CI, the same programs against
+  the simulated Reactor at hosted timing, so a change that would fail a paid check usually fails for
+  free first.
+</Aside>
+
+The [offline rundown](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/client/examples)
+example is a service written against `Playout`, run in real time on `Timing.hosted` and tested this
+way.

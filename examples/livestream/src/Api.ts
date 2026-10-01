@@ -9,8 +9,8 @@ import {
 
 /**
  * The channel's HTTP contract, kept apart from the server so a client (the
- * test, or another service) can derive a typed client from it without the
- * server's dependencies.
+ * page, the test, or another service) can derive a typed client from it
+ * without the server's dependencies.
  */
 
 export const PromptRequest = Schema.Struct({
@@ -18,14 +18,12 @@ export const PromptRequest = Schema.Struct({
 });
 
 /**
- * Either the provider accepted the prompt as a clip, or the enqueue was sent
- * and its outcome is unknown: it may still play, and the event stream will
- * show it if it does. Neither is retried by the server.
+ * The playout admitted the prompt as an item under `key`. Building, airing
+ * and how it ended follow in the status; the server never sends it twice.
  */
-export const Submitted = Schema.Union([
-  Schema.TaggedStruct("Accepted", { clipId: Schema.String }),
-  Schema.TaggedStruct("Unconfirmed", {}),
-]).pipe(HttpApiSchema.status(202));
+export const Submitted = Schema.TaggedStruct("Accepted", { key: Schema.String }).pipe(
+  HttpApiSchema.status(202),
+);
 export type Submitted = typeof Submitted.Type;
 
 export class ChannelBusy extends Schema.TaggedError<ChannelBusy>()(
@@ -46,52 +44,133 @@ export class PromptRejected extends Schema.TaggedError<PromptRejected>()(
   { httpApiStatus: 422 },
 ) {}
 
-export const ClipSummary = Schema.Struct({
-  clipId: Schema.String,
+/** Whose a clip is: a viewer's prompt, the house rotation, or a clip this channel did not send. */
+const Clip = {
+  /** The viewer item's key. */
+  key: Schema.NullOr(Schema.String),
+  /** The house rotation's index for the clip, once the playout has named it. */
+  house: Schema.NullOr(Schema.Int),
+  origin: Schema.Literals(["viewer", "house", "other"]),
+  /** The words it was asked for with; null where the channel does not know them. */
   prompt: Schema.NullOr(Schema.String),
-});
-export type ClipSummary = typeof ClipSummary.Type;
+};
 
-export class ChannelStatus extends Schema.Class<ChannelStatus>("ChannelStatus")({
-  mode: Schema.Literals(["simulated", "live"]),
+/** How a clip left the air, or settled without airing, in the playout's words. Times are epoch ms. */
+export const Outcome = Schema.Union([
+  Schema.TaggedStruct("Ended", {
+    at: Schema.Finite,
+    /** Reported for a viewer's clip; the playout reports a house clip's end without one. */
+    termination: Schema.NullOr(Schema.Literals(["finished", "stopped"])),
+    /** The provider's count for a viewer's clip. */
+    airedSeconds: Schema.NullOr(Schema.Finite),
+  }),
+  Schema.TaggedStruct("Dropped", {
+    at: Schema.Finite,
+    reason: Schema.Literals(["late", "withdrawn", "replaced", "displaced"]),
+  }),
+  Schema.TaggedStruct("Failed", {
+    at: Schema.Finite,
+    reason: Schema.Literals(["Clip", "Command", "Lost", "Moderated", "Closed"]),
+  }),
+  /** Acknowledged, its start never seen. */
+  Schema.TaggedStruct("Unobserved", { at: Schema.Finite }),
+  /** Sent, its acknowledgement never seen, and nothing can settle it any more. */
+  Schema.TaggedStruct("Unknown", { at: Schema.Finite }),
+]);
+export type Outcome = typeof Outcome.Type;
+
+/** One clip of the as-run log: what aired, or settled without airing, and how. */
+export const AsRunEntry = Schema.Struct({
+  ...Clip,
+  /** When the session reported its start; null for a clip that settled without one. */
+  startedAt: Schema.NullOr(Schema.Finite),
+  /** Its length as the provider built it, when reported. */
+  seconds: Schema.NullOr(Schema.Finite),
   session: Schema.NullOr(Schema.String),
-  media: Schema.Literals(["Ready", "Recovering", "Failed", "Closed"]),
-  playing: Schema.NullOr(ClipSummary),
-  upcoming: Schema.Array(ClipSummary),
-  /** The media output's loss so far, or null when a total could not be read. */
-  loss: Schema.NullOr(
-    Schema.Struct({
-      droppedVideo: Schema.Int,
-      droppedAudio: Schema.Int,
-      readerOverflows: Schema.Int,
-    }),
-  ),
-}) {}
+  /** The first decoded frame the broadcast received after the reported start. */
+  pictureAt: Schema.NullOr(Schema.Finite),
+  /** Null while it is on air. */
+  outcome: Schema.NullOr(Outcome),
+});
+export type AsRunEntry = typeof AsRunEntry.Type;
+
+export const SessionStatus = Schema.Struct({
+  sessionId: Schema.String,
+  role: Schema.Literals(["on-air", "replacement", "retiring"]),
+  /** When the playout reported it open; null if that was before the channel listened. */
+  openedAt: Schema.NullOr(Schema.Finite),
+  /** When its granted length runs out; null for an uncapped session, or one opened unseen. */
+  endsAt: Schema.NullOr(Schema.Finite),
+  /** When the playout opens its replacement: the renewal lead before `endsAt`. */
+  renewsAt: Schema.NullOr(Schema.Finite),
+  /** Its connection dropped and the session is reconnecting it. */
+  reconnecting: Schema.Boolean,
+  reconnects: Schema.Int,
+});
+export type SessionStatus = typeof SessionStatus.Type;
+
+export const Switch = Schema.Struct({
+  from: Schema.String,
+  to: Schema.String,
+  at: Schema.Finite,
+  /** The retiring session never started a clip, or its last one left the air and the grace passed. */
+  decision: Schema.Literals(["no-observed-start", "grace-elapsed"]),
+});
+export type Switch = typeof Switch.Type;
 
 /**
- * What `GET /api/events` sends, one Server-Sent Event per change, in the order
- * the playout observed them. It carries identities and phases only:
- * never provider text, which the SDK keeps out of everything it reports.
+ * The channel as the server knows it, read from the playout, the programme
+ * and the broadcast. Times are epoch milliseconds on the server's clock. It
+ * carries identities, phases and the channel's own prompts, never provider text.
  */
-export const ChannelEvent = Schema.Union([
-  Schema.TaggedStruct("Clip", {
-    clipId: Schema.String,
-    phase: Schema.Literals(["Queued", "Building", "Ready", "Started", "Ended", "Failed"]),
-    prompt: Schema.NullOr(Schema.String),
-  }),
-  Schema.TaggedStruct("Starved", {}),
-  Schema.TaggedStruct("Renewal", {
-    phase: Schema.Literals(["Opened", "SetupFailed", "Switched", "Replaced", "Moderated"]),
-    session: Schema.NullOr(Schema.String),
-    lostClips: Schema.NullOr(Schema.Int),
-  }),
-  Schema.TaggedStruct("Media", {
-    state: Schema.Literals(["Ready", "Recovering", "Failed", "Closed"]),
-    session: Schema.NullOr(Schema.String),
-  }),
-  Schema.TaggedStruct("OffAir", { reason: Schema.String }),
-]);
-export type ChannelEvent = typeof ChannelEvent.Type;
+export class ChannelStatus extends Schema.Class<ChannelStatus>("ChannelStatus")({
+  name: Schema.String,
+  mode: Schema.Literals(["simulated", "live"]),
+  /** When this status was read. */
+  at: Schema.Finite,
+  /** Why the channel went off air; null while it is on air. */
+  offAir: Schema.NullOr(Schema.String),
+  /** Browsers receiving the broadcast now. */
+  viewers: Schema.Int,
+  /**
+   * The clip on air, as the session reported its start. `pictureAt` stays null
+   * until the broadcast has received a decoded frame after that start.
+   */
+  playing: Schema.NullOr(
+    Schema.Struct({
+      ...Clip,
+      startedAt: Schema.Finite,
+      seconds: Schema.NullOr(Schema.Finite),
+      pictureAt: Schema.NullOr(Schema.Finite),
+    }),
+  ),
+  /**
+   * What the playout has lined up: the Ready clips of the session on air in the
+   * order they will play, those of its replacement, then items still to be
+   * built. A house clip is listed once Ready, without its prompt.
+   */
+  upNext: Schema.Array(
+    Schema.Struct({
+      ...Clip,
+      phase: Schema.Literals(["Accepted", "Building", "Ready"]),
+      /** Ready on the replacement, which takes the air at the switch. */
+      afterSwitch: Schema.Boolean,
+    }),
+  ),
+  /** The latest clips aired or settled, newest first. */
+  asRun: Schema.Array(AsRunEntry),
+  sessions: Schema.Array(SessionStatus),
+  /** Switches from a retiring session to its replacement, newest first. */
+  switches: Schema.Array(Switch),
+  /** Sessions lost before a planned switch, whose unaired clips were rebuilt on the next. */
+  replaced: Schema.Int,
+  /** Seconds of air secured: the playing clip's rest and the Ready clips after it. */
+  runwaySeconds: Schema.Finite,
+  /** Times nothing was left to play. */
+  starved: Schema.Int,
+  /** A prompt is taken only if it can start within this many seconds. */
+  startWithinSeconds: Schema.Finite,
+}) {}
 
 export class OffAir extends Schema.TaggedError<OffAir>()(
   "OffAir",
@@ -107,9 +186,9 @@ export class ChannelApi extends HttpApiGroup.make("channel")
       error: [ChannelBusy, ChannelUnavailable, PromptRejected],
     }),
     HttpApiEndpoint.get("status", "/status", { success: ChannelStatus }),
-    // Server-Sent Events: the current state first, then every change.
+    // Server-Sent Events: the current status first, then a status at every change.
     HttpApiEndpoint.get("events", "/events", {
-      success: HttpApiSchema.StreamSse({ data: ChannelEvent }),
+      success: HttpApiSchema.StreamSse({ data: ChannelStatus }),
     }),
   )
   .prefix("/api") {}

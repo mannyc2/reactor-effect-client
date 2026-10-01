@@ -22,10 +22,12 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 /** The session's cap: a token for 90 seconds bounds what one capture can cost. */
 const sessionSeconds = 90;
 /**
- * Reactor bills a session by the minute. Its documentation does not say how
- * a started minute rounds, so the bound counts it whole: two minutes.
+ * The seconds a capped session can be billed, counted in the unit Reactor's
+ * pricing states the rate in: every second for a rate per second, each
+ * started minute whole for a rate per minute.
  */
-const billedSeconds = Math.ceil(sessionSeconds / 60) * 60;
+const billedSeconds = (rate: CoordinatorClient.Rate) =>
+  rate.per === "second" ? sessionSeconds : Math.ceil(sessionSeconds / 60) * 60;
 
 /**
  * One clip, captured on this machine: a paid H3 session over the native
@@ -41,7 +43,7 @@ const record = Effect.fn("record")(function* (options: {
   readonly out: string;
 }) {
   const reactor = yield* Reactor.Reactor;
-  // The token outlives the one-minute session, so it is never refreshed.
+  // The token outlives the 90-second session, so it is never refreshed.
   const session = yield* reactor.create({
     model: H3.modelName,
     tokens: CoordinatorClient.fixedTokens(options.grant),
@@ -134,9 +136,10 @@ const capture = Command.make(
     const apiKey = yield* Config.Redacted("REACTOR_API_KEY");
     const coordinator = yield* CoordinatorClient.CoordinatorClient;
     const rate = yield* CoordinatorClient.modelRate(yield* coordinator.pricing, H3.modelName);
+    const billed = billedSeconds(rate);
     yield* Console.log(
-      `at most ${((billedSeconds * rate.creditsPerSecond) / rate.creditsPerDollar).toFixed(2)} USD: ` +
-        `the session is capped at ${sessionSeconds} seconds, billed as ${billedSeconds / 60} minutes`,
+      `at most ${((billed * rate.creditsPerSecond) / rate.creditsPerDollar).toFixed(2)} USD: ` +
+        `the session is capped at ${sessionSeconds} seconds, billed by the ${rate.per}`,
     );
     // The API key stays here: the session runs on a token for one session.
     const grant = yield* coordinator.mintToken({

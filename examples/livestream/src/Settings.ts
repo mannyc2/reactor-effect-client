@@ -1,4 +1,4 @@
-import { Config, Context, Duration, Effect, Layer, Schema } from "effect";
+import { Config, Context, Duration, Effect, Layer, Option, Redacted, Schema } from "effect";
 import * as H3 from "reactor-effect-client/H3";
 
 export class SettingsError extends Schema.TaggedError<SettingsError>()("SettingsError", {
@@ -6,8 +6,46 @@ export class SettingsError extends Schema.TaggedError<SettingsError>()("Settings
 }) {}
 
 /**
+ * An RTMP ingest the program also goes to, such as Twitch's, YouTube's or X's.
+ * Its URL holds the stream key, so it stays redacted, and logs show `host`.
+ */
+export interface Ingest {
+  readonly url: Redacted.Redacted<string>;
+  /** The scheme and host, such as `rtmp://live.twitch.tv`. */
+  readonly host: string;
+  /**
+   * What a log line must not show: the URL's path and query, its last path
+   * segment and its query alone, longest first. The stream key is one of them.
+   */
+  readonly hidden: Redacted.Redacted<ReadonlyArray<string>>;
+}
+
+// The scheme and host, with no user or password, then the path and query.
+// The URL goes to ffmpeg's tee muxer, which reads whitespace, `|`, `[`, `]`,
+// `\` and `'` as its own syntax.
+const ingestUrl = /^(rtmps?:\/\/[^\s/?#@|[\]\\']+)([/?][^\s|[\]\\']*)?$/;
+
+const ingestOf = (url: Redacted.Redacted<string>): Effect.Effect<Ingest, SettingsError> => {
+  const [, host, rest = ""] = ingestUrl.exec(Redacted.value(url)) ?? [];
+  if (host === undefined)
+    return SettingsError.make({
+      message: "CHANNEL_RTMP_URL must be an rtmp:// or rtmps:// URL with no user or password",
+    });
+  const mark = rest.indexOf("?");
+  const path = mark < 0 ? rest : rest.slice(0, mark);
+  const query = mark < 0 ? "" : rest.slice(mark + 1);
+  const last = path.slice(path.lastIndexOf("/") + 1);
+  return Effect.succeed({
+    url,
+    host,
+    hidden: Redacted.make([rest, last, query].filter((part) => part.length > 1)),
+  });
+};
+
+/**
  * The channel's settings, read once from the environment.
  *
+ * - `CHANNEL_NAME`: the name the page shows; `Slow TV`.
  * - `CHANNEL_MODE`: `simulated` (the default, offline and unpaid) or `live`.
  * - `CHANNEL_SESSION_LENGTH`: how long each session lives before it is
  *   renewed; 10 minutes live, 2 minutes simulated so a renewal is soon seen.
@@ -15,19 +53,24 @@ export class SettingsError extends Schema.TaggedError<SettingsError>()("Settings
  *   is opened; 45 seconds.
  * - `CHANNEL_CLIP_SECONDS`: the length of every clip, within H3's request
  *   range; 8.
+ * - `CHANNEL_RTMP_URL`: an rtmp:// or rtmps:// ingest the program also goes
+ *   to; none by default.
  */
 export class Settings extends Context.Service<
   Settings,
   {
+    readonly name: string;
     readonly mode: "simulated" | "live";
     readonly sessionLength: Duration.Duration;
     readonly lead: Duration.Duration;
     readonly clipSeconds: number;
+    readonly ingest: Ingest | undefined;
   }
 >()("reactor-effect-example-livestream/Settings") {
   static readonly layer = Layer.effect(
     Settings,
     Effect.gen(function* () {
+      const name = yield* Config.NonEmptyString("CHANNEL_NAME").pipe(Config.withDefault("Slow TV"));
       const mode = yield* Config.Literals(["simulated", "live"], "CHANNEL_MODE").pipe(
         Config.withDefault("simulated"),
       );
@@ -51,7 +94,9 @@ export class Settings extends Context.Service<
         return yield* SettingsError.make({
           message: "CHANNEL_RENEWAL_LEAD must hold two clips and be shorter than a session",
         });
-      return Settings.of({ mode, sessionLength, lead, clipSeconds });
+      const url = yield* Config.Redacted("CHANNEL_RTMP_URL").pipe(Config.option);
+      const ingest = Option.isSome(url) ? yield* ingestOf(url.value) : undefined;
+      return Settings.of({ name, mode, sessionLength, lead, clipSeconds, ingest });
     }),
   );
 }

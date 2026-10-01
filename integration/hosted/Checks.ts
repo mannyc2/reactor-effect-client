@@ -34,6 +34,7 @@ import type * as Path from "effect/Path";
 import { adoption } from "./checks/Adoption.js";
 import { tour } from "./checks/Tour.js";
 import { show } from "./checks/Show.js";
+import { showreel } from "./checks/Showreel.js";
 import { unconnected } from "./checks/Unconnected.js";
 import type * as Evidence from "./Evidence.js";
 import { failedOf } from "./Evidence.js";
@@ -1526,6 +1527,8 @@ export interface Air {
   readonly video: Media.VideoLog;
   /** The work deadline of the first session. */
   readonly deadline: () => number;
+  /** Waits for the first session's allocation: its work deadline. */
+  readonly allocated: Effect.Effect<number>;
   /** The seam between two items, measured from the decoded picture. */
   readonly seam: (
     ending: string,
@@ -1575,6 +1578,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
   const sessionLog: Array<Logged> = [];
   const windows = new Map<string, number>();
   let deadline = Number.POSITIVE_INFINITY;
+  const firstAllocated = yield* Deferred.make<number>();
   let opened = 0;
   return yield* withSessions((grants) =>
     Effect.gen(function* () {
@@ -1598,6 +1602,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
             Effect.gen(function* () {
               const at = yield* allocated(session.id, grant);
               deadline = Math.min(deadline, at);
+              yield* Deferred.succeed(firstAllocated, deadline);
               grants.set(session.id, grant);
               yield* session.events({ capacity: 1024 }).pipe(
                 Stream.runForEach((event) =>
@@ -1727,6 +1732,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
         when: (find) => waitFor(items, find, deadline),
         video,
         deadline: () => deadline,
+        allocated: Deferred.await(firstAllocated),
         seam: Effect.fnUntraced(function* (ending, next, continued) {
           const all = yield* SubscriptionRef.get(items);
           const endingItem = all.get(ending);
@@ -2294,6 +2300,7 @@ const all = {
   adoption: adoption(pieces),
   show: show(pieces),
   unconnected: unconnected(pieces),
+  showreel: showreel(pieces),
 };
 /** What a check can fail with, and what it needs. */
 export type CheckError = Effect.Error<(typeof all)[Check]>;

@@ -8,16 +8,21 @@ import {
   Layer,
   Option,
   Queue,
+  Redacted,
   Ref,
+  Schedule,
   Schema,
   Scope,
   Stream,
+  SubscriptionRef,
   SynchronizedRef,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type { ReactorError } from "reactor-effect-client/ReactorError";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/Media";
 import * as Fmp4 from "./Fmp4.ts";
+import { Settings } from "./Settings.ts";
+import type { Ingest } from "./Settings.ts";
 
 /** The H3 profile's rate: 24 frames per second, and 48 kHz audio. */
 const fps = 24;
@@ -69,24 +74,86 @@ class Pcm {
   }
 }
 
+/** The browsers' output: fragmented MP4 on stdout, past the fifo the ingest goes through. */
+const browsers = "[f=mp4:movflags=frag_keyframe+empty_moov+default_base_moof:use_fifo=0]pipe:1";
+
 /**
- * Raw frames in (BGRA or RGBA on stdin, 48 kHz mono PCM on fd 3), fragmented
- * MP4 out: H.264 with a keyframe every second, so each fragment is a place a
+ * How the ingest's fifo behaves: it drops packets when the ingest falls
+ * behind, and after any failure connects again every 5 seconds, without a
+ * limit (`max_recovery_attempts=0`), resuming at a keyframe.
+ */
+const recovery = [
+  "drop_pkts_on_overflow=1",
+  "attempt_recovery=1",
+  "recover_any_error=1",
+  "max_recovery_attempts=0",
+  "recovery_wait_time=5",
+  "restart_with_keyframe=1",
+].join(":");
+
+/**
+ * Raw frames in (BGRA or RGBA on stdin, 48 kHz mono PCM on fd 3), one encode
+ * out: H.264 with a keyframe every second, so each fragment is a place a
  * viewer can join, and AAC audio. Raw inputs are described, not probed:
  * probing reads seconds of one input before the other, and both are fed in
  * lockstep, so it would wait forever.
+ *
+ * The tee muxer writes that one encode to every output: fragmented MP4 for
+ * the browsers and, with an ingest, FLV to it. The ingest goes through
+ * ffmpeg's fifo, a queue and a thread of its own, so a slow or lost ingest
+ * costs only its own packets and never holds up the encoder or the browsers;
+ * `onfail=ignore` keeps the browsers' output should the fifo ever give up.
+ * The tee muxer can't ask the encoders for the out-of-band headers MP4 and
+ * FLV need, so `global_header` asks for them.
  */
-const encoderArgs = (frame: VideoFrame): readonly string[] => [
+const encoderArgs = (frame: VideoFrame, ingest: string | undefined): readonly string[] => [
   ...["-hide_banner", "-loglevel", "error"],
   ...["-f", "rawvideo", "-pix_fmt", frame.format === "BGRA" ? "bgra" : "rgba"],
   ...["-s", `${frame.width}x${frame.height}`, "-r", String(fps)],
   ...["-thread_queue_size", "64", "-nofind_stream_info", "-i", "pipe:0"],
   ...["-f", "s16le", "-ar", String(sampleRate), "-ac", "1"],
   ...["-thread_queue_size", "64", "-nofind_stream_info", "-i", "pipe:3"],
+  ...["-map", "0:v", "-map", "1:a"],
   ...["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency"],
   ...["-g", String(fps), "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k"],
-  ...["-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "pipe:1"],
+  ...["-flags", "+global_header", "-f", "tee"],
+  ...(ingest === undefined ? [] : ["-use_fifo", "1", "-fifo_options", recovery]),
+  ingest === undefined ? browsers : `${browsers}|[f=flv:onfail=ignore]${ingest}`,
 ];
+
+/**
+ * Cuts the parts of an ingest's URL that may hold its stream key out of a
+ * line ffmpeg wrote: ffmpeg names its output with every connection that
+ * fails, and a server's refusal may name the key alone.
+ */
+const redact = (ingest: Ingest | undefined): ((line: string) => string) => {
+  const hidden = ingest === undefined ? [] : Redacted.value(ingest.hidden);
+  return (line) =>
+    hidden.reduce((cut, part) => cut.replaceAll(part, part.startsWith("/") ? "/…" : "…"), line);
+};
+
+/**
+ * ffmpeg's lines for the log, each at most once a minute with how often it
+ * came in between: a refused ingest repeats the same lines at every retry.
+ */
+const collapse = <E>(
+  lines: Stream.Stream<string, E>,
+): Stream.Stream<{ readonly line: string; readonly repeats: number }, E> =>
+  lines.pipe(
+    Stream.mapEffect((line) => Effect.map(Clock.currentTimeMillis, (at) => ({ line, at }))),
+    Stream.mapAccum(
+      () => new Map<string, { readonly at: number; readonly repeats: number }>(),
+      (logged, { line, at }) => {
+        const last = logged.get(line);
+        if (last !== undefined && at - last.at < 60_000)
+          return [new Map(logged).set(line, { ...last, repeats: last.repeats + 1 }), []] as const;
+        return [
+          new Map(logged).set(line, { at, repeats: 0 }),
+          [{ line, repeats: last?.repeats ?? 0 }],
+        ] as const;
+      },
+    ),
+  );
 
 /**
  * A steady 24 ticks per second on the Effect clock. A late tick is followed at
@@ -130,22 +197,52 @@ export class Broadcast extends Context.Service<
     readonly viewer: Stream.Stream<Uint8Array, BroadcastError | Fmp4.Fmp4Error>;
     /** Fails once the channel is off air: its media ended with the playout's terminal failure. */
     readonly onAir: Effect.Effect<void, BroadcastError>;
+    /** Viewers receiving the broadcast: how many now, then the count at every change. */
+    readonly viewers: Stream.Stream<number>;
+    /**
+     * When each decoded frame reached the broadcast, in epoch milliseconds: the
+     * latest first (0 before the first frame), then every one after it.
+     */
+    readonly arrivals: Stream.Stream<number>;
   }
 >()("reactor-effect-example-livestream/Broadcast") {
   /**
-   * Fails when ffmpeg is not on PATH. The application builds it before the
-   * playout, so a host without an encoder never opens a paid session.
+   * Fails when ffmpeg is not on PATH, lacks an encoder or muxer the broadcast
+   * uses, or can't send to the ingest's protocol.
+   * The application builds it before the playout, so a host that can't
+   * broadcast never opens a paid session.
    */
   static readonly preflight = Layer.effectDiscard(
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      yield* spawner
-        .string(ChildProcess.make("ffmpeg", ["-hide_banner", "-version"]))
-        .pipe(
-          Effect.mapError(() =>
-            BroadcastError.make({ message: "the broadcast needs ffmpeg on PATH" }),
-          ),
-        );
+      const { ingest } = yield* Settings;
+      const ffmpeg = (args: ReadonlyArray<string>) =>
+        spawner
+          .string(ChildProcess.make("ffmpeg", ["-hide_banner", ...args]))
+          .pipe(
+            Effect.mapError(() =>
+              BroadcastError.make({ message: "the broadcast needs ffmpeg on PATH" }),
+            ),
+          );
+      // Lists name one encoder or muxer a line, its flags first.
+      const named = (listing: string) =>
+        new Set(listing.split("\n").map((line) => line.trim().split(/\s+/)[1]));
+      const encoders = named(yield* ffmpeg(["-encoders"]));
+      const muxers = named(yield* ffmpeg(["-muxers"]));
+      const lacking = [
+        ...["libx264", "aac"].filter((name) => !encoders.has(name)),
+        ...["tee", "mp4", ...(ingest === undefined ? [] : ["fifo", "flv"])].filter(
+          (name) => !muxers.has(name),
+        ),
+      ];
+      if (lacking.length > 0)
+        return yield* BroadcastError.make({ message: `this ffmpeg lacks ${lacking.join(", ")}` });
+      if (ingest === undefined) return;
+      const scheme = ingest.host.slice(0, ingest.host.indexOf(":"));
+      const protocols = yield* ffmpeg(["-protocols"]);
+      const outputs = protocols.slice(protocols.indexOf("Output:")).split("\n");
+      if (!outputs.some((line) => line.trim() === scheme))
+        return yield* BroadcastError.make({ message: `this ffmpeg cannot send ${scheme}` });
     }),
   );
 
@@ -154,7 +251,11 @@ export class Broadcast extends Context.Service<
     Effect.gen(function* () {
       const media = yield* ChannelMedia;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const { ingest } = yield* Settings;
+      const cut = redact(ingest);
       const latest = yield* Ref.make(Option.none<VideoFrame>());
+      const arrived = yield* SubscriptionRef.make(0);
+      const audience = yield* SubscriptionRef.make(0);
       const firstFrame = yield* Deferred.make<void>();
       const offAir = yield* Deferred.make<never, BroadcastError>();
       const pcm = new Pcm();
@@ -170,6 +271,8 @@ export class Broadcast extends Context.Service<
       yield* media.video.pipe(
         Stream.runForEach((frame) =>
           Ref.set(latest, Option.some(frame)).pipe(
+            Effect.andThen(Clock.currentTimeMillis),
+            Effect.flatMap((at) => SubscriptionRef.set(arrived, at)),
             Effect.andThen(Deferred.succeed(firstFrame, undefined)),
           ),
         ),
@@ -182,18 +285,18 @@ export class Broadcast extends Context.Service<
         Effect.forkScoped,
       );
 
-      // One encoder for all viewers. It samples the newest frame 24 times a
-      // second (repeating it while the model is between clips) together with
-      // a frame's worth of audio (silence when there is none), so ffmpeg sees
-      // a steady stream whatever the source's timing.
+      // One encoder for all viewers and the ingest. It samples the newest frame
+      // 24 times a second (repeating it while the model is between clips)
+      // together with a frame's worth of audio (silence when there is none), so
+      // ffmpeg sees a steady stream whatever the source's timing.
       const encode = Stream.unwrap(
         Effect.gen(function* () {
           yield* Effect.raceFirst(Deferred.await(firstFrame), Deferred.await(offAir));
           const first = Option.getOrUndefined(yield* Ref.get(latest));
           if (first === undefined) return Stream.empty;
           const encoder = yield* spawner.spawn(
-            ChildProcess.make("ffmpeg", encoderArgs(first), {
-              stderr: "inherit",
+            ChildProcess.make("ffmpeg", encoderArgs(first, ingest && Redacted.value(ingest.url)), {
+              stderr: "pipe",
               additionalFds: { fd3: { type: "input" } },
               // ffmpeg catches SIGTERM and, blocked reading a pipe, exits only
               // on the fourth; without forceKillAfter the spawner then waits
@@ -201,6 +304,18 @@ export class Broadcast extends Context.Service<
               // nothing to finish, so it is killed outright.
               killSignal: "SIGKILL",
             }),
+          );
+          // ffmpeg's errors go to the log, an ingest's stream key cut out.
+          yield* encoder.stderr.pipe(
+            Stream.decodeText(),
+            Stream.splitLines,
+            Stream.map(cut),
+            collapse,
+            Stream.runForEach(({ line, repeats }) =>
+              Effect.logWarning("ffmpeg", repeats === 0 ? { line } : { line, repeats }),
+            ),
+            Effect.ignore,
+            Effect.forkScoped,
           );
           const video = yield* Queue.bounded<Uint8Array, Cause.Done>(2);
           const audio = yield* Queue.bounded<Uint8Array, Cause.Done>(24);
@@ -239,7 +354,11 @@ export class Broadcast extends Context.Service<
             Stream.runForEach(() => tick),
             Effect.forkScoped,
           );
-          yield* Effect.logInfo("encoder started", { width: first.width, height: first.height });
+          yield* Effect.logInfo("encoder started", {
+            width: first.width,
+            height: first.height,
+            ingest: ingest === undefined ? "none" : `${ingest.host}/…`,
+          });
           return encoder.stdout.pipe(
             Fmp4.segments,
             Stream.interruptWhen(Effect.raceFirst(Deferred.await(failed), Deferred.await(offAir))),
@@ -289,7 +408,12 @@ export class Broadcast extends Context.Service<
           ),
         ),
       );
-      const viewer = Stream.unwrap(current).pipe(
+      const viewer = Stream.unwrap(
+        Effect.acquireRelease(
+          SubscriptionRef.update(audience, (count) => count + 1),
+          () => SubscriptionRef.update(audience, (count) => count - 1),
+        ).pipe(Effect.andThen(current)),
+      ).pipe(
         Stream.mapAccum(
           () => true,
           (first, segment: Fmp4.Segment) =>
@@ -297,11 +421,27 @@ export class Broadcast extends Context.Service<
         ),
       );
 
+      // With an ingest the encoder runs whether or not a browser watches: this
+      // reader holds its run open and, when a run ends, starts the next.
+      if (ingest !== undefined)
+        yield* Stream.unwrap(current).pipe(
+          Stream.runDrain,
+          Effect.ignore,
+          Effect.repeat(Schedule.spaced("1 second")),
+          Effect.raceFirst(Effect.ignore(Deferred.await(offAir))),
+          Effect.forkScoped,
+        );
+
       const onAir = Deferred.isDone(offAir).pipe(
         Effect.flatMap((done) => (done ? Deferred.await(offAir) : Effect.void)),
       );
 
-      return Broadcast.of({ viewer, onAir });
+      return Broadcast.of({
+        viewer,
+        onAir,
+        viewers: SubscriptionRef.changes(audience),
+        arrivals: SubscriptionRef.changes(arrived),
+      });
     }),
   );
 }

@@ -2,6 +2,14 @@
  * Every check and every failure path, rehearsed on ReactorTest through the
  * same program a paid run uses. Nothing here reaches the network.
  */
+// Vitest decides which suites to run while it collects them, synchronously, so whether ffmpeg
+// is on the PATH, and what a reel holds, are asked with a synchronous child process.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
+import { spawnSync } from "node:child_process";
+// @effect-diagnostics-next-line nodeBuiltinImport:off
+import { readdirSync } from "node:fs";
+// @effect-diagnostics-next-line nodeBuiltinImport:off
+import { join } from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, layer } from "@effect/vitest";
 import { Duration, Effect, FileSystem, Layer, Path, Redacted } from "effect";
@@ -23,7 +31,7 @@ const rehearse = (
     readonly adoptAfterMs?: number;
     readonly recorder?: boolean;
     readonly timing?: ReactorTest.Timing;
-    readonly judge: (evidence: Evidence) => void;
+    readonly judge: (evidence: Evidence, ledger: string) => void;
   },
 ) =>
   layer(
@@ -43,15 +51,16 @@ const rehearse = (
         Effect.gen(function* () {
           yield* ReactorTest.flow().pipe(Effect.forkScoped);
           const fs = yield* FileSystem.FileSystem;
+          const ledger = yield* fs.makeTempDirectoryScoped({ prefix: "rehearsal-test-" });
           const evidence = yield* execute({
             authorization: {
               check: input.check,
               budgetUsd: ceilingFor(input.check),
               totalUsd: maxTotalUsd,
             },
-            ledger: yield* fs.makeTempDirectoryScoped({ prefix: "rehearsal-test-" }),
+            ledger,
           });
-          input.judge(evidence);
+          input.judge(evidence, ledger);
         }),
       // A rehearsal plays a whole session at a moving test clock: moments, or more under load.
       60_000,
@@ -69,6 +78,39 @@ const failed = (criterion: string) => (evidence: Evidence) => {
 };
 
 for (const check of checks) rehearse(`${check} passes`, { check, judge: passes });
+
+const hasFfprobe = spawnSync("ffprobe", ["-version"]).status === 0;
+
+// The rehearsal's simulated picture and sound go through a real ffmpeg wherever one can record
+// them; CI's runtime jobs have none, and the check then says why it recorded nothing.
+rehearse("showreel records its reel, poster and loop when ffmpeg can", {
+  check: "showreel",
+  judge: (evidence, ledger) => {
+    passes(evidence);
+    const showreel = evidence.showreel;
+    if (showreel?.notRecorded !== undefined) return;
+    assert.deepStrictEqual(
+      showreel?.files.map((file) => file.name),
+      ["reel.mp4", "poster.png", "loop.gif"],
+    );
+    const span = showreel?.reel;
+    assert.closeTo(
+      ((showreel?.recording?.frames ?? 0) * 1000) / 24,
+      (span?.toMs ?? 0) - (span?.fromMs ?? 0),
+      1000 / 24,
+    );
+    if (!hasFfprobe) return;
+    const directory = readdirSync(ledger).find((name) => name.endsWith(evidence.runId));
+    assert.isDefined(directory);
+    const counted = spawnSync("ffprobe", [
+      ...["-v", "error", "-count_frames", "-select_streams", "v:0"],
+      ...["-show_entries", "stream=nb_read_frames", "-of", "csv=p=0"],
+      join(ledger, directory, "reel.mp4"),
+    ]);
+    // The file holds every frame the recorder wrote.
+    assert.strictEqual(Number(counted.stdout.toString().trim()), showreel?.recording?.frames);
+  },
+});
 
 // Paid run tokens 83d17eb7: hosted Reactor read INACTIVE 9 s after the owner was killed, and the
 // session was still there. Reactor ends a session 30 s after its last connection drops.
@@ -158,6 +200,24 @@ rehearse("tour downloads the recording clip when the deployment records", {
       ["clip", "ClipReady", "downloaded"],
     );
     assert.isAbove(clip?.download?.segments ?? 0, 0);
+  },
+});
+
+// The opening scene's build fails, so it never starts: the check must judge that and close its
+// session, rather than wait for the start with no deadline while the session runs to its cap.
+rehearse("showreel fails, and ends its session, when its first scene never starts", {
+  check: "showreel",
+  faults: [{ _tag: "FailBuild", nth: 1 }],
+  judge: (evidence) => {
+    assert.strictEqual(evidence.verdict, "fail");
+    assert.isFalse(
+      evidence.criteria.find(
+        (criterion) => criterion.name === "every scene accepted, built, started and ended",
+      )?.passed ?? true,
+      evidence.reasons.join("; "),
+    );
+    assert.lengthOf(evidence.sessions, 1);
+    assert.isTrue(evidence.sessions[0]?.close?.confirmed, evidence.reasons.join("; "));
   },
 });
 

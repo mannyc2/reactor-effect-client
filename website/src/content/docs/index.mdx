@@ -1,0 +1,96 @@
+---
+title: reactor-effect
+description: An Effect SDK for Reactor's real-time video models, H3 today. Sessions that renew themselves, a playout that keeps a channel on air, decoded frames in Node without a browser, and Reactor simulated offline.
+template: splash
+hero:
+  tagline: Build on Reactor's real-time video models, H3 today, from Node, Bun and the browser. Keep a channel on air across session caps, read decoded frames without a browser, and run the whole application offline before it spends a cent.
+  image:
+    html: '<video class="hero-reel" src="https://github.com/mannyc2/reactor-effect-client/releases/download/media/showreel-loop.mp4" poster="https://github.com/mannyc2/reactor-effect-client/releases/download/media/showreel-poster.jpg" autoplay muted loop playsinline aria-label="H3 video decoded and recorded by reactor-effect: a red convertible crossing a desert, five scenes back to back"></video>'
+  actions:
+    - text: Quickstart, no API key
+      link: /reactor-effect-client/start/quickstart/
+      icon: right-arrow
+    - text: Try it in your browser
+      link: /reactor-effect-client/playground/
+      icon: external
+      variant: secondary
+    - text: Examples
+      link: /reactor-effect-client/examples/
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/mannyc2/reactor-effect-client
+      icon: github
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+The video above is H3's own output, decoded in-process and recorded by the hosted `showreel` check on
+October 1, 2026: one `Playout`, five scenes on one session, seams of 89–120 ms with no dark frame.
+[The whole reel, with sound](https://github.com/mannyc2/reactor-effect-client/releases/download/media/showreel.mp4).
+
+## What it does
+
+<CardGrid>
+  <Card title="Stay on air" icon="rocket">
+    `Playout` keeps H3 playing across capped sessions. It opens the next session before the current
+    one ends and switches at a clip boundary. In paid runs of the 0.8.0 playout on hosted H3
+    (2026-09-28 and 09-29), clip-to-clip seams measured 46–169 ms with no dark frame, and a planned
+    switch between sessions 420–432 ms.
+  </Card>
+  <Card title="Frames in Node, no browser" icon="laptop">
+    `reactor-effect-native` binds Reactor's `reactor-webrtc` crate (libwebrtc) through Node-API:
+    owned BGRA frames and PCM in Node and Bun, with no browser in between. In paid runs on hosted H3
+    (2026-09-24 to 09-28, under Bun): 1344×768 at about 24 fps, no frame lost.
+  </Card>
+  <Card title="Build offline, for free" icon="setting">
+    `ReactorTest` is Reactor in memory: the coordinator's HTTP API and an H3 model speaking the real
+    wire protocol, on the Effect clock, with timing measured on paid runs and injectable faults.
+    Under `TestClock`, an hour of programme with six renewals runs in about 20 seconds.
+  </Card>
+  <Card title="Know what reached Reactor" icon="approve-check">
+    Every failed command says whether it was never sent, answered, or unknown. An enqueue whose
+    reply was lost is never sent again, so a lost reply never doubles a clip.
+  </Card>
+  <Card title="Sessions outlive tokens and processes" icon="random">
+    Tokens bound to the session refresh before they expire, a dropped connection recovers on the
+    same session, and a crashed owner's session is adopted by the next process.
+  </Card>
+  <Card title="Billing safety as an API" icon="warning">
+    Every creating token must state its session's cap, `close` confirms termination with an
+    independent read, and `Session.mayStillBill` says whether a closed session may still bill.
+  </Card>
+</CardGrid>
+
+The hosted figures come from 22 paid runs between 2026-09-24 and 2026-10-01, on the 0.3.0-rc.0 to
+0.9.0 libraries; on 0.9.0 only the one-session `showreel` check (2026-10-01) has run. 0.9.0's other checks, its published client
+packages, the browser package and the in-process native host under Node have not run on hosted
+Reactor yet.
+
+## Start here
+
+<CardGrid>
+  <LinkCard
+    title="Quickstart"
+    description="Prompt H3 and follow each clip from acceptance to its end, offline in a minute."
+    href="/reactor-effect-client/start/quickstart/"
+  />
+  <LinkCard
+    title="Run a 24/7 channel"
+    description="One playout, renewing sessions, many viewers, and a house rotation when nobody asks."
+    href="/reactor-effect-client/guides/channel/"
+  />
+  <LinkCard
+    title="Test offline"
+    description="The same application on the simulated Reactor, deterministic on the test clock."
+    href="/reactor-effect-client/guides/testing-offline/"
+  />
+  <LinkCard
+    title="Hosted evidence"
+    description="Every paid run behind this site's hosted claims, with its commit and spend, and what has not run on hosted Reactor yet."
+    href="/reactor-effect-client/reference/hosted-evidence/"
+  />
+</CardGrid>
+
+reactor-effect is an independent project, not an official Reactor SDK. It is Apache-2.0 licensed
+and published to npm with provenance.

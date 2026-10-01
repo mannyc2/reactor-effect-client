@@ -55,3 +55,23 @@ Bun does not write the local-tarball provenance metadata that npm uses to valida
 Each platform archive's `native-identity.json` must name its platform and addon, and the addon must match both that identity's SHA-256 and the staged file; every identity must have been built from the checked-out native sources (`stage.mjs --source-hash`). The installed native preflight checks the installed platform package against the qualified identity byte for byte, refuses an absent addon before anything could be allocated, and negotiates an offer through the installed addon. `PACK_EXPECT_NATIVE_PLATFORMS` lists the platforms whose staged addons must be present.
 
 `native:build` is the staging entry point. `native:test` checks that staged artifact and does not silently build a second copy. The `native` verification profile runs them in that order. The public integration uses real Chrome WebRTC with local provider and media fixtures. It exercises public Browser and Native owners, ACK versus model replies, generation attribution, owned decoded bytes and media leases, failure cleanup and joined shutdown. It contacts no live Reactor session. TURN relay qualification remains an explicit separate opt-in using the existing integration environment settings.
+
+## Commands
+
+| Command                               | What it does                                                                                           |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `bun run build`                       | Compiles every package in dependency order (`bun run --filter './packages/*' build`)                   |
+| `bun run typecheck`                   | Checks every workspace's sources, tests and tooling against the built declarations                     |
+| `bun run lint`                        | oxlint with the type-aware rules; unused suppressions fail                                             |
+| `bun run test`                        | The client, browser and hosted-rehearsal Vitest suites on Node and on Bun, then the scripts' own tests |
+| `bun run check:examples`              | Each example's offline tests on Node and Bun, and the browser bundles                                  |
+| `bun run test:native`                 | Vitest in `packages/native` against the staged addon, on Node and then on Bun                          |
+| `bun run test:integration`            | A real local browser/native session through the public packages                                        |
+| `bun run test:pack`                   | Packs each package, validates the archives and installs them into isolated consumers                   |
+| `bun run native:build`                | Builds the addon for the current host and stages it into its package under `packages/native/npm/`      |
+| `bun run generate:wire`               | Regenerates the wire codec with `buf`; `generate:check` fails on any difference                        |
+| `bun run --filter <package> <script>` | Any package script, for example `bun run --filter reactor-effect-client test`                          |
+
+## Continuous integration
+
+The [CI workflow](../.github/workflows/ci.yml) runs the shared portable verification once, the portable runtime tests on an OS/Node matrix, and native qualification per platform and runtime. Every branch can restore a staged addon qualified for the exact native source identity, build recipe, toolchain and runner image from its accessible cache; restaging rejects an identity that differs from the checked-out sources. On `main`, a cache miss can also reuse artifacts from a successful pull-request CI run whose head is already on `main` and whose source repository, workflow and full native cache key match. It takes only the addon file from them and restages it, so the platform package's manifest, README, identity and notices are main's, and the run's summary names the pull-request run and head commit it reused. If no complete, unexpired pair of addon and far-peer artifacts matches, it builds the addon and runs the Rust checks. Every restored or built addon still runs the native JavaScript suite on Node and Bun, and browser integration on Node. Native addons and test far peers remain downloadable for three days so delayed job reruns can use them.

@@ -1,0 +1,116 @@
+---
+title: Limits and support
+description: "Platforms, runtimes, what has and has not been exercised, and known limits."
+---
+
+Where the SDK runs, what has been exercised and where, and the limits it has today.
+
+## Platforms and runtimes
+
+| Package                  | Runs on                                                        | Checked in CI                                                                                            |
+| ------------------------ | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `reactor-effect-client`  | Node 22 or newer, Bun, browsers                                | Its suites on Node 22.22 and 24.15 (Ubuntu 24.04), Node 24.15 (macOS 15), and Bun 1.4.2                  |
+| `reactor-effect-browser` | Browsers with WebRTC and Web Crypto, on `localhost` or HTTPS   | Its suites against DOM fakes on Node and Bun; a browser bundle that must reach no Node code              |
+| `reactor-effect-native`  | Node 22 or newer and Bun, on Linux x64 (glibc) and macOS arm64 | Rust checks and the native suites on Node and Bun, on Ubuntu 24.04 and macOS 15, against the built addon |
+
+- The isolated native host, `NativePeer.layerIsolated()`, needs a Node parent process. Under Bun it
+  fails to build with `UnsupportedCapability`.
+- The macOS addon targets macOS 13.0 or later.
+- Real Chrome exchanging media with the native host runs in CI's browser integration test, on Node.
+
+## What has been exercised
+
+**On hosted Reactor** ([every run](/reactor-effect-client/reference/hosted-evidence/)), in paid runs
+from 2026-09-24 to 2026-09-29 on the 0.3.0-rc.0 to 0.8.0 libraries: sessions, tokens and their
+refresh, adoption of a dead owner's session, reconnects, uploads and references, H3's queue
+commands, moderation, and `Playout` over three sessions, with one planned renewal and one
+replacement of an ended session. They ran from Linux x64, through the native host in process under
+Bun and isolated under Node, over a direct network path. On 0.9.0 only the one-session `showreel` check (2026-10-01) has run;
+0.9.0's other checks, its published client packages, the browser host and the in-process native host
+under Node have not run on hosted Reactor yet.
+
+**Locally and in CI only:**
+
+- the browser host, against DOM fakes and, for media, real Chrome talking to the native host;
+- the macOS addon;
+- a TURN relay, once, locally: real Chrome and the native bridge through a loopback Coturn server
+  on 2026-09-22, before the current API;
+- the native media path under load, against a local libwebrtc sender: see
+  [measured performance](/reactor-effect-client/guides/native/#measured-performance);
+- 0.9.0's `Playout.place` and `follows`, on `ReactorTest`.
+
+**Not yet exercised anywhere:** TURN relays with hosted credentials, native media published on to a
+browser or a stream ingest, sessions longer than a few minutes on hosted Reactor, and dedicated
+physical machines: the native performance figures come from a 4-vCPU container and GitHub's
+runners.
+
+`ReactorTest` models what H3 does, with delays drawn from paid runs. It does not model hosted
+latency as a real network varies it, billing as Reactor charges it, TURN relays or interop. A
+rehearsal on it is never evidence of hosted behaviour.
+
+## Models
+
+The SDK targets H3 Reference Turbo Realtime (`reactor/h3-reference-to-video-turbo-realtime`),
+against its documented 0.5.5 schema. `H3.make` reads the deployment's schema and fails any command
+the deployment lacks with `UnsupportedCapability` before sending it; the hosted deployment reports
+its version as `v0.0.0`.
+
+`Reactor`, `Session` and the hosts are not specific to H3: `reactor.create` takes any model name,
+and `session.command(name, data)` sends any command. But only H3 has a provider, a playout source
+and hosted runs. FastH3 and Reactor's other models are not supported yet.
+
+## The native peer
+
+- **One incoming video track and one incoming audio track.** The pinned libwebrtc binding reports a
+  received track without the identity needed to match two tracks of one kind to the negotiated
+  ones, so a session that declares more fails with `UnsupportedCapability` before negotiation. H3
+  sends one of each. Outgoing tracks may be several.
+- **Bounded queues.** The addon holds at most 8 frames, 256 PCM blocks and 1,024 events, and each
+  reader at most 24 frames or 128 PCM blocks. A full media queue drops its oldest item and counts
+  it; a full event queue ends the connection with `Overflow`; a reader that falls further behind
+  fails alone with `Overflow`.
+- **One libwebrtc factory per process.** If a connection's shutdown outlives `shutdownTimeout` in
+  process, no new peer is made until it completes. The isolated host kills the child instead.
+- **Decoding failures are not reported**, and neither is ICE's connection state: the binding
+  surfaces neither. A `failed` connection is classified from its statistics as `IceFailed` or
+  `TransportFailed`.
+
+## The browser peer
+
+- It has platform tracks only, no decoded frames: `session.decoded` and a playout's `video` and
+  `audio` fail with `UnsupportedCapability`.
+- A message larger than the data channel's negotiated bound (at most 256 KiB) fails the connection
+  with `Overflow`, and a send is refused while more than 1 MiB waits in the channel's buffer.
+
+## Effect and versions
+
+- **Effect `4.0.0-rc.117`, exactly.** Effect 4 is in release candidates, and `4.0.0-rc.118` moved
+  the `effect/unstable/*` modules the SDK imports, so each later candidate needs a new SDK release.
+  Projects that install `@effect/platform-node` also pin `@effect/platform-node-shared`; see
+  [Installation](/reactor-effect-client/start/installation/#pin-effectplatform-node-shared).
+- **0.x.** The three packages are released together under one version, and while it is 0.x a minor
+  version may break the API: 0.8.0 and 0.9.0 both did. Pin exact versions. Each release's
+  `CHANGELOG.md` entry has an upgrade table.
+- **Declarations without DOM types.** Effect `4.0.0-rc.117` names the DOM's `TextDecoderOptions` in
+  its declarations; a Node project that omits DOM types and checks library declarations declares
+  that interface itself.
+
+## H3's limits, enforced before sending
+
+A request H3 would refuse fails locally with outcome `not-submitted`, before anything is uploaded:
+
+- clip length 5 to 15.084 seconds, aligned up to H3's frame grid (124 frames at 24 fps, then steps
+  of 17);
+- up to nine reference images, and up to three reference audios (two when the clip continues
+  another), twelve references in all; audio needs an image or a continuation;
+- metadata up to 2,000 characters.
+
+H3's text budget, about 2,000 tokens, is enforced by H3 at build: a longer prompt is accepted and
+then fails its clip. See [the H3 provider](/reactor-effect-client/concepts/h3/).
+
+## Security
+
+Credentials stay `Redacted` from configuration to the request that uses them; provider text stays
+out of messages, logs and spans; native queues are bounded; and the client and browser packages
+never load native code. Report a vulnerability privately, as
+[SECURITY.md](https://github.com/mannyc2/reactor-effect-client/blob/main/SECURITY.md) describes.

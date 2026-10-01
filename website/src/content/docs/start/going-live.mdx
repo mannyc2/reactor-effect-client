@@ -1,0 +1,197 @@
+---
+title: Going live
+description: "From the simulated Reactor to a paid H3 session: the API key, tokens, and what a session costs."
+---
+
+import { Aside, Steps, Tabs, TabItem } from "@astrojs/starlight/components";
+
+Run on hosted H3 the same program you ran on `ReactorTest`: only the layer at the entry point
+changes, and the API key never leaves your server.
+
+## The pieces
+
+- **The API key stays on the server.** `CoordinatorClient.layerConfig` reads it from
+  `REACTOR_API_KEY` as a `Config.Redacted`, and the API's address from `REACTOR_API_URL`
+  (`https://api.reactor.inc` by default). The key mints tokens, and can read and end any session of
+  the account. A session never sees it.
+- **Tokens.** `coordinator.tokens({ modelName, maxSessionDuration })` returns a `Tokens`: `create`,
+  a token that may create one session, and `bind(sessionId)`, a fresh token bound to that session.
+  A session starts on `create`'s token and refreshes it on its own with `bind`, a minute before it
+  expires (or a quarter of a shorter token's life), so it outlives any one token. Reactor keeps a
+  token at most six hours, and one hour by default; `expiresAfter` asks for another lifetime.
+- **The cap.** A token that creates sessions must say how long each may run: a duration from one
+  second to a day, or `"unlimited"`, written out. There is no default, because an uncapped session
+  bills until something ends it. The cap holds after the token that set it expires.
+- **The host.** Node and Bun use `NativePeer.layer()` from `reactor-effect-native`, which also gives
+  you decoded frames. A page uses `BrowserPeer.layer`, with tokens from your server: see
+  [Sessions in the browser](/reactor-effect-client/guides/browser/). Both run over
+  `FetchHttpClient.layer`.
+
+## What a session costs
+
+Reactor's pricing API states H3's rate per second, while its
+[billing page](https://docs.reactor.inc/resources/billing) still says billing is per
+session-minute. The meter runs from `ready` until the session is terminated, and in the paid runs
+the dashboard listed each session to the second. `connecting` and `waiting`, the wait for a GPU,
+are free. Idle time is billed, and so is the 30-second window in which a session waits for a
+dropped connection to come back ([sessions](https://docs.reactor.inc/concepts/sessions)).
+
+On 2026-09-30, `GET https://api.reactor.inc/pricing` listed H3 Reference Turbo Realtime
+(`h3-reference-to-video-turbo-realtime`) at 350 credits a second, at 10,000 credits a dollar:
+
+| Session time | Cost   |
+| ------------ | ------ |
+| 1 second     | $0.035 |
+| 1 minute     | $2.10  |
+| 10 minutes   | $21.00 |
+| 1 hour       | $126   |
+
+The SDK reads the rate itself: `coordinator.pricing` fetches the catalog and
+`CoordinatorClient.modelRate(catalog, H3.modelName)` decodes H3's rate, so a program can print the
+most a session can cost before it allocates one. The paid `vertical` checks, one 5-second clip each,
+held their sessions 11 to 12 seconds from allocation to termination: about $0.40 at this rate.
+
+## Account limits
+
+From Reactor's [rate limits](https://docs.reactor.inc/resources/rate-limits), read 2026-09-30:
+
+- **5 sessions at once** per account, across all its keys. Sessions still `connecting` or `waiting`
+  count.
+- **10 new sessions a minute** per account, at most 3 back to back; the allowance refills about one
+  session every 6 seconds.
+- Past either limit Reactor answers `429` with `Retry-After`. The SDK fails with an `Http` reason
+  that carries `status` and `retryAfter`, and its `isRetryable` is true. An account out of credits
+  gets `402`.
+- **Sessions have no lifetime** unless a token caps them, at 1 second to 24 hours.
+- **Tokens live at most 6 hours**; a session-scoped token lives 1 hour by default.
+
+Reactor raises the concurrent and per-minute quotas on request at support@reactor.inc.
+
+## From offline to hosted
+
+<Steps>
+
+1. **Get an API key.** Create an `rk_` key in the [Reactor dashboard](https://reactor.inc/dashboard)
+   and put it in the server's environment as `REACTOR_API_KEY`. Never ship it to a browser.
+
+2. **Write the program once.** It asks for the services it needs and knows nothing about where they
+   come from. This one prices its cap, creates a session on capped tokens, plays one clip and
+   closes the session:
+
+   ```ts
+   import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+   import * as NodeServices from "@effect/platform-node/NodeServices";
+   import { Console, Effect, Layer } from "effect";
+   import { CoordinatorClient, H3, Reactor, Session } from "reactor-effect-client";
+
+   const capSeconds = 120;
+
+   const oneClip = Effect.gen(function* () {
+     const coordinator = yield* CoordinatorClient.CoordinatorClient;
+     const reactor = yield* Reactor.Reactor;
+
+     // The most this session can bill, at the rate Reactor publishes now.
+     const rate = yield* CoordinatorClient.modelRate(yield* coordinator.pricing, H3.modelName);
+     const most = (capSeconds * rate.creditsPerSecond) / rate.creditsPerDollar;
+     yield* Console.log(`capped at ${capSeconds} s: at most $${most.toFixed(2)}`);
+
+     const session = yield* reactor.create({
+       model: H3.modelName,
+       tokens: coordinator.tokens({
+         modelName: H3.modelName,
+         maxSessionDuration: `${capSeconds} seconds`,
+       }),
+     });
+     const h3 = yield* H3.make(session);
+     yield* h3.setAutoplay(true); // H3 plays nothing until autoplay is on
+     const submission = yield* h3.prepare({
+       prompt: "A paper boat on a rain-soaked street",
+       seconds: 5,
+     });
+     yield* submission.submit;
+     const clip = yield* h3.operation(submission);
+     yield* clip.ended;
+
+     const report = yield* session.close;
+     yield* Console.log(`termination confirmed: ${report.remote.confirmed}`);
+     if (Session.mayStillBill(report)) yield* Console.log(`end ${session.id} in the dashboard`);
+   }).pipe(Effect.scoped);
+   ```
+
+3. **Choose the edge.** Offline, `ReactorTest` stands in for Reactor's API and the peer, and its
+   key mints the tokens. Hosted, the key comes from the environment and the native host connects:
+
+   <Tabs syncKey="edge">
+   <TabItem label="Offline">
+
+   ```ts
+   import { Redacted } from "effect";
+   import { ReactorTest } from "reactor-effect-client";
+
+   // Reactor simulated in memory, at the timing paid runs measured.
+   const Offline = Reactor.layer().pipe(
+     Layer.provideMerge(CoordinatorClient.layer({ apiKey: Redacted.make("offline") })),
+     Layer.provideMerge(
+       ReactorTest.layer({
+         timing: ReactorTest.Timing.hosted,
+         apiKey: "offline",
+         creditsPerSecond: 350,
+       }),
+     ),
+   );
+
+   oneClip.pipe(Effect.provide(Layer.mergeAll(Offline, NodeServices.layer)), NodeRuntime.runMain);
+   ```
+
+   </TabItem>
+   <TabItem label="Hosted H3">
+
+   ```ts
+   import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+   import { NativePeer } from "reactor-effect-native";
+
+   // The key from REACTOR_API_KEY, and the native host for the connection.
+   const Hosted = Reactor.layer().pipe(
+     Layer.provideMerge(Layer.mergeAll(CoordinatorClient.layerConfig, NativePeer.layer())),
+     Layer.provide(FetchHttpClient.layer),
+   );
+
+   oneClip.pipe(Effect.provide(Layer.mergeAll(Hosted, NodeServices.layer)), NodeRuntime.runMain);
+   ```
+
+   </TabItem>
+   </Tabs>
+
+   `NodeServices.layer` supplies the `Crypto` service `H3.make` uses, among Node's services.
+
+4. **Run it.** `node main.ts` (Node 22.18 or newer runs TypeScript directly) or `bun main.ts`.
+   Offline it prints `capped at 120 s: at most $4.20` and, about 12 seconds later at hosted timing,
+   `termination confirmed: true`. Hosted, the rate and the confirmation come from Reactor.
+
+</Steps>
+
+`close` ends the session and confirms the end with an independent read of the session, since a
+`DELETE` response alone proves nothing. `Session.mayStillBill(report)` is true when this process
+owned the session and no read confirmed its end, or when an allocation's answer, and so the
+session's id, never arrived. [Cost control](/reactor-effect-client/guides/cost-control/) covers what
+to do then.
+
+## Pitfalls
+
+- **H3 starts with autoplay off.** A clip enqueued on a fresh session builds and waits. Turn
+  autoplay on, or `play` the clip. `H3Source` and `Playout` manage autoplay themselves.
+- **`INACTIVE` is not ended.** A session whose last connection dropped reads `INACTIVE` and is still
+  live and billed. Only `CLOSED` is terminal (`CoordinatorClient.isTerminal`).
+- **Reconnecting keeps billing.** A session reconnects a dropped connection on its own and runs on
+  for as long as the process holding it does. `Reactor.layer({ reconnect: false })` leaves a drop
+  down, so Reactor ends the session 30 seconds later.
+- **A renewal holds two sessions.** A playout's replacement session opens before the retiring one
+  ends, so leave room under the five-session limit.
+- **Pin exact versions.** A later Effect release candidate does not load the SDK; see
+  [Installation](/reactor-effect-client/start/installation/).
+
+<Aside type="tip">
+  Each session the SDK creates, and each connection it offers, names the SDK in its client info
+  (`sdk_type: "typescript-effect-independent"` and the version), so Reactor can find those sessions
+  when you report something.
+</Aside>

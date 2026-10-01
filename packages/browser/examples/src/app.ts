@@ -1,199 +1,35 @@
-import { DateTime, Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect";
-import { HttpApiClient } from "effect/unstable/httpapi";
-import * as Reactor from "reactor-effect-client/Reactor";
-import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
-import * as Session from "reactor-effect-client/Session";
-import { isReactorFailure, ReactorError } from "reactor-effect-client/ReactorError";
-import * as H3 from "reactor-effect-client/H3";
-import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
-import { Api } from "./Api.ts";
-import { WebCrypto } from "./WebCrypto.ts";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-
 /**
- * One runtime for the page, built once: the SDK's Client over the browser's
- * own WebRTC, with the fetch-based HTTP client and Web Crypto it runs on, both
- * also used by the page itself. Building `BrowserPeer.layer` checks for WebRTC, so
- * an unsupported browser fails here, before any session is paid for. The UI
- * below is ordinary DOM code that runs effects through the runtime.
+ * The page the example's server serves. It runs live when its server mints
+ * tokens, and offline with `?offline` in the address, when the server has no
+ * API key, or when no server answers. The choice is made once, as the
+ * runtime's layer is built; the Studio's code is the same either way.
  */
-const runtime = ManagedRuntime.make(
-  Reactor.layer().pipe(
-    // The page talks to Reactor itself, with the token the example server minted for it.
-    Layer.provide(CoordinatorClient.layer({ apiUrl: CoordinatorClient.defaultApiUrl })),
-    Layer.provideMerge(Layer.mergeAll(FetchHttpClient.layer, WebCrypto, BrowserPeer.layer)),
-  ),
+import { Effect, Layer, ManagedRuntime } from "effect";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import { HttpApiClient } from "effect/unstable/httpapi";
+import { Api } from "./Api.ts";
+import * as Live from "./Live.ts";
+import * as Offline from "./Offline.ts";
+import * as Page from "./Page.ts";
+import * as Studio from "./Studio.ts";
+
+const { screen } = Page.ui;
+
+const chosen = Layer.unwrap(
+  Effect.gen(function* () {
+    if (new URLSearchParams(window.location.search).has("offline"))
+      return Offline.layer({ screen, reason: "Remove ?offline from the address to run live." });
+    const api = yield* HttpApiClient.make(Api);
+    const live = yield* api.live().pipe(Effect.orElseSucceed(() => undefined));
+    if (live === undefined)
+      return Offline.layer({ screen, reason: "No token server answered, so it runs offline." });
+    switch (live._tag) {
+      case "Available":
+        return Live.layer({ screen, maxSessionSeconds: live.maxSessionSeconds });
+      case "Unavailable":
+        return Offline.layer({ screen, reason: "Set REACTOR_API_KEY on the server to run live." });
+    }
+  }),
 );
 
-/** The page's element with this id, checked to be the kind the page uses it as. */
-const element = <E extends HTMLElement>(id: string, kind: new () => E): E => {
-  const found = document.getElementById(id);
-  if (!(found instanceof kind)) throw new Error(`the page has no ${kind.name} #${id}`);
-  return found;
-};
-const video = element("video", HTMLVideoElement);
-const audio = element("audio", HTMLAudioElement);
-/** Puts a line, stamped with the local time, at the top of the page's log. */
-const logLine = Effect.fnUntraced(function* (line: string) {
-  const time = DateTime.formatLocal(yield* DateTime.now, { timeStyle: "medium" });
-  const entries = element("log", HTMLElement);
-  entries.textContent = `${time}  ${line}\n${entries.textContent}`;
-});
-/** The same, from the page's event handlers. */
-const log = (line: string): void => Effect.runSync(logLine(line));
-/** What a failure says about itself: its reason and, for a command, whether it may have applied. */
-const describe = (error: unknown) =>
-  isReactorFailure(error)
-    ? `${error._tag}: ${error.reason._tag}${"outcome" in error.context ? ` (${error.context.outcome})` : ""}`
-    : String(error);
-
-interface Live {
-  readonly scope: Scope.Closeable;
-  readonly session: Session.Session;
-  readonly provider: H3.Provider;
-  readonly media: BrowserMedia.Tracks;
-}
-
-/**
- * The page holds at most one session. Starting takes seconds (a token, an
- * allocation, a WebRTC connection), and a second Start in that time must
- * not open a second paid session nobody can stop; a Stop in that time
- * closes the session as soon as it has connected.
- */
-type State =
-  | { readonly _tag: "Idle" }
-  | { readonly _tag: "Starting"; stopRequested: boolean }
-  | { readonly _tag: "Live"; readonly live: Live };
-let state: State = { _tag: "Idle" };
-const startButton = element("start", HTMLButtonElement);
-
-/**
- * Asks the server for a token, then allocates and connects a session from
- * the browser. Everything the session owns (its WebRTC peer, its tracks,
- * their playback) lives in a scope the page holds until Stop, so one close
- * releases all of it and terminates the paid session.
- */
-const start = Effect.gen(function* () {
-  const api = yield* HttpApiClient.make(Api);
-  // The session asks for a token bound to it before its first one expires.
-  const token = (session?: string) =>
-    api.token({ payload: session === undefined ? {} : { session } }).pipe(
-      Effect.map((reply) => ({
-        jwt: Redacted.make(reply.jwt),
-        expiresAt: reply.expiresAt,
-        maxSessionSeconds: reply.maxSessionSeconds,
-      })),
-      Effect.mapError(() => ReactorError.fromCode("Http", "the server gave no session token")),
-    );
-  const scope = yield* Scope.make();
-  return yield* Effect.gen(function* () {
-    const client = yield* Reactor.Reactor;
-    const session = yield* client.create({
-      model: H3.modelName,
-      tokens: { create: token(), bind: token },
-    });
-    const provider = yield* H3.make(session);
-    // H3 changes no playback policy on its own: ask it to play clips as they are ready.
-    yield* provider.setAutoplay(true);
-    const media = yield* BrowserMedia.tracks(session);
-    yield* BrowserMedia.play(yield* media.track("main_video"), video);
-    return { scope, session, provider, media };
-  }).pipe(
-    Scope.provide(scope),
-    Effect.onError(() => Scope.close(scope, Exit.void)),
-  );
-});
-
-/** One prompt, followed from acceptance to its end through the clip's operation facts. */
-const send = Effect.fn("send")(function* (provider: H3.Provider, prompt: string) {
-  const submission = yield* provider.prepare({ prompt, seconds: 8 });
-  const acceptance = yield* submission.submit;
-  const clip = acceptance.clip.clip_id.slice(-8);
-  yield* logLine(`clip ${clip} accepted`);
-  const operation = yield* provider.operation(submission);
-  yield* operation.reached("generated");
-  yield* logLine(`clip ${clip} generated`);
-  yield* operation.reached("started");
-  yield* logLine(`clip ${clip} playing`);
-  yield* operation.ended;
-  yield* logLine(`clip ${clip} ended`);
-}, Effect.scoped);
-
-startButton.addEventListener("click", () => {
-  if (state._tag !== "Idle") return;
-  const starting = { _tag: "Starting" as const, stopRequested: false };
-  state = starting;
-  startButton.disabled = true;
-  log("starting a session…");
-  runtime.runPromise(start).then(
-    (live) => {
-      state = { _tag: "Live", live };
-      log(`session ${live.session.id} connected`);
-      if (starting.stopRequested) void stop();
-    },
-    (error: unknown) => {
-      state = { _tag: "Idle" };
-      startButton.disabled = false;
-      log(`could not start: ${describe(error)}`);
-    },
-  );
-});
-
-// Audio needs its own user gesture: browsers refuse unmuted playback that
-// starts seconds after the click that asked for it.
-element("sound", HTMLButtonElement).addEventListener("click", () => {
-  if (state._tag !== "Live") return;
-  const { media, scope } = state.live;
-  runtime
-    .runPromise(
-      Effect.gen(function* () {
-        yield* BrowserMedia.play(yield* media.track("main_audio"), audio);
-      }).pipe(Scope.provide(scope)),
-    )
-    .catch((error: unknown) => log(`no sound: ${describe(error)}`));
-});
-
-element("form", HTMLFormElement).addEventListener("submit", (event) => {
-  event.preventDefault();
-  const input = element("prompt", HTMLInputElement);
-  if (state._tag !== "Live" || input.value.trim() === "") return;
-  runtime
-    .runPromise(send(state.live.provider, input.value.trim()))
-    .catch((error: unknown) => log(`prompt failed: ${describe(error)}`));
-  input.value = "";
-});
-
-/**
- * Stop closes the session, which terminates it and returns its report, then
- * the scope, which releases playback and tracks and reuses that report.
- */
-const stop = (): Promise<void> => {
-  if (state._tag === "Starting") {
-    state.stopRequested = true;
-    log("stopping once the session has connected");
-    return Promise.resolve();
-  }
-  if (state._tag !== "Live") return Promise.resolve();
-  const { live } = state;
-  state = { _tag: "Idle" };
-  return runtime
-    .runPromise(live.session.close.pipe(Effect.tap(() => Scope.close(live.scope, Exit.void))))
-    .then((report) =>
-      log(
-        `session closed: ${report.remote.confirmed ? "termination confirmed" : "termination not confirmed"}`,
-      ),
-    )
-    .finally(() => {
-      startButton.disabled = false;
-    });
-};
-element("stop", HTMLButtonElement).addEventListener("click", () => void stop());
-
-// Leaving the page closes what it can; the token's five-minute cap bounds
-// anything a closing tab cannot finish.
-window.addEventListener("pagehide", () => {
-  void stop().then(
-    () => runtime.dispose(),
-    () => runtime.dispose(),
-  );
-});
+Studio.mount(ManagedRuntime.make(chosen.pipe(Layer.provide(FetchHttpClient.layer))));

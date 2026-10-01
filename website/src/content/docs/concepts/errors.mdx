@@ -1,0 +1,305 @@
+---
+title: Errors and dispatch evidence
+description: "Tagged failures with reasons, and whether a failed command may still have reached Reactor."
+---
+
+import { Aside, CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+Every failure of a session, the H3 provider or a source is one of three tagged classes:
+`ReactorError`, `CommandFailure` and `AcquisitionFailure`; `Playout` adds its own refusals,
+[below](#the-playouts-own-errors). Each class carries a tagged `reason` to route on, and a `context`
+that says, among other things, whether the request may have reached Reactor. Every operation's type
+names its exact failure, so the compiler shows you what can go wrong.
+
+```ts
+import { Effect } from "effect";
+import type { H3 } from "reactor-effect-client";
+
+export const enqueue = Effect.fn("enqueue")(function* (
+  h3: H3.Provider,
+  request: H3.Request,
+) {
+  const acceptance = yield* h3.enqueue(request).pipe(
+    // Refused before anything was sent: the deployment takes no
+    // reference audio. Sending the clip without it is safe.
+    Effect.catchReason("CommandFailure", "UnsupportedCapability", () =>
+      h3.enqueue({ ...request, audio: [] }),
+    ),
+  );
+  return acceptance.clip.clip_id;
+});
+```
+
+## Three classes
+
+| Class                | Raised by                                         | Carries                                       |
+| -------------------- | ------------------------------------------------- | --------------------------------------------- |
+| `CommandFailure`     | A command: an H3 command, `session.command`       | `reason`, and `context` with its dispatch evidence |
+| `AcquisitionFailure` | `create`, `attach`, `H3Source.open` and `resume`  | `reason`, `context`, and `cleanup`: the close report of whatever it allocated |
+| `ReactorError`       | Everything else: reads, streams, layers, uploads  | `reason` and `context`                        |
+
+Each keeps its own `_tag`, so `Effect.catchTag("CommandFailure", ...)` catches one class.
+`ReactorError.isReactorFailure(value)` recognizes any of the three, and each class has its own
+`is`. All three have `isRetryable` and `retryAfter`.
+
+## Reasons
+
+`reason._tag` says what happened. Most reasons are a code with a library-written `message`:
+
+| Code                    | What happened                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------ |
+| `InvalidInput`          | A request or option was refused before anything was sent                       |
+| `UnsupportedCapability` | The deployment or host lacks what was asked: a command, reference audio, decoded media in a browser |
+| `UnsupportedHost`       | The host cannot run: no WebRTC in the page, or no native addon for this platform |
+| `InvalidState`          | The operation does not fit the current state, such as H3 not yet ready        |
+| `TerminalSession`       | The session has ended                                                          |
+| `Timeout`               | A library deadline passed: a reply, a connect, a reconnect                     |
+| `Disconnected`          | The connection dropped                                                         |
+| `Closed`                | The session or peer is closed                                                  |
+| `Aborted`               | The work stopped because something else did, such as a failed `onAllocated`   |
+| `Overflow`              | A bound was exceeded: a reader fell behind, or too many requests are pending   |
+| `Moderated`             | Reactor's content moderation ended the session                                 |
+| `Indeterminate`         | The provider retired before its evidence decided a clip's fact                 |
+| `Protocol`, `UnexpectedReply` | Reactor or the model answered outside its contract                       |
+| `VersionMismatch`       | Reactor refuses this client's protocol                                         |
+| `Upload`, `ChannelClosed`, `SdpRejected`, `Shutdown`, `AlreadyReading` | An upload, a data channel, the WebRTC negotiation, a native shutdown or a second reader of one observation failed |
+
+The others carry fields of their own:
+
+| Reason                       | Fields                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------- |
+| `Http`                       | `status` (absent when no response arrived), `retryAfter`, `body`          |
+| `Remote`, `RecorderDisabled` | `remoteCode`, `body`: the model's own refusal                             |
+| `Native`                     | `backendMessage`: libwebrtc's text                                        |
+| `IceFailed`                  | `pairs`, `candidateTypes`: no ICE candidate pair worked                   |
+| `TransportFailed`            | `pairs`: ICE worked, and the DTLS or SCTP transport above it failed       |
+| `ClipEnded`                  | `clipId`, `lifecycle` (`clip_failed` or `clip_popped`), `transportGeneration` |
+
+Route on reasons with Effect's `catchReason`, `catchReasons` and `unwrapReason`. The handler
+gets the reason and the failure it came in:
+
+```ts
+import { Effect } from "effect";
+import { CoordinatorClient, H3, Reactor } from "reactor-effect-client";
+
+export const session = Effect.gen(function* () {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  const reactor = yield* Reactor.Reactor;
+  const create = reactor.create({
+    model: H3.modelName,
+    tokens: coordinator.tokens({
+      modelName: H3.modelName,
+      maxSessionDuration: "5 minutes",
+    }),
+  });
+  return yield* create.pipe(
+    // Reactor's quotas refuse a sixth session at once, or creates
+    // faster than ten a minute (three back to back), with 429.
+    Effect.catchReason(
+      "AcquisitionFailure",
+      "Http",
+      (reason, failure) =>
+        reason.status === 429 && reason.retryAfter !== undefined
+          ? Effect.andThen(Effect.sleep(reason.retryAfter), create)
+          : Effect.fail(failure),
+    ),
+  );
+});
+```
+
+On hosted Reactor, an expired token was refused with `Http` 401 and an unbound one with 403
+([0.8.0-api `adoption`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+2026-09-28), and attaching to a session that had ended failed with `TerminalSession`
+([0.8.0-api `tour`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+2026-09-28).
+
+## Dispatch evidence
+
+A failure's `context.outcome` says whether Reactor may have applied the request:
+
+| `outcome`       | Meaning                                                   | Sending it again   |
+| --------------- | --------------------------------------------------------- | ------------------ |
+| `not-submitted` | It never left this process                                | Safe               |
+| `replied`       | Reactor answered, and its reply or refusal is known       | As the reply says  |
+| `unknown`       | It was sent, and no answer came in time                   | It may have applied: the SDK never sends it again |
+
+A `CommandFailure` always carries this evidence: either `not-submitted` with its `operation`, or
+`unknown` or `replied` with the `requestId` and connection `generation` that carried it. A local
+interruption after dispatch never proves that Reactor did nothing, so nothing in the SDK replays
+an `unknown` command. That is why an [H3 enqueue](/reactor-effect-client/concepts/h3/) whose
+reply was lost is never sent twice, and a [playout](/reactor-effect-client/concepts/playout/)
+records such an item as `Unknown` instead of inventing a start for it.
+
+`isRetryable` is true when a later attempt may succeed: backpressure (`Overflow`), a connection
+lost before dispatch (`Disconnected`, `ChannelClosed`), or an HTTP refusal for now (no response,
+`408`, `429`, a `5xx`, or a named `Retry-After`). It is never true when the outcome is `unknown`.
+
+```ts
+import { Effect, Schedule } from "effect";
+import type { H3 } from "reactor-effect-client";
+
+// Retries only what may be retried: never an `unknown` outcome.
+export const enqueueRetrying = Effect.fn("enqueueRetrying")(
+  function* (h3: H3.Provider, request: H3.Request) {
+    return yield* h3.enqueue(request);
+  },
+  Effect.retry({
+    schedule: Schedule.exponential("250 millis"),
+    times: 3,
+    while: (failure) => failure.isRetryable,
+  }),
+);
+```
+
+A request whose token could not be had in time was never sent. A create answered with a `5xx`
+may still have allocated a session, so its allocation is `unknown`.
+
+## Acquisition failures
+
+A failed acquisition still returns the evidence of what it left behind. `failure.cleanup` is the
+close report of whatever it allocated: `allocation` is `none` when nothing was allocated, and
+`Session.mayStillBill(failure.cleanup)` says whether a session may still be billing.
+
+```ts
+import { Effect } from "effect";
+import {
+  CoordinatorClient,
+  H3,
+  Reactor,
+  Session,
+} from "reactor-effect-client";
+
+export const created = Effect.gen(function* () {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  const reactor = yield* Reactor.Reactor;
+  const tokens = coordinator.tokens({
+    modelName: H3.modelName,
+    maxSessionDuration: "5 minutes",
+  });
+  return yield* reactor
+    .create({ model: H3.modelName, tokens })
+    .pipe(
+      Effect.tapError((failure) =>
+        Session.mayStillBill(failure.cleanup)
+          ? Effect.logError("a failed create may bill", failure.cleanup)
+          : Effect.void,
+      ),
+    );
+});
+```
+
+Any failure after allocation closes the session before the acquisition fails, `onAllocated`'s
+included. A failure of the client keeps its own reason; any other error from `onAllocated` becomes
+an `Aborted` failure that keeps the error in `context.detail`.
+
+## Provider text stays `Redacted`
+
+A failure's `message` is written by the library and never holds provider or payload text, so logs
+and spans that record it stay free of prompts, refusals and SDP. Text from outside lives only in
+`Redacted` fields: `body` on `Http` and `Remote`, `remoteCode` on `Remote`, `backendMessage` on
+`Native`, and `context.detail`. They print as `<redacted>` in logs, spans and `toJSON`, and stay out
+of the cause chain that exporters such as `OtlpTracer` render. Read one only on purpose:
+
+```ts
+import { Effect, Redacted } from "effect";
+import { ReactorError } from "reactor-effect-client";
+
+export const report = Effect.fn("report")(function* (
+  failure: ReactorError.ReactorFailure,
+) {
+  // Safe to log or store: routing facts, no outside text.
+  yield* Effect.logWarning(
+    "Reactor failure",
+    ReactorError.summarize(failure),
+  );
+  // H3's own words, read on purpose.
+  if (
+    failure.reason._tag === "Remote" &&
+    failure.reason.body !== undefined
+  )
+    yield* Effect.logDebug(Redacted.value(failure.reason.body));
+});
+```
+
+Persist a failure as its `ReactorError.FailureSummary` (from `ReactorError.summarize`), a Schema
+of its tag, reason, message, operation, request, session, generation and outcome, never as the
+error itself. A playout's `Failed` item with reason `Clip` keeps H3's words the same way, in
+`provider`.
+
+## The playout's own errors
+
+`Playout` refuses a submission before anything is sent with its own tagged errors:
+`InvalidItem`, `KeyMismatch`, `LaneBusy`, `WouldMissDeadline` and `PlayoutClosed`. Handle them
+with `Effect.catchTags`:
+
+```ts
+import { Effect } from "effect";
+import { Playout } from "reactor-effect-client";
+
+export const ask = Effect.fn("ask")(function* (
+  playout: Playout.Playout["Service"],
+  id: string,
+  prompt: string,
+) {
+  return yield* playout
+    .submit({
+      key: Playout.ItemKey.make(`viewer-${id}`),
+      lane: "viewer",
+      request: { prompt, seconds: 5 },
+      window: { startBy: "20 seconds", firm: true },
+    })
+    .pipe(
+      Effect.map(() => "queued"),
+      Effect.catchTags({
+        LaneBusy: () => Effect.succeed("busy, try again shortly"),
+        WouldMissDeadline: () =>
+          Effect.succeed("the next clips are already lined up"),
+        InvalidItem: (error) =>
+          Effect.succeed(`refused: ${error.message}`),
+      }),
+    );
+});
+```
+
+What happens to an item after it is admitted is not an error: it is the item's as-run status,
+`Failed` with a reason (`Clip`, `Command`, `Lost`, `Moderated` or `Closed`) or `Dropped`. The
+playout itself fails, through `playout.failure`, only when it cannot go on: with one of the three
+classes above, or `InvalidFiller` when its filler asks for a clip outside H3's limits.
+
+## Defects
+
+A bug or a broken invariant stays a defect, not a typed failure. A `filler.clip` that throws
+stops the playout, and `playout.failure` dies with that defect. Every defect the playout catches,
+in its plan, an open or a source, also goes to Effect's `ErrorReporter`.
+
+<Aside>
+On hosted H3, a 16,171-character prompt was accepted, then failed as it built, and waiting for
+the clip failed with `ClipEnded` naming that clip
+([0.8.0-api `tour`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+2026-09-28).
+</Aside>
+
+## Next
+
+<CardGrid>
+  <LinkCard
+    title="The H3 provider"
+    description="Acceptance evidence, and why a lost reply is never re-sent."
+    href="/reactor-effect-client/concepts/h3/"
+  />
+  <LinkCard
+    title="Sessions and tokens"
+    description="Close reports and what may still bill."
+    href="/reactor-effect-client/concepts/sessions/"
+  />
+  <LinkCard
+    title="Test offline"
+    description="Inject faults and watch the failures they cause."
+    href="/reactor-effect-client/guides/testing-offline/"
+  />
+  <LinkCard
+    title="Modules"
+    description="Every public module and its exports."
+    href="/reactor-effect-client/reference/modules/"
+  />
+</CardGrid>

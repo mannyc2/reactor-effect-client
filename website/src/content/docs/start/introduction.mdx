@@ -1,0 +1,94 @@
+---
+title: Introduction
+description: "What reactor-effect is, what it adds to Reactor's own SDKs, and when to use it."
+---
+
+import { Aside, Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+[Reactor](https://reactor.inc) serves real-time video models over WebRTC: you open a session, send
+the model commands, and receive its video and audio as they are generated. reactor-effect is an
+[Effect](https://effect.website) SDK for building applications on it, from a page that plays one
+clip to a channel that renews its sessions to stay on air.
+
+It is built for the parts of a Reactor application that outlive a single request. A session bills
+until it ends, its token expires, its connection drops, its owner process crashes, and the session
+itself has a maximum length. reactor-effect makes each of those an explicit, typed, tested part of
+the API, so an application keeps its picture on air and is told of any session that may still be
+billing.
+
+## Three packages
+
+| Package                  | What it gives you                                                                                                                                                                           | Runs in                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| `reactor-effect-client`  | Sessions and tokens, the H3 provider, `Playout`, and `ReactorTest`, Reactor simulated in memory. Portable: it loads no native code.                                                         | Node, Bun and browsers |
+| `reactor-effect-browser` | The session's transport on the browser's own `RTCPeerConnection`, and playback of its tracks in DOM media elements.                                                                         | Browsers               |
+| `reactor-effect-native`  | The session's transport on Reactor's `reactor-webrtc` crate (libwebrtc) through Node-API: decoded frames and PCM in your process, with an optional child process per connection under Node. | Node and Bun           |
+
+The client owns every contract. A host package only carries the connection, so the same application
+runs in a browser, on a server, or on `ReactorTest` with no transport at all.
+
+## What it adds
+
+<CardGrid>
+  <Card title="A playout for continuous air" icon="rocket">
+    `Playout` is a keyed schedule of clips in priority lanes, with filler that holds a runway,
+    deadlines, cues and edits. It renews sessions before their cap and switches between them at a
+    clip boundary, and reports what actually aired.
+  </Card>
+  <Card title="Decoded media without a browser" icon="laptop">
+    Reactor's JavaScript SDK targets a browser context. On a server, `reactor-effect-native`
+    complements it: Node and Bun receive the session's decoded frames and PCM directly, with no
+    browser in between.
+  </Card>
+  <Card title="Reactor, offline" icon="setting">
+    `ReactorTest` speaks the real wire protocol in memory, with H3's timing measured on paid runs
+    and faults you can inject. With `TestClock`, an hour of programme runs in seconds and costs
+    nothing.
+  </Card>
+  <Card title="Failures that say what reached Reactor" icon="approve-check">
+    Every failed command carries its dispatch evidence: never sent, answered, or unknown. The SDK
+    never sends an unknown command again, so a lost reply cannot play a clip twice.
+  </Card>
+</CardGrid>
+
+## How it relates to Reactor's SDKs
+
+Reactor publishes official SDKs for JavaScript, Python, C++, Swift and Java, and generated packages
+per model. Use them when you want Reactor's own client in a browser, a game engine or a native app.
+
+reactor-effect is independent and complementary. It is for TypeScript applications that are
+written with Effect, or that need what Effect's structure gives a long-running media service:
+resources tied to scopes, errors in the type, streams with back-pressure, and a clock you can
+control in tests. It speaks Reactor's public coordinator API and wire protocol, and the requests
+that create and connect a session carry its own `sdk_type`, so Reactor can tell its sessions apart.
+
+<Aside>
+  reactor-effect supports **H3 Reference Turbo Realtime** today. Reactor's other models share the
+  same session and wire protocol; each needs a provider module of its own, like `H3`.
+</Aside>
+
+## How it is qualified
+
+- **Every change** runs the client, browser and hosted-rehearsal suites on Node and on Bun, real
+  Chrome against the native host, and the examples. None of it allocates a paid session.
+- **Hosted Reactor** is exercised by paid checks the maintainer runs with a budget: 22 runs from
+  2026-09-24 to 2026-10-01, on the 0.3.0-rc.0 to 0.9.0 libraries. Each run records its evidence:
+  frames, seams, timings, and every session confirmed ended. On 0.9.0 only the `showreel` check has
+  run; 0.9.0's other checks, its published client packages, the browser package and the in-process
+  native host under Node have not run there yet.
+  [Hosted evidence](/reactor-effect-client/reference/hosted-evidence/) lists every run.
+
+## Next
+
+<CardGrid>
+  <LinkCard
+    title="Quickstart"
+    description="One H3 clip in a minute, offline."
+    href="/reactor-effect-client/start/quickstart/"
+  />
+  <LinkCard
+    title="Installation"
+    description="Which packages for which host."
+    href="/reactor-effect-client/start/installation/"
+  />
+</CardGrid>

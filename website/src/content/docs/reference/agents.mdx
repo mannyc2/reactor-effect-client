@@ -1,0 +1,64 @@
+---
+title: For coding agents
+description: "llms.txt, the full documentation as one file, and an Agent Skill, so coding agents can build with reactor-effect."
+---
+
+import { Aside, Tabs, TabItem } from "@astrojs/starlight/components";
+
+Coding agents build with reactor-effect well when they read two things first: this documentation
+and Effect's own guide for the pinned release. Both are available as plain text.
+
+## Documentation as text
+
+| File                                                                               | What it holds                                      |
+| ---------------------------------------------------------------------------------- | -------------------------------------------------- |
+| [`llms.txt`](https://mannyc2.github.io/reactor-effect-client/llms.txt)             | An index of this site, per the llms.txt convention |
+| [`llms-full.txt`](https://mannyc2.github.io/reactor-effect-client/llms-full.txt)   | Every page, in one Markdown file                   |
+| [`llms-small.txt`](https://mannyc2.github.io/reactor-effect-client/llms-small.txt) | The same, with non-essential content removed       |
+
+Each page's source is also Markdown in the repository, under
+[`website/src/content/docs`](https://github.com/mannyc2/reactor-effect-client/tree/main/website/src/content/docs),
+and the examples it shows are ordinary TypeScript files under
+[`examples`](https://github.com/mannyc2/reactor-effect-client/tree/main/examples) that CI typechecks.
+
+## The Agent Skill
+
+The repository ships an [Agent Skill](https://agentskills.io) that tells an agent when to use the
+SDK, which layers to provide, the core workflow and the mistakes that cost money. It follows the
+same format as Reactor's own skills, so both can be installed side by side.
+
+<Tabs>
+  <TabItem label="skills CLI">
+    ```sh
+    npx skills add mannyc2/reactor-effect-client
+    ```
+  </TabItem>
+  <TabItem label="By hand">
+    Copy
+    [`skills/reactor-effect`](https://github.com/mannyc2/reactor-effect-client/tree/main/skills/reactor-effect)
+    into your agent's skills directory, for example `.claude/skills/reactor-effect/`.
+  </TabItem>
+</Tabs>
+
+For Reactor's models themselves (their commands, prompts and limits), add Reactor's skills with
+`npx skills add reactor-team/reactor-skills` and its documentation server at
+`https://docs.reactor.inc/mcp`.
+
+## A prompt to start from
+
+Paste this into a coding agent to set it up for a new project:
+
+```text
+Build this with reactor-effect, the Effect SDK for Reactor's real-time video models.
+First read https://mannyc2.github.io/reactor-effect-client/llms-full.txt, then Effect's guide
+at node_modules/effect/AGENTS.md for the installed release. Install Effect and every @effect
+package at exactly 4.0.0-rc.117 with --save-exact. Write the application against the
+Reactor, CoordinatorClient and H3 (or Playout) services, run it on ReactorTest.layer until it
+works, and only then provide the hosted layer. Cap every session with maxSessionDuration,
+close it in a scope, and never resend a command whose failure outcome is "unknown".
+```
+
+<Aside type="caution">
+  An agent with a Reactor API key can start paid sessions. Give it the simulated layer first, and a
+  key only when you mean to spend.
+</Aside>
