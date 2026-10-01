@@ -15,6 +15,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The package READMEs open with what each package is for and link the documentation, which now carries the contracts the client README spelled out; the npm descriptions, keywords, homepage and issue tracker say the same.
 
+## [0.9.1] - 2026-10-01
+
+0.9.1 fixes `follows` and `place` from 0.9.0, and makes queued work traceable to its caller. Most importantly, a `follows` item could leave the air dark until its session's cap, with the as-run reporting a clip `Started` that never aired. H3 clip operations now fail, instead of waiting for ever, once Reactor ends their session, and `ReactorTest` bills at H3's current rate. The public API is unchanged: no export is added, renamed or removed. The native Rust sources are unchanged.
+
+Qualification: the main CI run that built these archives passed every job: the shared portable checks; the portable suites on Ubuntu with Node 22 and 24 and on macOS with Node 24; the native addon on linux-x64 and on darwin-arm64, with its suites on Node and on Bun and the Chrome browser/native WebRTC test on Node; and the pack/install smoke of all five archives. No paid hosted run has exercised 0.9.1: the playout fixes were found and checked on `ReactorTest`, Reactor simulated in memory, by an adversarial review and seeded sweeps, not on hosted H3. What hosted H3 does when autoplay is turned off with a clip armed is unrecorded; the fix and its backstop do not depend on it. Two known gaps remain for 0.9.2: deep property runs (20,000 scripts) show that, near a session's cap, a build or filler clip can fall due between the plan's wakes and go out late, and firm items can still be admitted that admission should refuse. A provider `Started` event is not proof of encoded output.
+
 ### Fixed
 
 - A `follows` item could leave the air dark until its session's cap. Its fence turned autoplay off on the session on air at moments it did not check, such as when the follower was picked to build just as a clip ended. If that command reached H3 while the next clip waited out its seam, H3 named that clip playing and never started it: the as-run said `Started`, nothing aired, and nothing started the clip again until the session's cap ended it as `Lost`. On the session on air the fence now goes up only while a clip whose start the provider reported plays with more than a readiness margin left, since a state read inside a seam names the next clip playing before it starts. A clip held that way anyway is started with `play` once a state read shows nothing playing.
@@ -585,7 +591,8 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/3bc69234ecd4b0d934fa8c381180165f022ae704...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/7e46b84145b960c08f55b82cb35682ea425cfb52...main
+[0.9.1]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.1
 [0.9.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.0
 [0.8.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.8.0
 [0.7.1]: https://www.npmjs.com/package/reactor-effect-client/v/0.7.1

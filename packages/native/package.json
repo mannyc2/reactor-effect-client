@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-native",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Decoded Reactor video and audio in Node and Bun, no browser needed: reactor-effect-client's transport on a libwebrtc Node-API addon, in process or isolated per connection",
   "keywords": [
     "reactor",
