@@ -1,19 +1,19 @@
-/* Cyan-to-violet accent over Starlight's defaults; the grays apply to the dark theme only. */
+/* Teal accents match the session handoff mark; the grays apply to the dark theme only. */
 :root,
 :root[data-theme="dark"] {
-  --sl-color-accent-low: #0b2a33;
-  --sl-color-accent: #22b8d6;
-  --sl-color-accent-high: #b9f1fb;
+  --sl-color-accent-low: #203a33;
+  --sl-color-accent: #61d6b0;
+  --sl-color-accent-high: #c6f4e1;
 }
 
 :root[data-theme="dark"] {
   --sl-color-white: #ffffff;
-  --sl-color-gray-1: #eceef2;
-  --sl-color-gray-2: #c0c2c7;
-  --sl-color-gray-3: #888b96;
-  --sl-color-gray-4: #545861;
-  --sl-color-gray-5: #353841;
-  --sl-color-gray-6: #24272f;
+  --sl-color-gray-1: #f3f6f5;
+  --sl-color-gray-2: #bec9ca;
+  --sl-color-gray-3: #98a6aa;
+  --sl-color-gray-4: #687773;
+  --sl-color-gray-5: #354341;
+  --sl-color-gray-6: #242c2b;
   --sl-color-black: #16181d;
 }
 
@@ -22,9 +22,9 @@
 }
 
 :root[data-theme="light"] {
-  --sl-color-accent-low: #cff4fb;
-  --sl-color-accent: #0a7f99;
-  --sl-color-accent-high: #063f4c;
+  --sl-color-accent-low: #ddf5ea;
+  --sl-color-accent: #13775b;
+  --sl-color-accent-high: #104b3a;
 }
 
 .hero .tagline {
