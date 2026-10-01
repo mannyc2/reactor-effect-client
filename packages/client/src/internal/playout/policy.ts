@@ -324,7 +324,10 @@ interface Session {
   readonly autoplayRetry: { readonly enabled: boolean; readonly at: number } | undefined;
   /** A selected follower fences autoplay before its enqueue is sent. */
   readonly guardItem?: ItemKey | undefined;
-  /** A failed explicit start is retried only after its queues change or a second passes. */
+  /**
+   * An explicit start goes again only after its queues change or a second passes: one that
+   * failed, or one that succeeded while its start is not seen yet.
+   */
   readonly playRetry?: { readonly signature: string; readonly at: number } | undefined;
   readonly retiring: boolean;
   /**
@@ -2076,7 +2079,11 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
             });
           return cutFailed(sessionId);
         }
-        updateSession(sessionId, { playRetry: undefined });
+        // Its clip's start reaches the plan after this reply: until the queues change, nothing is
+        // played again.
+        updateSession(sessionId, {
+          playRetry: { signature: signature(session(sessionId)), at: now.mono + retryDelayMs },
+        });
         if (state.cutting?.sessionId === sessionId && state.cutting.next === command.clipId)
           state = { ...state, cutting: { ...state.cutting, stage: "played" } };
         return;
