@@ -990,7 +990,7 @@ layer(seamed)("follows", (it) => {
 
   it.effect("answers no boundary its clip could not be Ready a margin before", () =>
     Effect.gen(function* () {
-      const { playout, starts } = yield* start();
+      const { playout } = yield* start();
       const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
         playout.submit({ key: key(name), lane: "line", request: clip(name) }),
       );
@@ -1003,16 +1003,7 @@ layer(seamed)("follows", (it) => {
       yield* line.started;
       // 2 s of it is left with nothing queued, and a 5 s clip takes over 2 s to build.
       yield* Effect.sleep("8 seconds");
-      const placement = yield* playout.place({ key: key("u") });
-      if (placement === null) return;
-      const u = yield* playout.insert({
-        key: key("u"),
-        request: clip("u"),
-        after: key("line"),
-        follows: placement.after,
-      });
-      assert.strictEqual((yield* u.started)._tag, "Started");
-      assert.deepStrictEqual((yield* starts).slice(-2), ["line", "u"]);
+      assert.isNull(yield* playout.place({ key: key("u") }));
     }),
   );
 
@@ -1352,9 +1343,10 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
     () =>
       Effect.gen(function* () {
         const problems: Array<string> = [];
-        // Seed 13 places a clip whose slack the fence before its build would take, and seed 49
-        // one after a clip whose guarded start is under way as its deadline passes.
-        for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 13, 49])
+        // Seed 13 places a clip whose slack the fence before its build would take, seed 49 one
+        // after a clip whose guarded start is under way as its deadline passes, and seed 343 one
+        // that the replacement could not air before its cap at the first boundary it could make.
+        for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 13, 49, 343])
           problems.push(...(yield* forecast(seed, "75 seconds", 100, "15 seconds", "20 millis")));
         assert.deepStrictEqual(problems, []);
       }),
@@ -1365,7 +1357,7 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
 // Sessions of 50 s renewed 40 s before their cap: a replacement has little of its cap left by
 // the time it takes the air.
 layer(seamed)("place across short sessions", (it) => {
-  it.effect("answers only a boundary the replacement can air before its cap", () =>
+  it.effect("answers no boundary the replacement could not air before its cap", () =>
     Effect.gen(function* () {
       const { playout } = yield* start(
         {
@@ -1390,15 +1382,10 @@ layer(seamed)("place across short sessions", (it) => {
       });
       yield* playout.submit({ key: key("next"), lane: "line", request: clip("next") });
       yield* line.started;
+      // Built now on the replacement, the clip would air past that replacement's cap, and place
+      // projects no renewal after it.
       yield* Effect.sleep("6 seconds");
-      const placement = yield* playout.place({ key: key("u") });
-      if (placement === null) return;
-      const spec = { key: key("u"), request: clip("u"), follows: placement.after };
-      const u =
-        placement.anchor === "next"
-          ? yield* playout.submit({ ...spec, lane: "line", start: { _tag: "Asap" } })
-          : yield* playout.insert({ ...spec, after: placement.anchor });
-      assert.strictEqual((yield* u.started)._tag, "Started");
+      assert.isNull(yield* playout.place({ key: key("u") }));
     }),
   );
 });
