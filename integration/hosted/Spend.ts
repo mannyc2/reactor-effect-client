@@ -184,7 +184,7 @@ export const admit = (input: {
     return refuse(
       `${holds.length} session(s) of up to ${[...new Set(holds)].join(" and ")} s bill up to $${worst.toFixed(4)}, over the $${authorization.budgetUsd} budget`,
     );
-  // A nanodollar of float slack, so five $2.10 runs still fit $10.50.
+  // A nanodollar of float slack, so four $2.10 runs still fit $8.40.
   if (!(reservedUsd + worst <= authorization.totalUsd + 1e-9))
     return refuse(
       `the ledger holds $${reservedUsd.toFixed(4)} of paid runs; one more of up to $${worst.toFixed(4)} exceeds the $${authorization.totalUsd} total`,

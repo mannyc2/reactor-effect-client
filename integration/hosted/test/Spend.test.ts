@@ -47,15 +47,15 @@ describe("the spending gates", () => {
       }),
   );
 
-  it.effect("a rate stated per minute reserves a whole minute, and five fit the total", () =>
+  it.effect("a rate stated per minute reserves a whole minute, and four fit the total", () =>
     Effect.gen(function* () {
-      const authorization = { check: "vertical", budgetUsd: 2.1, totalUsd: 10.5 } as const;
+      const authorization = { check: "vertical", budgetUsd: 2.1, totalUsd: 8.4 } as const;
       const minute = perMinute;
       assert.strictEqual(
-        yield* Spend.admit({ rate: minute, authorization, reservedUsd: 8.4 }),
+        yield* Spend.admit({ rate: minute, authorization, reservedUsd: 2.1 + 2.1 + 2.1 }),
         2.1,
       );
-      yield* refused(Spend.admit({ rate: minute, authorization, reservedUsd: 8.4001 }));
+      yield* refused(Spend.admit({ rate: minute, authorization, reservedUsd: 6.3001 }));
       // At a higher published rate the same budget no longer covers the minute.
       yield* refused(
         Spend.admit({
