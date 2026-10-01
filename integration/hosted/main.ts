@@ -4,8 +4,8 @@
  *
  *   bun integration/hosted/main.ts rehearse <check> [--faults '<json>'] [--ledger <dir>] \
  *     [--moderation-prompt-file <path>]
- *   bun integration/hosted/main.ts preflight --total-budget-usd 1.50 --ledger <dir>
- *   bun integration/hosted/main.ts run <check> --budget-usd 0.75 --total-budget-usd 1.50 \
+ *   bun integration/hosted/main.ts preflight --total-budget-usd 3.50 --ledger <dir>
+ *   bun integration/hosted/main.ts run <check> --budget-usd 1.75 --total-budget-usd 3.50 \
  *     --ledger <dir> --network "<where, without addresses>" --i-authorize-paid-sessions \
  *     [--moderation-prompt-file <path>]
  *   bun integration/hosted/main.ts summarize <file or ledger>...

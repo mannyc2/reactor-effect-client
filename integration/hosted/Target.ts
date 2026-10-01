@@ -523,6 +523,9 @@ export const rehearsal = (input: {
         faults: input.faults,
         candidate: input.candidate,
         recorder: input.recorder === true,
+        // H3's published rate on September 30, 2026, so a rehearsal is admitted, or refused,
+        // as a paid run is today.
+        creditsPerSecond: 350,
         width: 64,
         height: 36,
       }),
