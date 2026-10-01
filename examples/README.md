@@ -1,33 +1,68 @@
 # Examples
 
-Four programs, each showing what one part of the SDK is for, written as Effect applications: services and layers, schemas at their boundaries, `NodeRuntime.runMain`, and tests with `@effect/vitest`. Each is its own private workspace that declares exactly what it uses, runs from its TypeScript sources (Node 22.18 or newer, or Bun), and is checked by `bun run verify`.
+Six Effect applications built on reactor-effect. Each is its own private workspace that declares
+exactly what it uses and runs from its TypeScript sources on Node 22.18 or newer, or Bun. Most run
+offline on `ReactorTest`, Reactor simulated in memory, with no API key; with `REACTOR_API_KEY` set,
+the same program runs on hosted H3.
 
-| Example                                                  | Packages        | What it shows                                                                                                                                 | Paid?              |
-| -------------------------------------------------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
-| [Live channel](./livestream/README.md)                   | client, native  | A server that runs one playout, renews its sessions, and broadcasts its decoded media to many browsers; prompts go through the server         | offline by default |
-| [Rundown](../packages/client/examples/README.md)         | client          | An application service over `Playout`, run and tested offline against `ReactorTest` on the test clock; as-run outcomes as data                | no                 |
-| [In the browser](../packages/browser/examples/README.md) | client, browser | A page that runs its own session over the browser's WebRTC, with a server that only mints its tokens; `ManagedRuntime` from ordinary DOM code | yes                |
-| [Capture](../packages/native/examples/README.md)         | client, native  | A command line that generates one clip and writes its decoded frames and audio to an MP4, following the clip through its operation facts      | yes                |
+```sh
+bun install && bun run build      # once, at the repository root
+```
+
+| Example                                   | What it shows                                                                                                                                        | Without a key         |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| [Quickstart](./quickstart)                | One H3 clip from prompt to its end, with its frames decoded in your process, in one file                                                             | runs on `ReactorTest` |
+| [Terminal viewer](./terminal)             | H3 drawn in your terminal as 24-bit colour text from decoded frames, with every clip followed to its end: no browser anywhere                        | runs on `ReactorTest` |
+| [Live channel](./livestream)              | Your own 24/7 AI channel: viewers prompt it, a house rotation fills the gaps, sessions renew with no dark air, many browsers watch, RTMP restreaming | runs on `ReactorTest` |
+| [H3 Studio](../packages/browser/examples) | A page that runs its own session: H3's queue live, references, each clip's lifecycle, failures with their dispatch outcome                           | runs in the browser   |
+| [Capture](../packages/native/examples)    | A command line that writes one clip's decoded frames and audio to an MP4                                                                             | live only             |
+| [Rundown](../packages/client/examples)    | An application service over `Playout`, run and tested offline on the test clock                                                                      | runs on `ReactorTest` |
+
+Offline, the simulated H3 sends a flat colour per clip, so what you see is the SDK at work rather
+than the model's picture. H3 Studio's offline build runs in the
+[playground](https://mannyc2.github.io/reactor-effect-client/playground/) on the documentation site.
+The [examples page](https://mannyc2.github.io/reactor-effect-client/examples/) walks through each.
 
 ## Which shape fits
 
-- **One session, many viewers**: the live channel. The server owns the session, its renewal and its cost; viewers get an ordinary video stream and never hold a token.
-- **One session per user, lowest latency**: the browser example. Each page connects to Reactor itself and plays the WebRTC tracks; the server's only job is to mint the session's tokens.
-- **Frames on a server, no viewer**: the capture. The native host hands the decoded BGRA frames and PCM to your code.
-- **Logic you want to test without paying**: the rundown. Code written against `Playout` runs unchanged on `ReactorTest`, the simulated Reactor, deterministically on the test clock.
+- **One session, many viewers**: the live channel. The server owns the session, its renewal and its
+  cost; viewers get an ordinary video stream and never hold a token.
+- **One session per user, lowest latency**: H3 Studio. Each page connects to Reactor itself and plays
+  the WebRTC tracks; the server only mints the session's tokens.
+- **Frames on a server, no viewer**: the terminal viewer and the capture. The native host hands your
+  code decoded BGRA frames and PCM.
+- **Logic you want to test without paying**: the rundown. Code written against `Playout` runs
+  unchanged on `ReactorTest`, deterministically on the test clock.
+
+## Live mode
+
+A live example spends money: H3 bills per second from `ready` until the session ends, $0.035 a
+second on September 30, 2026. Every example caps its sessions with the token it mints, and the
+terminal viewer and the capture print the most a run can cost before they allocate anything. The examples that
+decode frames on the server need the native addon for the machine: npm installs it prebuilt with
+`reactor-effect-native` (Linux x64 with glibc, macOS on Apple silicon), and in this repository
+`bun run native:build` builds it.
 
 ## Using one outside this repository
 
-Each example's `package.json` names its dependencies with this workspace's `catalog:` and `workspace:*` protocols. In a project of your own, use the versions in the root [`package.json`](../package.json), named exactly (`effect` and the `@effect/*` packages at `4.0.0-rc.117`, the three SDK packages at the same version as each other). An npm project that depends on `@effect/platform-node` without `reactor-effect-native` also needs the root override `"@effect/platform-node-shared": "4.0.0-rc.117"`: the platform's caret range on its internal shared package otherwise resolves to a later prerelease with a different Effect peer. `reactor-effect-native` peers on that package exactly, so with it no override is needed. The examples import `@effect/platform-node` by module; see below.
+Each `package.json` names its dependencies with this workspace's `catalog:` and `workspace:*`
+protocols. In a project of your own, name the versions exactly: `effect` and the `@effect/*`
+packages at `4.0.0-rc.117`, and the three SDK packages at one version. With `@effect/platform-node`,
+also pin `@effect/platform-node-shared` to `4.0.0-rc.117` with an override: always under Bun and
+pnpm, and under npm unless `reactor-effect-native` is installed
+([installation](https://mannyc2.github.io/reactor-effect-client/start/installation/)).
+
+The examples import `@effect/platform-node` by module (`@effect/platform-node/NodeRuntime`). The
+package's index also loads Effect's RPC modules, whose declarations name the DOM's `Transferable`,
+so a Node project without DOM types that checks library declarations would need that type declared.
 
 ## What is checked
 
-`bun run verify` typechecks every example workspace (with the Effect language service's diagnostics) and lints and formats them. `bun run check:examples` then runs each example's offline tests under Node and Bun (the live channel end to end on `ReactorTest`, the rundown, the capture's recorder) and builds the browser bundle, which must reach neither Node nor native code. The tests that encode video need `ffmpeg` and skip without it, except in CI. `bun run test:pack` compiles the examples again inside clean installs of the packed archives and runs the rundown there on Node and Bun.
-
-Nothing in these checks contacts Reactor or spends money: credential variables are removed, and the examples that need a session are compiled but never run.
-
-## Found while writing them
-
-- In Effect 4.0.0-rc.115, the Node child-process spawner leaves the child's stdin, and any input fd, with no error listener once its writer is interrupted, so a buffered write that fails when the child exits raises an uncaught `EPIPE`. The live channel and the capture keep their pipe writers running until they end their pipes themselves; see their notes.
-- In the same release, the spawner's kill without `forceKillAfter` waits for the child to exit with no bound (its module documentation says one second), so a child that survives `SIGTERM` hangs whatever closes its scope. The live channel kills its encoder with `SIGKILL`.
-- The examples import `@effect/platform-node` by module (`@effect/platform-node/NodeRuntime`), as this repository does, where Effect's own documentation imports the package's index. The index also loads Effect's RPC modules, whose rc.115 declarations name the DOM's `Transferable`. A Node project without DOM types that checks library declarations already needs a `TextDecoderOptions` declaration for Effect's `Channel` (as `bun run test:pack` supplies); importing the index would need `Transferable` too.
+`bun run verify` typechecks every example workspace with the Effect language service's diagnostics,
+and lints and formats them. `bun run check:examples` runs each example's offline tests under Node and
+Bun (the live channel end to end on `ReactorTest`, the rundown, the capture's recorder) and builds
+the browser bundles, which must reach neither Node nor native code. The tests that encode video need
+`ffmpeg` and skip without it, except in CI. `bun run test:pack` compiles the examples again inside
+clean installs of the packed archives and runs the rundown there on Node and Bun. Nothing in these
+checks contacts Reactor or spends money: credential variables are removed, and the examples that
+need a session are compiled but never run.
