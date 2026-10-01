@@ -2,10 +2,13 @@
 
 Decoded [Reactor](https://reactor.inc) video and audio in Node and Bun, with no browser. This is the
 native transport for [`reactor-effect-client`](https://www.npmjs.com/package/reactor-effect-client):
-a Node-API addon over libwebrtc hands your process owned BGRA frames and 16-bit PCM, in process or
-in a child process per connection. A server can record, analyse, re-encode or restream a session's
-media directly, where a browser-based client would need a headless browser to reach it. On hosted
-H3 it received 1344×768 video at about 24 fps with no frame lost.
+a Node-API addon over Reactor's `reactor-webrtc` crate (libwebrtc) hands your process owned BGRA
+frames and 16-bit PCM, in process or in a child process per connection (the child needs Node). A
+server can record, analyse, re-encode or restream a session's media directly, where a browser-based
+client would need a headless browser to reach it. In paid runs on hosted H3 from 2026-09-24 to
+09-28, on the 0.3.0-rc.0 to 0.8.0 libraries, it received 1344×768 video at about 24 fps with no
+frame lost. Those runs used the in-process host under Bun and the isolated host under Node; the
+in-process host under Node, and 0.9.0, have not run there yet.
 
 **[Documentation](https://mannyc2.github.io/reactor-effect-client/)** ·
 [Frames in Node and Bun](https://mannyc2.github.io/reactor-effect-client/guides/native/) ·

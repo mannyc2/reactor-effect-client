@@ -1,6 +1,6 @@
 # H3 Studio
 
-One page that runs an H3 Reference Turbo Realtime session from the browser and shows what the SDK knows about it: the session and its connection generations, H3's own queue as the model reports it, every clip followed from acceptance to its end, and every failure with its dispatch outcome. It runs live on hosted Reactor, or offline with Reactor simulated in the tab by `ReactorTest`, from the same code.
+One page that runs an H3 Reference Turbo Realtime session from the browser and shows what the SDK knows about it: the session and its connection generations, H3's own queue as the model reports it, every clip followed from acceptance to its end, and every failure with its dispatch outcome. It runs offline with Reactor simulated in the tab by `ReactorTest`, and is built to run live on hosted Reactor from the same code; live mode has not run on a paid session yet.
 
 ## Run it
 
@@ -23,7 +23,7 @@ bun run start                         # http://127.0.0.1:3000
 REACTOR_API_KEY=rk_… bun run start    # http://127.0.0.1:3000
 ```
 
-`start` bundles the page and starts the token server. With `REACTOR_API_KEY` the server mints a token for each session, capped at five minutes, and the page never sees the key. Reactor bills a session per second from ready until it ends: H3 costs $0.035 a second, $2.10 a minute, so a capped session costs at most $10.50 (`GET https://api.reactor.inc/pricing`, 2026-09-30). Add `?offline` to the address to rehearse on the simulator with the key set. Without the key the server mints nothing and the page runs offline.
+`start` bundles the page and starts the token server. With `REACTOR_API_KEY` the server mints a token for each session, capped at five minutes, and the page never sees the key. Reactor's pricing API states H3's rate per second, $0.035 a second or $2.10 a minute (`GET https://api.reactor.inc/pricing`, 2026-09-30; its billing page still says per session-minute), and the meter runs from ready until the session ends, so a capped session costs at most $10.50. Add `?offline` to the address to rehearse on the simulator with the key set. Without the key the server mints nothing and the page runs offline.
 
 The page needs a browser with WebRTC and Web Crypto, on `localhost` or HTTPS. `HOST` and `PORT` change where the server listens. `REACTOR_API_URL` changes which coordinator the server mints tokens from; the page talks to `CoordinatorClient.defaultApiUrl`, so change both together.
 
@@ -52,23 +52,23 @@ Offline, `ReactorTest.Timing.hosted` draws every delay from ranges measured on p
 The mode is a layer, chosen once as the page builds its `ManagedRuntime`. `app.ts` asks the server `GET /api/live` and picks `Live.layer` or `Offline.layer`; `playground.ts` always takes `Offline.layer`. Both provide the same services: `Reactor.Reactor`, the example's `Stage`, and `Crypto`. `Stage` holds what differs: how a session's media reaches the page, how the page describes the mode, and which faults it can arm. Everything in `Studio.ts` is the same code in both modes.
 
 - **Live** (`Live.ts`): `Reactor.layer({ tokens })` over `CoordinatorClient.layer` and `BrowserPeer.layer`, with tokens from the server's `HttpApi` contract. Its `Stage` plays `BrowserMedia.tracks(session)` in a `<video>` and an `<audio>` with `BrowserMedia.play`. Building `BrowserPeer.layer` checks for WebRTC, so an unsupported browser fails before any session is paid for.
-- **Offline** (`Offline.ts`): `ReactorTest.layer({ timing: ReactorTest.Timing.hosted })` beneath `Reactor.layer()` and `CoordinatorClient.layer()`, with tokens the simulated coordinator mints. Its `Stage` reads `session.decoded`, keeps only the newest frame with `Stream.buffer({ capacity: 1, strategy: "sliding" })` and draws it on a `<canvas>`, converting BGRA or RGBA by each frame's `format`; sound plays the decoded PCM through Web Audio.
+- **Offline** (`Offline.ts`): `ReactorTest.layer({ timing: ReactorTest.Timing.hosted, apiKey })` beneath `Reactor.layer({ tokens })` and `CoordinatorClient.layer({ apiKey })`, with tokens the simulated coordinator mints for a demo key. Its `Stage` reads `session.decoded`, keeps only the newest frame with `Stream.buffer({ capacity: 1, strategy: "sliding" })` and draws it on a `<canvas>`, converting BGRA or RGBA by each frame's `format`; sound plays the decoded PCM through Web Audio.
 
 `Studio.ts` holds one session at a time in a `Scope` the page keeps until Stop: the session, its H3 provider, the observers and every clip's follower live in it, so one close releases everything. Button handlers are ordinary DOM code that run effects through the runtime. The picture and sound follow each ready connection generation with `Stream.switchMap` over `session.changes`. The queue panel renders `provider.changes` together with the Studio's clip cards, a `SubscriptionRef`. A clip is sent with `provider.prepare` and `submission.submit`, then followed through `provider.operation(submission)`: `accepted`, `reached("generated")`, `reached("started")` and `ended`. An enqueue whose outcome is `unknown` is still followed, since a clip that names it can prove it later. The event log reads `provider.observe()`, opened before the first command so it misses none of their replies.
 
-| File                | What it is                                                                      |
-| ------------------- | ------------------------------------------------------------------------------- |
-| `src/app.ts`        | The served page's entry: chooses live or offline as it builds the runtime       |
-| `src/playground.ts` | The static playground's entry: offline only                                     |
-| `src/Stage.ts`      | The service that holds what differs between the modes                           |
-| `src/Live.ts`       | Live layer: server tokens, `BrowserPeer`, media elements                        |
-| `src/Offline.ts`    | Offline layer: `ReactorTest`, decoded frames on a canvas, faults                |
-| `src/Studio.ts`     | The session, the queue's commands, each clip's operation, the page's handlers   |
-| `src/Page.ts`       | The DOM: elements, and how state is drawn into them                             |
-| `src/Api.ts`        | The server's contract, shared by the server and the page's typed client         |
-| `src/server.ts`     | Mints tokens and serves the page (Node, `@effect/platform-node`)                |
-| `src/WebCrypto.ts`  | Effect's `Crypto` over Web Crypto; the pinned Effect stack has no browser layer |
-| `web/index.html`    | The page and its styles                                                         |
+| File                | What it is                                                                                                                    |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `src/app.ts`        | The served page's entry: chooses live or offline as it builds the runtime                                                     |
+| `src/playground.ts` | The static playground's entry: offline only                                                                                   |
+| `src/Stage.ts`      | The service that holds what differs between the modes                                                                         |
+| `src/Live.ts`       | Live layer: server tokens, `BrowserPeer`, media elements                                                                      |
+| `src/Offline.ts`    | Offline layer: `ReactorTest`, decoded frames on a canvas, faults                                                              |
+| `src/Studio.ts`     | The session, the queue's commands, each clip's operation, the page's handlers                                                 |
+| `src/Page.ts`       | The DOM: elements, and how state is drawn into them                                                                           |
+| `src/Api.ts`        | The server's contract, shared by the server and the page's typed client                                                       |
+| `src/server.ts`     | Mints tokens and serves the page (Node, `@effect/platform-node`)                                                              |
+| `src/WebCrypto.ts`  | Effect's `Crypto` over Web Crypto, as `@effect/platform-browser`'s `BrowserCrypto.layer` provides it, without that dependency |
+| `web/index.html`    | The page and its styles                                                                                                       |
 
 The server's endpoint is for a local demo. A real deployment authenticates and rate-limits it, and binds only sessions the caller created: every token it hands out can start or act on a paid session.
 

@@ -15,8 +15,9 @@ H3 on air across sessions; `ReactorTest` is Reactor simulated in memory for offl
   `LocalSource`, `Playout`, `Media`, `Peer`, `ReactorError`, `ReactorTest`. Portable: Node, Bun and
   browsers.
 - `reactor-effect-browser`: `BrowserPeer.layer` on `RTCPeerConnection`, `BrowserMedia` for tracks.
-- `reactor-effect-native`: `NativePeer.layer()` / `NativePeer.layerIsolated()` on a libwebrtc
-  Node-API addon, prebuilt for linux-x64-gnu and darwin-arm64: decoded BGRA frames and PCM.
+- `reactor-effect-native`: `NativePeer.layer()`, or `NativePeer.layerIsolated()` under Node, on a
+  Node-API addon over Reactor's `reactor-webrtc` crate (libwebrtc), prebuilt for linux-x64-gnu and
+  darwin-arm64: decoded BGRA frames and PCM.
 
 **Full documentation for agents:** https://mannyc2.github.io/reactor-effect-client/llms-full.txt
 
@@ -32,7 +33,7 @@ H3 on air across sessions; `ReactorTest` is Reactor simulated in memory for offl
    Effect 3: `Context.Service`, `Schema.TaggedError`, `Effect.fn`, `effect/unstable/*` modules.
 3. Import modules by subpath (`reactor-effect-client/Playout`) or as namespaces from the root
    (`import { H3, Playout, Reactor } from "reactor-effect-client"`).
-4. The coordinator client is `CoordinatorClient` from 0.9.0; in 0.8.x it was `Coordinator`.
+4. The coordinator client is `CoordinatorClient`; there is no `Coordinator` module.
 
 ## The layers
 
@@ -55,7 +56,8 @@ const Hosted = Reactor.layer().pipe(
 In a browser, use `BrowserPeer.layer` instead of `NativePeer.layer()`, and `CoordinatorClient.layer`
 without an API key: the page gets session tokens from its own server, which mints them with
 `coordinator.tokens({ apiKey, ... })`. Never ship the API key (`rk_...`) to a browser. `H3.make` needs
-`Crypto`: `NodeServices.layer` on Node, a Web Crypto layer in browsers.
+`Crypto`: `NodeServices.layer` on Node, and in browsers `BrowserCrypto.layer` from
+`@effect/platform-browser` or a small layer of your own over Web Crypto.
 
 ## Core workflow
 
@@ -81,9 +83,10 @@ const program = Effect.gen(function* () {
 ## Critical gotchas
 
 - **H3 plays nothing on its own.** Call `setAutoplay(true)` or `play`, or let `Playout` drive it.
-- **Every creating token must cap its session**: `maxSessionDuration` is required (whole seconds up
-  to a day, or `"unlimited"`). H3 bills per second from `ready` until termination ($0.035/s on
-  2026-09-30), idle time included.
+- **Every creating token must state its session's cap**: `maxSessionDuration` is required (whole
+  seconds up to a day, or `"unlimited"`, never a default). Reactor's pricing API states H3's rate
+  per second ($0.035/s on 2026-09-30; its billing page still says per session-minute), from `ready`
+  until termination, idle time included.
 - **A session belongs to a `Scope`.** Closing the scope terminates it. `session.close` returns a
   report; `Session.mayStillBill(report)` is true when termination was not confirmed.
 - **Never resend a command whose failure's `context.outcome` is `"unknown"`**: it may have reached

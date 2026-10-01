@@ -2,7 +2,7 @@
 
 One H3 session plays a short playlist, and its video is drawn right in the terminal: each frame is decoded in this process and shown as 24-bit colour text, about twelve times a second. Every clip is followed through the facts H3 reports about it (accepted, generated, playing, ended), and when the playlist is over the session is closed and the program says whether Reactor confirmed its end.
 
-It runs offline by default, on the SDK's simulated Reactor, so trying it costs nothing. With an API key the same program runs on hosted Reactor; only the layer beneath it changes.
+It runs offline by default, on the SDK's simulated Reactor, so trying it costs nothing. With an API key only the layer beneath it changes: the program is written to run on hosted Reactor, and its pieces ran in paid checks under Bun, though it has not run there itself.
 
 ## Run it offline
 
@@ -46,7 +46,7 @@ session sess_reactor_test_1 closed: termination confirmed
 REACTOR_API_KEY=rk_… node src/main.ts
 ```
 
-With `REACTOR_API_KEY` set, the program runs on hosted Reactor and the session is billed. It mints the session's token in this process with the key, and the token caps the session at two minutes: Reactor ends the session then, whatever becomes of this process. Before allocating anything it prints the most the run can cost, from the rate Reactor's pricing states and in that rate's unit. On 2026-09-30 Reactor priced H3 at 350 credits a second and 10,000 credits a dollar, which is $0.035 a second, so a run costs at most $4.20. The bill runs from when the session is ready until it ends, and the program ends it as soon as the playlist has played: four clips of 8 seconds by default, or up to ten of your own.
+With `REACTOR_API_KEY` set, the program runs on hosted Reactor and the session is billed. It mints the session's token in this process with the key, and the token caps the session at two minutes: Reactor ends the session then, whatever becomes of this process. Before allocating anything it prints the most the run can cost, from the rate Reactor's pricing API states and in that rate's unit. On 2026-09-30 it priced H3 at 350 credits a second and 10,000 credits a dollar, which is $0.035 a second, so a run costs at most $4.20 (Reactor's billing page still says per session-minute). The meter runs from when the session is ready until it ends, and the program ends it as soon as the playlist has played: four clips of 8 seconds by default, or up to ten of your own.
 
 Live mode needs the native addon for the machine: the platform package npm installs with `reactor-effect-native` (Linux x64 and macOS arm64), or `bun run native:build` in this repository. `REACTOR_API_URL` names another coordinator. `--reference image.png` starts every clip from an image (PNG, JPEG or WebP); an image H3 would refuse is refused before a session is allocated.
 
@@ -69,5 +69,5 @@ Live mode needs the native addon for the machine: the platform package npm insta
 ## Limits
 
 - The picture follows the connection the session had when the show began. If the connection drops and the session reconnects, the clips and the status carry on and the picture keeps its last frame.
-- Each redraw waits until the terminal has taken the one before, so a slow terminal shows fewer frames, never older ones. A 200-column picture of a 1344x768 frame is up to 400 KiB of text a redraw.
+- Each redraw waits until the terminal has taken the one before, so a slow terminal shows fewer frames, never older ones. A 200-column picture of a 1344x768 frame is up to about 460 KiB of text a redraw.
 - If Reactor ends the session before the playlist is over, at its cap or on a moderation verdict, the show ends with it: H3 then reports nothing more about any clip, so the program watches `session.changes` for a connection that will not come back, and fails with the reason.

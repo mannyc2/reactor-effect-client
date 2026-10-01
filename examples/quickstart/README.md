@@ -2,8 +2,9 @@
 
 One H3 clip from prompt to its end, with its video decoded in this process. Without a key it runs on
 `ReactorTest`, Reactor simulated in memory at the timing paid runs measured: nothing is billed and
-nothing native is loaded. With `REACTOR_API_KEY` set, the same program runs on hosted H3. Only the
-layer changes.
+nothing native is loaded. With `REACTOR_API_KEY` set, only the layer changes: the program is
+written to run on hosted H3, and its pieces ran in paid checks under Bun, though it has not run
+there itself.
 
 ```sh
 bun install && bun run build      # at the repository root
@@ -29,12 +30,14 @@ It takes about 12 seconds on Node or Bun: H3's build time, then the 5-second cli
 REACTOR_API_KEY=rk_... node examples/quickstart/src/main.ts
 ```
 
-The session runs on a token minted for it, which caps it at two minutes. H3 bills per second from
-`ready` until the session ends, at $0.035 a second on September 30, 2026, so the run costs about
-$0.50 and can never cost more than $4.20. The frames arrive at 1344x768 through the libwebrtc addon.
-An npm install of `reactor-effect-native` brings that addon prebuilt for Linux x64 (glibc) and macOS on
-Apple silicon. In this repository, build it first with `bun run native:build`
-([native README](../../packages/native/README.md)).
+The session runs on a token minted for it, which caps it at two minutes, so the run can never cost
+more than $4.20: on September 30, 2026, Reactor's pricing API stated H3's rate as $0.035 a second,
+from `ready` until the session ends (its billing page still says per session-minute). The paid
+vertical check, which does the same under Bun, held its session 11 to 12 seconds, about $0.40 at
+that rate. The frames arrive at 1344x768, decoded in this process by the native addon over Reactor's
+`reactor-webrtc` crate. An npm install of `reactor-effect-native` brings that addon prebuilt for
+Linux x64 (glibc) and macOS on Apple silicon. In this repository, build it first with
+`bun run native:build` ([native README](../../packages/native/README.md)).
 
 ## What it shows
 

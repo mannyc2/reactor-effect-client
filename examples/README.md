@@ -2,8 +2,10 @@
 
 Six Effect applications built on reactor-effect. Each is its own private workspace that declares
 exactly what it uses and runs from its TypeScript sources on Node 22.18 or newer, or Bun. Most run
-offline on `ReactorTest`, Reactor simulated in memory, with no API key; with `REACTOR_API_KEY` set,
-the same program runs on hosted H3.
+offline on `ReactorTest`, Reactor simulated in memory, with no API key. All but the rundown are
+written to run on hosted H3 with `REACTOR_API_KEY` set, where only the layer changes. No example has
+run there yet, though paid checks ran most of the SDK they use
+([hosted evidence](https://mannyc2.github.io/reactor-effect-client/reference/hosted-evidence/)).
 
 ```sh
 bun install && bun run build      # once, at the repository root
@@ -36,8 +38,9 @@ The [examples page](https://mannyc2.github.io/reactor-effect-client/examples/) w
 
 ## Live mode
 
-A live example spends money: H3 bills per second from `ready` until the session ends, $0.035 a
-second on September 30, 2026. Every example caps its sessions with the token it mints, and the
+A live example spends money. Reactor's pricing API states H3's rate per second, $0.035 a second on
+September 30, 2026 (its billing page still says per session-minute), and the meter runs from
+`ready` until the session ends. Every example caps its sessions with the token it mints, and the
 terminal viewer and the capture print the most a run can cost before they allocate anything. The examples that
 decode frames on the server need the native addon for the machine: npm installs it prebuilt with
 `reactor-effect-native` (Linux x64 with glibc, macOS on Apple silicon), and in this repository

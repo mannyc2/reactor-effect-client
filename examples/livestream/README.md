@@ -1,6 +1,6 @@
 # Live channel
 
-Your own 24/7 AI TV channel on Reactor's H3. Viewers send prompts, a house rotation fills the gaps, and sessions renew before their cap with no dark air. Any number of viewers watch one paid session, and the program can also go to Twitch, YouTube or X. It is a Node server of a few hundred lines with no headless browser: `reactor-effect-native` hands the server decoded frames and audio, and ffmpeg encodes them once.
+Your own 24/7 AI TV channel on Reactor's H3. Viewers send prompts, a house rotation fills the gaps, and sessions renew before their cap with no dark air. Many viewers watch one paid session, and the program can also go to Twitch, YouTube or X. It is a Node server of a few hundred lines with no headless browser: `reactor-effect-native` hands the server decoded frames and audio, and ffmpeg encodes them once.
 
 The page shows the program with a LIVE badge, what is on air and who asked for it, what the playout has lined up next, the session on air with its cap and renewal countdown, and an as-run log of what aired and how each clip ended. A prompt that can't start in time is refused with how long to wait.
 
@@ -23,11 +23,11 @@ CHANNEL_MODE=live REACTOR_API_KEY=rk_… node examples/livestream/src/main.ts
 
 The API key stays on the server. Each session starts on a token the server mints for it, capped at `CHANNEL_SESSION_LENGTH` (10 minutes), and the playout opens its replacement 45 seconds before the cap. `CHANNEL_MAX_SESSIONS` (3) is how many sessions a run may open; after the last one's cap the channel goes off air. Live mode needs the native addon: npm ships it prebuilt for linux-x64 and darwin-arm64, and in this repository you build it first ([packages/native](../../packages/native/README.md)).
 
-H3 costs $0.035 a second from `ready` until the session ends: $2.10 a minute, $126 an hour on air. Each renewal adds up to 45 seconds of a second session, about $1.58. With the defaults a run is at most three 10-minute sessions, $63. For a channel that runs all day, raise both settings: with 6-hour sessions, renewals add about $6 a day.
+Reactor's pricing API stated H3's rate as $0.035 a second on 2026-09-30 (its billing page still says per session-minute), from `ready` until the session ends: $2.10 a minute, $126 an hour on air. Each renewal adds up to 45 seconds of a second session, about $1.58. With the defaults a run is at most three 10-minute sessions, $63. For a channel that runs all day, raise both settings: with 6-hour sessions, renewals add about $6 a day.
 
 A crash can't run up an open-ended bill. Every session is created capped, so Reactor ends it by its cap whatever happens to the server (a paid probe saw a 60-second session ended 60.09 s after allocation: `integration/hosted/evidence/0.8.0-probe/summary.md`). A crash costs at most the two sessions open during a renewal, $42 at the defaults, and `allocations.jsonl` names each session before it connects. On Ctrl-C the server terminates its sessions and writes their close reports to `cleanup.jsonl`.
 
-This example's live mode has not run on hosted Reactor. The playout it uses has: three 75-second sessions, a dropped connection and a moderated session, 20 clips with 53–169 ms seams and no dark frame (`integration/hosted/evidence/0.8.0-api/summary.md`).
+This example's live mode has not run on hosted Reactor. The 0.8.0 playout has, on 2026-09-28: three 75-second sessions, a dropped connection and a moderated session, 20 clips with 53–169 ms seams and no dark frame (`integration/hosted/evidence/0.8.0-api/summary.md`). 0.9.0's playout has run only on `ReactorTest`.
 
 ## Restream to Twitch, YouTube or X
 

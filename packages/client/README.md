@@ -100,15 +100,16 @@ Each module's doc comments state its options' defaults and bounds.
   created is terminated and the end is confirmed with an independent read. `Session.mayStillBill`
   says whether a close report leaves anything that may still bill.
 - **A session never sees the API key.** It runs on tokens minted for it and refreshes them before
-  they expire. A creating token must cap its session with `maxSessionDuration`.
+  they expire. A creating token must state its session's cap with `maxSessionDuration`.
 - **A dropped connection reconnects on the same session**, as a new connection generation that
   allocates nothing and replays no command.
 - **Every failure is tagged** with a `reason`, and a failed command carries its dispatch outcome:
   `not-submitted`, `replied` or `unknown`. Nothing resends an `unknown` command.
 - **H3 plays nothing until told**: call `setAutoplay(true)` or `play`, or let `Playout` drive it.
 - **`Playout` keeps H3 on air**: it renews sessions before their cap and switches at a clip
-  boundary, with lanes, filler, windows, cues, edits and placement. On hosted H3, seams measured
-  46–169 ms with no dark frame and a planned switch 420–432 ms.
+  boundary, with lanes, filler, windows, cues, edits and placement. In paid runs of the 0.8.0
+  library on hosted H3 (2026-09-28 and 09-29), seams measured 46–169 ms with no dark frame and a
+  planned switch 420–432 ms. 0.9.0 has not run on hosted Reactor yet.
 - **`ReactorTest` runs the same application offline**, at hosted timing, or on `TestClock` where
   an hour of programme with six renewals takes about 20 seconds, with faults to inject.
 - **A provider `Started` fact is not proof** that a frame was presented or encoded.
