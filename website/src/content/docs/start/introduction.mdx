@@ -11,18 +11,18 @@ the model commands, and receive its video and audio as they are generated. react
 clip to a channel that renews its sessions to stay on air.
 
 It is built for the parts of a Reactor application that outlive a single request. A session bills
-by the second until it ends, its token expires, its connection drops, its owner process crashes,
-and the session itself has a maximum length. reactor-effect makes each of those an explicit, typed,
-tested part of the API, so an application keeps its picture on air and never leaves a session
-billing by accident.
+until it ends, its token expires, its connection drops, its owner process crashes, and the session
+itself has a maximum length. reactor-effect makes each of those an explicit, typed, tested part of
+the API, so an application keeps its picture on air and is told of any session that may still be
+billing.
 
 ## Three packages
 
-| Package                  | What it gives you                                                                                                                             | Runs in                |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| `reactor-effect-client`  | Sessions and tokens, the H3 provider, `Playout`, and `ReactorTest`, Reactor simulated in memory. Portable: it loads no native code.           | Node, Bun and browsers |
-| `reactor-effect-browser` | The session's transport on the browser's own `RTCPeerConnection`, and playback of its tracks in DOM media elements.                           | Browsers               |
-| `reactor-effect-native`  | The session's transport on libwebrtc through Node-API: decoded frames and PCM in your process, with an optional child process per connection. | Node and Bun           |
+| Package                  | What it gives you                                                                                                                                                                           | Runs in                |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| `reactor-effect-client`  | Sessions and tokens, the H3 provider, `Playout`, and `ReactorTest`, Reactor simulated in memory. Portable: it loads no native code.                                                         | Node, Bun and browsers |
+| `reactor-effect-browser` | The session's transport on the browser's own `RTCPeerConnection`, and playback of its tracks in DOM media elements.                                                                         | Browsers               |
+| `reactor-effect-native`  | The session's transport on Reactor's `reactor-webrtc` crate (libwebrtc) through Node-API: decoded frames and PCM in your process, with an optional child process per connection under Node. | Node and Bun           |
 
 The client owns every contract. A host package only carries the connection, so the same application
 runs in a browser, on a server, or on `ReactorTest` with no transport at all.
@@ -70,11 +70,12 @@ that create and connect a session carry its own `sdk_type`, so Reactor can tell 
 ## How it is qualified
 
 - **Every change** runs the client, browser and hosted-rehearsal suites on Node and on Bun, real
-  Chrome against the native host, and the examples, all against `ReactorTest`. CI never allocates a
-  paid session.
-- **Hosted Reactor** is exercised by paid checks the maintainer runs with a budget. Each run records
-  its evidence: frames, seams, timings, and every session confirmed ended.
-  [Hosted evidence](/reactor-effect-client/reference/hosted-evidence/) lists them all.
+  Chrome against the native host, and the examples. None of it allocates a paid session.
+- **Hosted Reactor** is exercised by paid checks the maintainer runs with a budget: 21 runs from
+  2026-09-24 to 2026-09-29, on the 0.3.0-rc.0 to 0.8.0 libraries. Each run records its evidence:
+  frames, seams, timings, and every session confirmed ended. 0.9.0's published packages, the browser
+  package and the in-process native host under Node have not run there yet.
+  [Hosted evidence](/reactor-effect-client/reference/hosted-evidence/) lists every run.
 
 ## Next
 

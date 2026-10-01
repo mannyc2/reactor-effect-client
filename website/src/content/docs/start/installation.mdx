@@ -10,11 +10,11 @@ release candidate the SDK is built on.
 
 ## Which packages
 
-| Package                  | What it holds                                                                                                    | Runs on                                            |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `reactor-effect-client`  | `Reactor`, `Session` and `CoordinatorClient`, the `H3` provider, `Playout` with its sources, and `ReactorTest`   | Node, Bun and browsers                             |
-| `reactor-effect-browser` | `BrowserPeer` on the browser's `RTCPeerConnection`, and `BrowserMedia` to play the session's tracks              | Browsers                                           |
-| `reactor-effect-native`  | `NativePeer` on a libwebrtc Node-API addon: decoded BGRA frames and 16-bit PCM, in process or in a child process | Node and Bun, on Linux x64 (glibc) and macOS arm64 |
+| Package                  | What it holds                                                                                                                                                   | Runs on                                            |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| `reactor-effect-client`  | `Reactor`, `Session` and `CoordinatorClient`, the `H3` provider, `Playout` with its sources, and `ReactorTest`                                                  | Node, Bun and browsers                             |
+| `reactor-effect-browser` | `BrowserPeer` on the browser's `RTCPeerConnection`, and `BrowserMedia` to play the session's tracks                                                             | Browsers                                           |
+| `reactor-effect-native`  | `NativePeer` on a Node-API addon over Reactor's `reactor-webrtc` crate (libwebrtc): decoded BGRA frames and 16-bit PCM, in process or in a child process (Node) | Node and Bun, on Linux x64 (glibc) and macOS arm64 |
 
 Every application installs the client. Then pick a host for where sessions connect:
 

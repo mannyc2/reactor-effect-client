@@ -1,9 +1,9 @@
 ---
 title: reactor-effect
-description: An Effect SDK for Reactor's real-time video models. Sessions that renew themselves, a playout that keeps a channel on air, decoded frames in Node without a browser, and Reactor simulated offline.
+description: An Effect SDK for Reactor's real-time video models, H3 today. Sessions that renew themselves, a playout that keeps a channel on air, decoded frames in Node without a browser, and Reactor simulated offline.
 template: splash
 hero:
-  tagline: Build on Reactor's real-time video models from Node, Bun and the browser. Keep a channel on air across session caps, read decoded frames without a browser, and run the whole application offline before it spends a cent.
+  tagline: Build on Reactor's real-time video models, H3 today, from Node, Bun and the browser. Keep a channel on air across session caps, read decoded frames without a browser, and run the whole application offline before it spends a cent.
   image:
     file: ../../assets/logo.svg
   actions:
@@ -30,12 +30,14 @@ import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
 <CardGrid>
   <Card title="Stay on air" icon="rocket">
     `Playout` keeps H3 playing across capped sessions. It opens the next session before the current
-    one ends and switches at a clip boundary. On hosted H3, clip-to-clip seams measured 46–169 ms
-    with no dark frame, and a planned switch between sessions 420–432 ms.
+    one ends and switches at a clip boundary. In paid runs of the 0.8.0 playout on hosted H3
+    (2026-09-28 and 09-29), clip-to-clip seams measured 46–169 ms with no dark frame, and a planned
+    switch between sessions 420–432 ms.
   </Card>
   <Card title="Frames in Node, no browser" icon="laptop">
-    `reactor-effect-native` binds libwebrtc through Node-API: owned BGRA frames and PCM in Node and
-    Bun, with no browser in between. On hosted H3: 1344×768 at about 24 fps, no frame lost.
+    `reactor-effect-native` binds Reactor's `reactor-webrtc` crate (libwebrtc) through Node-API:
+    owned BGRA frames and PCM in Node and Bun, with no browser in between. In paid runs on hosted H3
+    (2026-09-24 to 09-28, under Bun): 1344×768 at about 24 fps, no frame lost.
   </Card>
   <Card title="Build offline, for free" icon="setting">
     `ReactorTest` is Reactor in memory: the coordinator's HTTP API and an H3 model speaking the real
@@ -51,10 +53,14 @@ import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
     same session, and a crashed owner's session is adopted by the next process.
   </Card>
   <Card title="Billing safety as an API" icon="warning">
-    Every creating token caps its session, `close` confirms termination with an independent read,
-    and `Session.mayStillBill` names what may still be running.
+    Every creating token must state its session's cap, `close` confirms termination with an
+    independent read, and `Session.mayStillBill` says whether a closed session may still bill.
   </Card>
 </CardGrid>
+
+The hosted figures come from 21 paid runs between 2026-09-24 and 2026-09-29, on the 0.3.0-rc.0 to
+0.8.0 libraries. 0.9.0's published packages, the browser package and the in-process native host
+under Node have not run on hosted Reactor yet.
 
 ## Start here
 

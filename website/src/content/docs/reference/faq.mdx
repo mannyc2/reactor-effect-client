@@ -19,7 +19,8 @@ reactor-effect is for Effect applications, and adds:
 
 - sessions, tokens and failures as Effect services, scopes and typed error channels, where closing
   a scope ends the session and confirms the end;
-- decoded frames and PCM in Node and Bun through a libwebrtc addon, with no browser;
+- decoded frames and PCM in Node and Bun through a Node-API addon over Reactor's `reactor-webrtc`
+  crate, with no browser;
 - `Playout`, which keeps a channel on air across capped sessions;
 - `ReactorTest`, Reactor simulated in memory, so an application and its tests run offline.
 
@@ -33,20 +34,21 @@ provider, a playout source and hosted runs. See
 ## Do I need to know Effect?
 
 It helps. The SDK is written the way Effect's own packages are: services provided by layers, work in
-scopes, failures in the type. The [quickstart](/reactor-effect-client/start/quickstart/) needs only
-`Effect.gen`, `yield*`, a layer and `NodeRuntime.runMain`. From ordinary code, such as a page's
-button handlers, build a `ManagedRuntime` once and call `runtime.runPromise`; the
+scopes, failures in the type. The [quickstart](/reactor-effect-client/start/quickstart/) is mostly
+`Effect.gen` and `yield*`, with a few `Stream`, `Config` and `Layer` calls and
+`NodeRuntime.runMain`. From ordinary code, such as a page's button handlers, build a
+`ManagedRuntime` once and call `runtime.runPromise`; the
 [browser guide](/reactor-effect-client/guides/browser/) does exactly that. Effect's own
 documentation is at [effect.website](https://effect.website).
 
 ## What does it cost to try?
 
-Nothing, offline. `ReactorTest` runs every example and test with no API key and no network. On
-hosted H3 a session bills from `ready` until it ends, $0.035 a second at the rate Reactor published
-on 2026-09-30: a session capped at two minutes costs at most $4.20. Reactor gives new accounts free
-credits, which expire 90 days after they are issued
-([billing](https://docs.reactor.inc/resources/billing)). See
-[Going live](/reactor-effect-client/start/going-live/).
+Nothing, offline. `ReactorTest` runs every test, and every example but the capture, with no API key
+and no network. On hosted H3 a session bills from `ready` until it ends. Reactor's pricing API
+stated H3's rate as $0.035 a second on 2026-09-30 (its billing page still says per session-minute),
+so a session capped at two minutes costs at most $4.20. Reactor gives new accounts free credits,
+which expire 90 days after they are issued ([billing](https://docs.reactor.inc/resources/billing)).
+See [Going live](/reactor-effect-client/start/going-live/).
 
 ## Which version does this site describe?
 
@@ -54,15 +56,18 @@ credits, which expire 90 days after they are issued
 
 ## Has it run against hosted Reactor?
 
-Yes: 21 paid runs and 27 sessions from 2026-09-24 to 2026-09-29, each listed with its commit and
-result in [hosted evidence](/reactor-effect-client/reference/hosted-evidence/), together with what
-has not run yet, such as the browser package and 0.9.0's published bytes.
+Yes: 21 paid runs and 27 sessions from 2026-09-24 to 2026-09-29, on the 0.3.0-rc.0 to 0.8.0
+libraries, each listed with its commit and result in
+[hosted evidence](/reactor-effect-client/reference/hosted-evidence/), together with what has not run
+yet: 0.9.0's published bytes, the browser package and the in-process native host under Node.
 
 ## Can I run it in the browser?
 
 Yes, with `reactor-effect-browser`: a page runs its own session over `RTCPeerConnection` on tokens
-from your server. For many viewers of one picture, run a
-[channel](/reactor-effect-client/guides/channel/) on a server instead.
+from your server. It is built to run on hosted H3; its tests run against DOM fakes, and real Chrome
+has exchanged media with the native host locally, but it has not yet run on a paid session. For
+many viewers of one picture, run a [channel](/reactor-effect-client/guides/channel/) on a server
+instead.
 
 ## Do I need a Rust toolchain for the native package?
 

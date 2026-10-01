@@ -19,7 +19,7 @@ of each run.
 </Aside>
 
 The harness refuses to run without `--i-authorize-paid-sessions` and a budget. Each run reserves
-its worst case in a ledger before any token exists, and a ledger's total is capped at $5.
+its worst case in a ledger before any token exists, and a ledger's total is capped at $10.
 
 ## Every run
 
@@ -64,10 +64,11 @@ and [0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integr
   second, $0.0125. Up to 0.7.0 they count every started minute whole, so they are upper bounds;
   from 0.8.0 they count seconds. On 2026-09-30 the pricing lists 350 credits a second, so the same
   sessions would cost 2.8 times the per-second estimates today.
-- **Failures.** Each had a found cause before the check ran again. Most were the library's:
-  0.3.0-rc.0's acceptance, ICE pair and attach, 0.7.0's misplaced continued insert and doubled
-  `stop`, and an `INACTIVE` session read as ended. Two were criteria of the checks' own making, and
-  position zero is H3's own ordering, listed below.
+- **Failures.** Each found cause was fixed before the check ran again to qualify. Most were the
+  library's: 0.3.0-rc.0's acceptance, ICE pair and attach, 0.7.0's misplaced continued insert and
+  doubled `stop`, and an `INACTIVE` session read as ended. Two were criteria of the checks' own
+  making. The third 0.3.0-rc.0 vertical repeated the first on the same bytes, to settle billing and
+  H3's reply order. Position zero, listed below, is H3's own ordering and is still unexplained.
 - **Commits.** The 0.8.0-dev commits were renamed when the branch's messages were reworded, with no
   change to any tree; the ledger's summary maps each to its new name. The second `show`'s checkout,
   `c9f3f96`, matches the 0.8.0 release's library source except for its version string.
@@ -86,6 +87,7 @@ and [0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integr
 ## What the runs measured
 
 **Media and connection** ([0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md),
+[0.3.1](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.1/summary.md),
 [0.8.0-dev](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dev/summary.md)):
 
 - 1344×768 BGRA at 23.7–24.2 fps, all 124 frames of each 5-second clip, none lost; 48 kHz mono
@@ -98,10 +100,11 @@ and [0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integr
 [0.8.0-api](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md)):
 
 - A process attached 2.69 s after the owner was killed and received frames 0.21 s later.
-- An owner under Node on the isolated native host was killed 12.7 s in: a raw attach was ready
-  3.06 s after the kill, named the playing clip and closed without ending the session;
-  `H3Source.resume` adopted it 0.57 s after the creating token expired, was ready 2.71 s later, and
-  enqueued a clip with a reference image and reference audio on a refreshed 12-second bound token.
+- An owner under Node on the isolated native host was killed 12.7 s into the run: a raw attach was
+  ready 3.06 s after the kill, named the playing clip and closed without ending the session;
+  `H3Source.resume` started 0.57 s after the creating token expired, adopted the session 2.71 s
+  later, and enqueued a clip with a reference image and reference audio on a refreshed 12-second
+  bound token.
 - An expired token was refused with 401 and one without the bind with 403. A 7-hour token was
   clamped to 6 hours.
 
@@ -116,19 +119,21 @@ and [0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integr
 
 **Playout** ([0.8.0-api](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
 [0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-rc/summary.md),
+[0.8.0-dev](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dev/summary.md),
 [0.7.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.7.0/summary.md)):
 
 - One playout over three 75-second sessions: 20 clips and 2,372 frames at 22.2 fps, no frame lost,
   its reader never behind.
-- Seams of 46–169 ms with no dark frame; a planned switch between sessions with 420 and 432 ms
-  between clips on air.
+- In the two `show` runs, seams of 46–169 ms with no dark frame, and a planned switch between
+  sessions with 420 and 432 ms between clips on air.
 - An edit batch in effect 0.91–1.05 s before its boundary; its withdrawn clip never aired.
 - Cues 0–1 ms from due; an `At` item 545–559 ms late, never early.
-- A session ended by moderation replaced, its Ready clip aired on a session opened 3.17 s after the
-  verdict; a cut lane stopping a clip with one `stop` and a 165–168 ms pause.
-- A continued clip built in 5.2–5.45 s against 2.1–2.2 s for an independent one. In the passing
-  runs, the picture at a continued seam changed 2.3–5.8 times the clip's own motion, and at
-  independent seams 11–20 times.
+- A session ended by moderation was replaced: the clip it had Ready was rebuilt on a session opened
+  3.17 s after the verdict, and aired 5.3 s after the lost clip left the air. A cut lane stopped a
+  clip with one `stop` and a 165–168 ms pause.
+- A continued clip built in 5.2–5.45 s against 2.1–2.2 s for an independent one (0.7.0). In the
+  passing `edits` and `show` runs, the picture at a continued seam changed 2.3–5.8 times the clip's
+  own motion, and at their independent seams 11–20 times; a cut seam elsewhere measured 6.5 times.
 
 **Termination**: every one of the 27 sessions confirmed ended; where timed, `CLOSED` read
 0.63–0.86 s after the `DELETE`.
@@ -151,8 +156,9 @@ use:
   second `stop` cuts that one (0.7.0).
 - H3 flushes to black at each clip's end by default (`flush_on_clip_end`), one dark frame per seam
   (0.6.0, 0.7.0); holding the last frame removes it.
-- A session whose last connection has gone reads `INACTIVE` and is still live (0.8.0-dev); it read
-  `ACTIVE` for about 2.1 s after its last connection closed (0.8.0-api).
+- A session whose last connection has gone reads `INACTIVE` and is still live (0.8.0-dev). One read
+  `ACTIVE` for at least the first 2.1 s after its last connection closed, when the reads stopped
+  (0.8.0-api); another, first read 8.4 s after its owner was killed, was `INACTIVE` (0.8.0-dev).
 - Content moderation's `terminate` verdict came 0.40–1.01 s after the flagged enqueue, which had
   been answered normally, and named no category, input, command or request (0.8.0-dev, 0.8.0-api).
 - A 16,171-character prompt was accepted, then failed by `clip_failed` 2.39 s later: H3's text
@@ -171,8 +177,9 @@ use:
 - **The `turn` check**, the vertical from a network that blocks outbound UDP so a relay must carry
   the media. Every paid run went over a direct path.
 - **`reactor-effect-browser`.** No paid run has used the browser host.
-- **macOS arm64.** Every paid run was on Linux x64. The in-process native host ran under Bun, and
-  the isolated host under Node.
+- **The in-process native host under Node.** It ran under Bun, and Node ran only the isolated host.
+  The quickstart and the terminal viewer use it when run with `node`.
+- **macOS arm64.** Every paid run was on Linux x64.
 - **Long sessions.** The longest paid run lasted under two minutes; no multi-hour renewal soak has
   run.
 - **Restreaming and native publication.** No run has sent native media on to a browser, to RTMP or

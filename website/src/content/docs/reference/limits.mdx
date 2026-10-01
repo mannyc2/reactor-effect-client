@@ -20,16 +20,20 @@ Where the SDK runs, what has been exercised and where, and the limits it has tod
 
 ## What has been exercised
 
-**On hosted Reactor** ([every run](/reactor-effect-client/reference/hosted-evidence/)): sessions,
-tokens and their refresh, adoption of a dead owner's session, reconnects, uploads and references,
-H3's queue commands, moderation, and `Playout` over three renewing sessions, from Linux x64, through
-the native host in process under Bun and isolated under Node, over a direct network path.
+**On hosted Reactor** ([every run](/reactor-effect-client/reference/hosted-evidence/)), in paid runs
+from 2026-09-24 to 2026-09-29 on the 0.3.0-rc.0 to 0.8.0 libraries: sessions, tokens and their
+refresh, adoption of a dead owner's session, reconnects, uploads and references, H3's queue
+commands, moderation, and `Playout` over three sessions, with one planned renewal and one
+replacement of an ended session. They ran from Linux x64, through the native host in process under
+Bun and isolated under Node, over a direct network path. 0.9.0's published packages, the browser
+host and the in-process native host under Node have not run on hosted Reactor yet.
 
 **Locally and in CI only:**
 
 - the browser host, against DOM fakes and, for media, real Chrome talking to the native host;
 - the macOS addon;
-- a TURN relay, through a loopback Coturn server;
+- a TURN relay, once, locally: real Chrome and the native bridge through a loopback Coturn server
+  on 2026-09-22, before the current API;
 - the native media path under load, against a local libwebrtc sender: see
   [measured performance](/reactor-effect-client/guides/native/#measured-performance);
 - 0.9.0's `Playout.place` and `follows`, on `ReactorTest`.
@@ -39,8 +43,9 @@ browser or a stream ingest, sessions longer than a few minutes on hosted Reactor
 physical machines: the native performance figures come from a 4-vCPU container and GitHub's
 runners.
 
-`ReactorTest` models what H3 does, not hosted latency, billing as Reactor charges it, TURN relays or
-interop. A rehearsal on it is never evidence of hosted behaviour.
+`ReactorTest` models what H3 does, with delays drawn from paid runs. It does not model hosted
+latency as a real network varies it, billing as Reactor charges it, TURN relays or interop. A
+rehearsal on it is never evidence of hosted behaviour.
 
 ## Models
 

@@ -8,8 +8,9 @@ import quickstart from "../../../../../examples/quickstart/src/main.ts?raw";
 
 This program asks H3 for one clip, follows it from acceptance to its end, and reads its video as
 decoded frames in your own process. Without an API key it runs on `ReactorTest`, Reactor simulated
-in memory at the timing paid runs measured, so it costs nothing. With a key, the same program runs on
-hosted H3.
+in memory at the timing paid runs measured, so it costs nothing. With a key, only the layer
+changes: the program is written to run on hosted H3, and its pieces ran in paid checks under Bun,
+though it has not run there itself.
 
 <Steps>
 
@@ -78,14 +79,17 @@ hosted H3.
    REACTOR_API_KEY=rk_... node main.ts
    ```
 
-   The frames now arrive at 1344x768 from H3, decoded by libwebrtc in your process.
+   The frames now arrive at 1344x768 from H3, decoded in your process by the native addon over
+   Reactor's `reactor-webrtc` crate (libwebrtc).
 
 </Steps>
 
 <Aside type="caution" title="What it costs">
-  H3 bills per second from `ready` until the session ends: $0.035 a second, or $2.10 a minute, on
-  September 30, 2026. This run takes about 12 seconds of session time. The token the program mints
-  caps its session at two minutes, so even a crash cannot run it past $4.20.
+  On September 30, 2026, Reactor's pricing API stated H3's rate as $0.035 a second, or $2.10 a
+  minute, from `ready` until the session ends; its billing page still says per session-minute. The
+  paid vertical check, which does what this program does, held its session 11 to 12 seconds. The
+  token the program mints caps its session at two minutes, so even a crash cannot run it past
+  $4.20.
 </Aside>
 
 ## What just happened
@@ -98,7 +102,7 @@ hosted H3.
   reply were lost, the SDK would never send the clip again, so a lost reply can never play it twice.
 - **`h3.operation`** followed the clip through its facts: generated, started, ended.
 - **`session.decoded`** streamed owned BGRA frames into JavaScript. On hosted Reactor they come from
-  the libwebrtc addon in `reactor-effect-native`, with no browser involved.
+  `reactor-effect-native`'s addon over Reactor's `reactor-webrtc` crate, with no browser involved.
 - **`session.close`** terminated the session and confirmed the termination with an independent
   read. `Effect.scoped` guarantees it runs however the program ends, including Ctrl-C.
 - **Only the layer differs** between offline and hosted. The program itself names no host.
@@ -108,6 +112,6 @@ hosted H3.
 - Watch the frames instead of counting them: the
   [terminal viewer](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/terminal)
   draws H3 in your terminal.
-- Keep H3 on air for hours: [Playout](/reactor-effect-client/concepts/playout/) and the
+- Keep H3 on air across session caps: [Playout](/reactor-effect-client/concepts/playout/) and the
   [24/7 channel guide](/reactor-effect-client/guides/channel/).
 - Test without paying: [Test offline with ReactorTest](/reactor-effect-client/guides/testing-offline/).

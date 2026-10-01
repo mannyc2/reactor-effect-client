@@ -29,11 +29,12 @@ changes, and the API key never leaves your server.
 
 ## What a session costs
 
-Reactor bills a session per second, from `ready` until the session is terminated. `connecting` and
-`waiting`, the wait for a GPU, are free. Idle time is billed, and so is the 30-second window in
-which a session waits for a dropped connection to come back
-([billing](https://docs.reactor.inc/resources/billing),
-[sessions](https://docs.reactor.inc/concepts/sessions)).
+Reactor's pricing API states H3's rate per second, while its
+[billing page](https://docs.reactor.inc/resources/billing) still says billing is per
+session-minute. The meter runs from `ready` until the session is terminated, and in the paid runs
+the dashboard listed each session to the second. `connecting` and `waiting`, the wait for a GPU,
+are free. Idle time is billed, and so is the 30-second window in which a session waits for a
+dropped connection to come back ([sessions](https://docs.reactor.inc/concepts/sessions)).
 
 On 2026-09-30, `GET https://api.reactor.inc/pricing` listed H3 Reference Turbo Realtime
 (`h3-reference-to-video-turbo-realtime`) at 350 credits a second, at 10,000 credits a dollar:

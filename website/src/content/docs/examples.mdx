@@ -6,8 +6,11 @@ description: "Applications built on reactor-effect, from one clip in a file to a
 import { Aside, Badge, LinkCard } from "@astrojs/starlight/components";
 
 Every example is a small Effect application in the repository, typechecked against the packages on
-every change. Most run offline on `ReactorTest` with no API key; with `REACTOR_API_KEY` set, the same
-program runs on hosted H3. Clone the repository and install once:
+every change. Most run offline on `ReactorTest` with no API key. All but the rundown are written to
+run on hosted H3 with `REACTOR_API_KEY` set, where only the layer changes; no example has run there
+yet, though paid checks ran most of the SDK they use
+([hosted evidence](/reactor-effect-client/reference/hosted-evidence/)). Clone the repository and
+install once:
 
 ```sh
 git clone https://github.com/mannyc2/reactor-effect-client && cd reactor-effect-client
@@ -53,10 +56,10 @@ node src/main.ts "A lighthouse on a sea cliff at dusk" "A neon-lit alley in the 
 ## Live channel <Badge text="offline or live" variant="tip" />
 
 Your own 24/7 AI channel. Viewers send prompts from a page, a house rotation fills the gaps, and
-`Playout` renews sessions before their cap so the air never goes dark. The server decodes one paid
-session and broadcasts it to any number of viewers, and can restream it to Twitch, YouTube or X over
-RTMP (so far run against a local RTMP listener only; the channel's live mode has not run on hosted
-Reactor yet). The [channel guide](/reactor-effect-client/guides/channel/) explains each piece.
+`Playout` renews sessions before their cap so a renewal never takes the channel off air. The server
+decodes one paid session and broadcasts it to many viewers, and can restream it to Twitch, YouTube
+or X over RTMP (so far run against a local RTMP listener only; the channel's live mode has not run
+on hosted Reactor yet). The [channel guide](/reactor-effect-client/guides/channel/) explains each piece.
 
 ```sh
 cd examples/livestream
@@ -75,8 +78,8 @@ reference images validated once and reused, each clip's lifecycle, and failures 
 dispatch outcome. Rehearse a failed build, a lost reply or a moderation verdict with one click.
 
 [Open the playground](/reactor-effect-client/playground/): Studio on `ReactorTest`, running in
-your tab, with no key and nothing billed. With an API key on its server, the same page runs on
-hosted H3 over `BrowserPeer`.
+your tab, with no key and nothing billed. With an API key on its server, the same page is built to
+run on hosted H3 over `BrowserPeer`, which has not yet run on a paid session.
 
 ```sh
 cd packages/browser/examples
