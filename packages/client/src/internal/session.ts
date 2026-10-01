@@ -238,6 +238,7 @@ export const make = Effect.fnUntraced(function* (input: {
     yield* hub.end;
     yield* Deferred.succeed(closed, report);
     yield* Effect.annotateCurrentSpan({
+      ...(report.sessionId === undefined ? {} : { "reactor.session.id": report.sessionId }),
       "reactor.close.local_closed": report.localClosed,
       "reactor.close.allocation": report.allocation,
       ...terminationAttributes(report.remote),

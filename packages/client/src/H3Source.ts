@@ -28,6 +28,7 @@ import * as H3 from "./H3.js";
 import type { DecodedMedia, MediaPressure } from "./Media.js";
 import type { Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
 import * as Tag from "./internal/playout/tag.js";
+import { currentParent, spanOptions } from "./internal/trace.js";
 import { noAcquisition, Reactor } from "./Reactor.js";
 import type { CreateOptions } from "./Reactor.js";
 import { AcquisitionFailure, CommandFailure, ReactorError } from "./ReactorError.js";
@@ -243,6 +244,7 @@ const fromSession = Effect.fnUntraced(function* (
   session: Session,
   options: Options & { readonly resumed: boolean },
 ) {
+  const acquisition = yield* currentParent;
   const provider = yield* H3.make(session, options.provider);
   // A resumed session usually has the setting its owner gave it, so resuming only reads.
   const flush = !(options.holdLastFrame ?? true);
@@ -298,6 +300,14 @@ const fromSession = Effect.fnUntraced(function* (
           : error,
       ),
       Effect.timed,
+      Effect.withSpan(
+        "H3Source.recover",
+        {
+          ...spanOptions({ acquisition }),
+          attributes: { "reactor.session.id": session.id },
+        },
+        { captureStackTrace: false },
+      ),
     );
   // Set up on a ready connection, unless it dropped meanwhile.
   const start = yield* session.snapshot;

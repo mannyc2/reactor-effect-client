@@ -24,6 +24,7 @@
  */
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -34,14 +35,17 @@ import * as Predicate from "effect/Predicate";
 import * as PubSub from "effect/PubSub";
 import * as Random from "effect/Random";
 import * as Redacted from "effect/Redacted";
+import * as References from "effect/References";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type * as Take from "effect/Take";
+import * as Tracer from "effect/Tracer";
 import type { Request } from "./H3.js";
 import * as Deadline from "./internal/deadline.js";
 import { requestSeconds } from "./internal/h3/profile.js";
+import { currentParent, spanOptions } from "./internal/trace.js";
 import type { AudioFrame, VideoFrame } from "./Media.js";
 import type { ClipTag, Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
 import { noAcquisition } from "./Reactor.js";
@@ -111,8 +115,12 @@ type Hooks<A, E, R, E2, R2> = Extract<Options<A, E, R, E2, R2>, { readonly build
 type Build<A, E, R> = Hooks<A, E, R, never, never>["build"];
 type Present<A, E, R> = NonNullable<Hooks<A, never, never, E, R>["present"]>;
 
+interface QueuedClip extends LocalClip {
+  readonly parent: Tracer.ExternalSpan | undefined;
+}
+
 /** A built clip: the value `present` gets, and the scope it was built in, open until it leaves. */
-interface Built<A> extends LocalClip {
+interface Built<A> extends QueuedClip {
   readonly value: A;
   readonly scope: Scope.Closeable;
 }
@@ -120,7 +128,7 @@ interface Built<A> extends LocalClip {
 interface Local<A> {
   /** Clips enqueued so far, which numbers the next one. */
   readonly enqueued: number;
-  readonly building: ReadonlyArray<LocalClip>;
+  readonly building: ReadonlyArray<QueuedClip>;
   readonly ready: ReadonlyArray<Built<A>>;
   /** The clip playing, and what stops it. */
   readonly playing: { readonly clip: Built<A>; readonly stop: Deferred.Deferred<void> } | undefined;
@@ -193,6 +201,41 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2>(
   if (Duration.isZero(lifetime)) return yield* invalid("LocalSource lifetime must be positive");
   const hex = (yield* Random.nextIntBetween(0, Number.MAX_SAFE_INTEGER)).toString(16);
   const sessionId = `local-${hex.padStart(14, "0")}`;
+  const acquisition = yield* currentParent;
+  const hookOptions = (clip: QueuedClip): Tracer.SpanOptionsNoTrace => ({
+    ...spanOptions({ acquisition, parent: clip.parent }),
+    attributes: {
+      "reactor.session.id": sessionId,
+      "reactor.clip.id": clip.clipId,
+      ...(clip.tag._tag === "Item" ? { "reactor.playout.item.key": clip.tag.key } : {}),
+    },
+  });
+  const runHook = <X, Y, Z>(
+    name: "build" | "present",
+    clip: QueuedClip,
+    effect: Effect.Effect<X, Y, Z>,
+  ) =>
+    Effect.useSpan(`LocalSource.${name}`, hookOptions(clip), (span) =>
+      effect.pipe(
+        Effect.withParentSpan(span, { captureStackTrace: false }),
+        Effect.onExit((exit) => {
+          if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return Effect.void;
+          // Hook errors may hold private text. Preserve their exit for the source, while
+          // ending the span with safe evidence; Effect skips ending an already-ended span.
+          return Effect.gen(function* () {
+            const timing = yield* References.TracerTimingEnabled;
+            const endedAt = timing ? yield* Clock.currentTimeNanos : 0n;
+            yield* Effect.sync(() => {
+              span.attribute("error.type", "InvalidState");
+              span.end(
+                endedAt,
+                Exit.fail(ReactorError.fromCode("InvalidState", `the local ${name} failed`)),
+              );
+            });
+          });
+        }),
+      ),
+    );
   // What the source owns lives in a sequential scope of its own, which the caller's scope closes
   // as one, whatever its own order: its finalizers run in the reverse of the order they are made
   // in below, so the source stops, then its fibers end with their presentations, and only then
@@ -289,10 +332,11 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2>(
     Effect.gen(function* () {
       const next = yield* first((local) => local.building[0]);
       const scope = yield* Scope.fork(clips);
-      const built = yield* Effect.suspend(() => build(next)).pipe(
-        Scope.provide(scope),
-        Effect.exit,
-      );
+      const built = yield* runHook(
+        "build",
+        next,
+        Effect.suspend(() => build(clipOf(next))),
+      ).pipe(Scope.provide(scope), Effect.exit);
       if (Exit.isFailure(built) && Cause.hasDies(built.cause))
         return yield* Effect.failCause(built.cause);
       const leaves = (local: Local<A>): Local<A> => ({
@@ -349,8 +393,10 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2>(
         ];
       });
       if (clip === undefined) return;
-      const presentation = yield* Effect.suspend(() =>
-        present(clipOf(clip), clip.value, sink),
+      const presentation = yield* runHook(
+        "present",
+        clip,
+        Effect.suspend(() => present(clipOf(clip), clip.value, sink)),
       ).pipe(Scope.provide(clip.scope), Effect.forkChild());
       const stopping = yield* Effect.raceFirst(
         Effect.as(Fiber.await(presentation), false),
@@ -408,19 +454,22 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2>(
         }),
       ),
     ),
-    enqueue: (request, tag, _continueFrom) =>
-      modify((local) => {
-        const clip: LocalClip = {
+    enqueue: Effect.fnUntraced(function* (request: Request, tag: ClipTag) {
+      const parent = yield* currentParent;
+      return yield* modify((local) => {
+        const clip: QueuedClip = {
           clipId: `${sessionId}-clip-${String(local.enqueued + 1)}`,
           request,
           tag,
           seconds: request.seconds ?? requestSeconds.min,
+          parent,
         };
         return [
           clip.clipId,
           { ...local, enqueued: local.enqueued + 1, building: [...local.building, clip] },
         ];
-      }),
+      });
+    }),
     remove: (clipId) =>
       Effect.gen(function* () {
         const removal = yield* modify((local): readonly [Removal<A>, Local<A>] => {

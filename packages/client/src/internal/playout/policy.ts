@@ -166,6 +166,8 @@ export type Action =
       readonly id: number;
       readonly sessionId: string;
       readonly command: Command;
+      /** The item whose work this command executes; absent for autonomous session work. */
+      readonly key?: ItemKey | undefined;
     }
   | { readonly _tag: "Open" }
   | { readonly _tag: "Close"; readonly sessionId: string }
@@ -2480,7 +2482,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
 
   return { state: { ...state, items, groups }, actions, wake: wake() };
 
-  function queueCommand(sessionId: string, command: Command): void {
+  function queueCommand(sessionId: string, command: Command, key?: ItemKey): void {
     const lane = session(sessionId);
     if (lane === undefined || lane.busy !== undefined) return;
     const id = state.nextCommand;
@@ -2489,7 +2491,13 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       busy: { id, command },
       ...(command._tag === "Enqueue" ? { lastEnqueue: command.tag } : {}),
     });
-    actions.push({ _tag: "Command", id, sessionId, command });
+    actions.push({
+      _tag: "Command",
+      id,
+      sessionId,
+      command,
+      ...(key === undefined ? {} : { key }),
+    });
   }
   /** A filler clip a session takes commands for, unless its removal was refused as things stand. */
   function fillerRemovable(value: Session, clip: SourceClip): boolean {
@@ -2557,24 +2565,26 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       (selected?.phase !== "Accepted" || selected.spec.follows === undefined)
     )
       updateSession(value.id, { guardItem: undefined });
-    const guarded =
-      (live(selected) && selected.phase === "Accepted" && selected.spec.follows !== undefined) ||
-      [...items.values()].some(
-        (item) =>
-          item.spec.follows !== undefined &&
-          item.sessionId === value.id &&
-          live(item) &&
-          item.phase !== "Started" &&
-          !(
-            item.phase === "Ready" &&
-            item.withdraw === undefined &&
-            actual[0]?.clipId === item.clipId &&
-            // Fence before moving another clip ahead: it may start and end while the Move
-            // reply is pending, leaving this clip after a different predecessor.
-            desired[0]?.clipId === item.clipId &&
-            sameClip(item.spec.follows, value.source?.playing?.tag)
-          ),
-      );
+    const guarding =
+      live(selected) && selected.phase === "Accepted" && selected.spec.follows !== undefined
+        ? selected
+        : [...items.values()].find(
+            (item) =>
+              item.spec.follows !== undefined &&
+              item.sessionId === value.id &&
+              live(item) &&
+              item.phase !== "Started" &&
+              !(
+                item.phase === "Ready" &&
+                item.withdraw === undefined &&
+                actual[0]?.clipId === item.clipId &&
+                // Fence before moving another clip ahead: it may start and end while the Move
+                // reply is pending, leaving this clip after a different predecessor.
+                desired[0]?.clipId === item.clipId &&
+                sameClip(item.spec.follows, value.source?.playing?.tag)
+              ),
+          );
+    const guarded = guarding !== undefined;
     if (!guarded && value.playRetry !== undefined)
       updateSession(value.id, { playRetry: undefined });
     const autoplay = value.wantAutoplay && state.cutting?.sessionId !== value.id && !guarded;
@@ -2582,7 +2592,13 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       // Nothing else goes before it, even while a failed one waits to be asked again.
       const retry = value.autoplayRetry;
       if (retry === undefined || retry.enabled !== autoplay || now.mono >= retry.at)
-        queueCommand(value.id, { _tag: "Autoplay", enabled: autoplay });
+        queueCommand(
+          value.id,
+          { _tag: "Autoplay", enabled: autoplay },
+          state.cutting?.sessionId === value.id
+            ? itemOf(cutterOf().cutter)?.spec.key
+            : guarding?.spec.key,
+        );
       return;
     }
     // The cut's next step, with autoplay off: stop the clip it cuts, and once that has ended,
@@ -2597,9 +2613,17 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     ) {
       const playing = value.source.playing?.clipId;
       if (cutting.stage === "stopping")
-        return queueCommand(value.id, { _tag: "Stop", clipId: cutting.clipId });
+        return queueCommand(
+          value.id,
+          { _tag: "Stop", clipId: cutting.clipId },
+          itemOf(cutterOf().cutter)?.spec.key,
+        );
       if (playing === undefined)
-        return queueCommand(value.id, { _tag: "Play", clipId: cutting.next });
+        return queueCommand(
+          value.id,
+          { _tag: "Play", clipId: cutting.next },
+          itemOf(cutterOf().cutter)?.spec.key,
+        );
       if (playing === cutting.clipId) return;
       // Something else plays: the cutter waits for the next boundary.
       state = { ...state, cutting: undefined };
@@ -2615,7 +2639,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         value.source?.available === true &&
         item.blockedRemove !== signature(value)
       )
-        return queueCommand(value.id, { _tag: "Remove", clipId: item.clipId });
+        return queueCommand(value.id, { _tag: "Remove", clipId: item.clipId }, item.spec.key);
     // A drain withdraws filler once nothing accepted still needs it to cover the wait.
     const fillerNeeded =
       state.drains.every((drain) => drain.finish === "accepted") &&
@@ -2639,7 +2663,11 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       value.blockedMove !== signature(value) + misplaced.clipId &&
       now.mono >= value.moveRetryAt
     )
-      return queueCommand(value.id, { _tag: "Move", clipId: misplaced.clipId, position: moved });
+      return queueCommand(
+        value.id,
+        { _tag: "Move", clipId: misplaced.clipId, position: moved },
+        misplaced.tag._tag === "Item" ? misplaced.tag.key : undefined,
+      );
     // A cut lane's Ready item at the front cuts a lower lane's clip, or filler, that has a while to run.
     const front = value.id === state.air ? actual[0] : undefined;
     const cutItem = itemOf(front);
@@ -2694,7 +2722,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
             blockedRemove: undefined,
             discarded: { sessionId: value.id, clipId: clip.clipId },
           });
-          return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId });
+          return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId }, item.spec.key);
         }
         // It goes back to the plan, to be built again once the air ahead covers its wait.
         set(item.spec.key, {
@@ -2705,7 +2733,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           covered: undefined,
           discarded: { sessionId: value.id, clipId: clip.clipId },
         });
-        return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId });
+        return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId }, item.spec.key);
       }
     }
     // A constrained clip cannot be left to autoplay: an early end or unexpectedly slow build
@@ -2724,7 +2752,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       (headItem === undefined || (headItem.phase === "Ready" && headItem.withdraw === undefined)) &&
       (retry === undefined || retry.signature !== signature(value) || now.mono >= retry.at)
     )
-      return queueCommand(value.id, { _tag: "Play", clipId: head.clipId });
+      return queueCommand(value.id, { _tag: "Play", clipId: head.clipId }, headItem?.spec.key);
     // Build, on the session that takes new work: the first eligible item by build order, else
     // filler below its floor.
     const target = preferred();
@@ -2755,7 +2783,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       if (drainingNeeds && coverFirst(target, item, from.clipId !== undefined, room)) return;
       if (item.spec.follows !== undefined && value.autoplay !== false) {
         updateSession(value.id, { guardItem: item.spec.key });
-        return queueCommand(value.id, { _tag: "Autoplay", enabled: false });
+        return queueCommand(value.id, { _tag: "Autoplay", enabled: false }, item.spec.key);
       }
       updateSession(value.id, { guardItem: undefined });
       set(item.spec.key, {
@@ -2766,12 +2794,16 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         continued: from.clipId !== undefined,
         follows: from.follows,
       });
-      return queueCommand(target.id, {
-        _tag: "Enqueue",
-        request: item.spec.request,
-        tag: { _tag: "Item", key: item.spec.key },
-        continueFrom: from.clipId,
-      });
+      return queueCommand(
+        target.id,
+        {
+          _tag: "Enqueue",
+          request: item.spec.request,
+          tag: { _tag: "Item", key: item.spec.key },
+          continueFrom: from.clipId,
+        },
+        item.spec.key,
+      );
     }
     const filler = config.filler;
     if (filler === undefined || !fillerFree()) return;

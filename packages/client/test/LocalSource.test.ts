@@ -16,6 +16,7 @@ import {
   Scope,
   Stream,
   SubscriptionRef,
+  Tracer,
   type Types,
 } from "effect";
 import { LocalSource, Playout, type ReactorError, ReactorTest } from "../src/index.js";
@@ -98,6 +99,60 @@ describe("LocalSource", () => {
       assert.notStrictEqual(first.sessionId, second.sessionId);
     }),
   );
+
+  it.effect("keeps each queued clip's trace and sampling through build and presentation", () => {
+    const spans: Array<Tracer.Span> = [];
+    const tracer = Tracer.make({
+      span: (options) => {
+        const span = new Tracer.NativeSpan(options);
+        spans.push(span);
+        return span;
+      },
+    });
+    return Effect.gen(function* () {
+      const released = yield* Deferred.make<void>();
+      const source = yield* LocalSource.open({
+        build: (clip) =>
+          Effect.as(Deferred.await(released), { value: clip.request.prompt }).pipe(
+            Effect.withSpan("renderer.build", {}, { captureStackTrace: false }),
+          ),
+        present: () =>
+          Effect.void.pipe(Effect.withSpan("renderer.present", {}, { captureStackTrace: false })),
+      }).pipe(Effect.withSpan("acquisition", { root: true }, { captureStackTrace: false }));
+      const events = yield* record(source);
+      yield* source.setAutoplay(true);
+      yield* source
+        .enqueue(request("first"), tag("first"))
+        .pipe(Effect.withSpan("caller.first", { root: true }, { captureStackTrace: false }));
+      const last = yield* source
+        .enqueue(request("second"), tag("second"))
+        .pipe(
+          Effect.withSpan(
+            "caller.second",
+            { root: true, sampled: false },
+            { captureStackTrace: false },
+          ),
+        );
+      yield* Deferred.succeed(released, undefined);
+      yield* until(events, "the last clip's end", ended(last));
+
+      const callers = ["caller.first", "caller.second"].map((name) =>
+        spans.find((span) => span.name === name),
+      );
+      for (const caller of callers) assert.isDefined(caller);
+      for (const name of ["renderer.build", "renderer.present"]) {
+        const hooks = spans.filter((span) => span.name === name);
+        assert.deepStrictEqual(
+          hooks.map((span) => span.traceId),
+          callers.map((span) => span?.traceId),
+        );
+        assert.deepStrictEqual(
+          hooks.map((span) => span.sampled),
+          [true, false],
+        );
+      }
+    }).pipe(Effect.withTracer(tracer));
+  });
 
   it.effect(
     "lists a clip from its enqueue until it reports its end, however its fibers interleave",

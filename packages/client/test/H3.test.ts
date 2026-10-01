@@ -14,6 +14,7 @@ import {
   Result,
   Schema,
   Scope,
+  Tracer,
 } from "effect";
 import * as H3 from "../src/H3.js";
 import { ReactorTest } from "../src/index.js";
@@ -44,6 +45,37 @@ scenario("a correlated reply accepts the clip, and the caller then finds it queu
         ? [...snapshot.queue.generation, ...snapshot.queue.playout].map((clip) => clip.clip_id)
         : [];
     assert.include(queued, acceptance.clip.clip_id);
+  }),
+);
+
+scenario("records an H3 refusal after the transport successfully delivered its reply", () =>
+  Effect.gen(function* () {
+    yield* Effect.forkScoped(ReactorTest.flow());
+    const provider = yield* H3.make(yield* connect);
+    const spans: Array<Tracer.Span> = [];
+    const tracer = Tracer.make({
+      span: (options) => {
+        const span = new Tracer.NativeSpan(options);
+        spans.push(span);
+        return span;
+      },
+    });
+    const failure = yield* Effect.flip(provider.play("00000000-0000-4000-8000-000000000001")).pipe(
+      Effect.withTracer(tracer),
+    );
+    assert.strictEqual(failure._tag, "CommandFailure");
+    assert.strictEqual(failure.reason._tag, "Remote");
+    assert.strictEqual(failure.context.outcome, "replied");
+    const operation = spans.find((span) => span.name === "H3.play");
+    const transport = spans.find((span) => span.name === "Session.command");
+    assert.isDefined(operation);
+    assert.isDefined(transport);
+    assert.strictEqual(operation.status._tag, "Ended");
+    assert.strictEqual(transport.status._tag, "Ended");
+    if (operation.status._tag === "Ended")
+      assert.strictEqual(operation.status.exit._tag, "Failure");
+    if (transport.status._tag === "Ended")
+      assert.strictEqual(transport.status.exit._tag, "Success");
   }),
 );
 

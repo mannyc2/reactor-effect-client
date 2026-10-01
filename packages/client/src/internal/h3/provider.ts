@@ -132,8 +132,8 @@ const clipsOf = (message: Message) => {
   return "clip" in message.data ? [message.data.clip] : [];
 };
 
-/** An enqueue's outcome as its span records it; an interruption records none. */
-const outcomeOf = (exit: Exit.Exit<Acceptance, CommandFailure>) => {
+/** A command's outcome as its span records it; an interruption records none. */
+const outcomeOf = (exit: Exit.Exit<unknown, CommandFailure>) => {
   if (Exit.isSuccess(exit)) return { "reactor.command.outcome": "replied" };
   const error = Exit.findError(exit);
   return error._tag === "Success"
@@ -925,6 +925,17 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     State.snapshot(internal.model),
   );
 
+  // H3 interprets a delivered reply and waits for its resulting state after the transport settles.
+  const traced = <A>(name: string, effect: Effect.Effect<A, CommandFailure>) =>
+    effect.pipe(
+      Effect.onExit((exit) => exit.pipe(outcomeOf, Effect.annotateCurrentSpan)),
+      Effect.withSpan(
+        `H3.${name}`,
+        { kind: "client", attributes: { "reactor.session.id": session.id } },
+        { captureStackTrace: false },
+      ),
+    );
+
   const provider: Provider = {
     sessionId: session.id,
     contract,
@@ -992,37 +1003,50 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         ),
         Effect.flatMap((submission) => submission.submit),
       ),
-    getState,
-    getQueue,
-    refresh,
+    getState: traced("getState", getState),
+    getQueue: traced("getQueue", getQueue),
+    refresh: traced("refresh", refresh),
     pop: (id) =>
-      clipId("pop", id).pipe(
-        Effect.flatMap((clip) => named("pop", { clip_id: clip })),
-        Effect.filterOrFail(
-          (reply) => reply.value.clip.clip_id === id,
-          (reply) => uncertain("pop", reply.source, "H3 pop returned a different clip"),
+      traced(
+        "pop",
+        clipId("pop", id).pipe(
+          Effect.flatMap((clip) => named("pop", { clip_id: clip })),
+          Effect.filterOrFail(
+            (reply) => reply.value.clip.clip_id === id,
+            (reply) => uncertain("pop", reply.source, "H3 pop returned a different clip"),
+          ),
         ),
       ),
     move: (id, position) =>
-      Effect.all([clipId("move", id), natural("move", "position", position)]).pipe(
-        Effect.flatMap(([clip, at]) => named("move", { clip_id: clip, position: at })),
-        Effect.filterOrFail(
-          (reply) => reply.value.clip.clip_id === id,
-          (reply) => uncertain("move", reply.source, "H3 move returned a different clip"),
+      traced(
+        "move",
+        Effect.all([clipId("move", id), natural("move", "position", position)]).pipe(
+          Effect.flatMap(([clip, at]) => named("move", { clip_id: clip, position: at })),
+          Effect.filterOrFail(
+            (reply) => reply.value.clip.clip_id === id,
+            (reply) => uncertain("move", reply.source, "H3 move returned a different clip"),
+          ),
         ),
       ),
     play: (id) =>
-      (id === undefined ? Effect.succeed("") : clipId("play", id)).pipe(
-        Effect.flatMap((clip) => control("play", { clip_id: clip })),
+      traced(
+        "play",
+        (id === undefined ? Effect.succeed("") : clipId("play", id)).pipe(
+          Effect.flatMap((clip) => control("play", { clip_id: clip })),
+        ),
       ),
-    stop: control("stop", {}),
+    stop: traced("stop", control("stop", {})),
     setCanvas: (aspect: CanvasAspect) =>
-      Object.hasOwn(canvases, aspect)
-        ? named("set_canvas", { aspect })
-        : Effect.fail(refused("set_canvas", "InvalidInput", "Unsupported H3 canvas aspect")),
-    setAutoplay: (enabled) => named("set_autoplay", { enabled }),
-    setFlushOnClipEnd: (enabled) => named("set_flush_on_clip_end", { enabled }),
-    reset: named("reset", {}),
+      traced(
+        "setCanvas",
+        Object.hasOwn(canvases, aspect)
+          ? named("set_canvas", { aspect })
+          : Effect.fail(refused("set_canvas", "InvalidInput", "Unsupported H3 canvas aspect")),
+      ),
+    setAutoplay: (enabled) => traced("setAutoplay", named("set_autoplay", { enabled })),
+    setFlushOnClipEnd: (enabled) =>
+      traced("setFlushOnClipEnd", named("set_flush_on_clip_end", { enabled })),
+    reset: traced("reset", named("reset", {})),
   };
   return provider;
 });

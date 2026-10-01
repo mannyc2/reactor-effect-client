@@ -1047,7 +1047,13 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           },
           clip,
           ...downloadOptions,
-        }),
+        }).pipe(
+          Effect.withSpan(
+            "CoordinatorClient.downloadClip",
+            { kind: "client", attributes: { "reactor.session.id": clip.sessionId } },
+            { captureStackTrace: false },
+          ),
+        ),
     };
   };
 
@@ -1059,119 +1065,126 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
   const app = (spec: Call) => call(configured, spec);
   const appSignaling = signaling(configured);
 
-  const mintToken = Effect.fn("CoordinatorClient.mintToken")(function* (input: TokenOptions) {
-    const invalid = (message: string) =>
-      ReactorError.fromCode("InvalidInput", message, {
-        operation: "token",
-        outcome: "not-submitted",
-      });
-    const apiKey = input.apiKey ?? options.apiKey;
-    if (apiKey === undefined || Redacted.value(apiKey).length === 0)
-      return yield* invalid("a token needs an API key");
-    if (input.modelName.length === 0) return yield* invalid("a token needs a model");
-    const bind = input.bind ?? [];
-    if (bind.some((id) => id.length === 0)) return yield* invalid("a bound session needs an id");
-    const maxSessions = input.maxSessions ?? (bind.length === 0 ? 1 : undefined);
-    if (
-      maxSessions !== undefined &&
-      !(
-        Number.isInteger(maxSessions) &&
-        maxSessions >= Math.max(1, bind.length) &&
-        maxSessions <= 500
+  const mintToken = Effect.fnUntraced(
+    function* (input: TokenOptions) {
+      const invalid = (message: string) =>
+        ReactorError.fromCode("InvalidInput", message, {
+          operation: "token",
+          outcome: "not-submitted",
+        });
+      const apiKey = input.apiKey ?? options.apiKey;
+      if (apiKey === undefined || Redacted.value(apiKey).length === 0)
+        return yield* invalid("a token needs an API key");
+      if (input.modelName.length === 0) return yield* invalid("a token needs a model");
+      const bind = input.bind ?? [];
+      if (bind.some((id) => id.length === 0)) return yield* invalid("a bound session needs an id");
+      const maxSessions = input.maxSessions ?? (bind.length === 0 ? 1 : undefined);
+      if (
+        maxSessions !== undefined &&
+        !(
+          Number.isInteger(maxSessions) &&
+          maxSessions >= Math.max(1, bind.length) &&
+          maxSessions <= 500
+        )
       )
-    )
-      return yield* invalid("maxSessions is an integer from 1, or the bound count, to 500");
-    // Reactor's default leaves a bound token no room to create; any other token creates.
-    const creates = maxSessions !== undefined && maxSessions > bind.length;
-    const cap = input.maxSessionDuration;
-    let seconds: number | undefined;
-    if (cap === undefined) {
-      if (creates)
-        return yield* invalid(
-          'a token that creates sessions needs a maxSessionDuration: a duration or "unlimited"',
-        );
-    } else if (cap !== "unlimited") {
-      const duration = Duration.fromInput(cap);
-      seconds = Option.isSome(duration) ? Duration.toSeconds(duration.value) : Number.NaN;
-      if (!(Number.isInteger(seconds) && seconds >= 1 && seconds <= 86_400))
-        return yield* invalid("maxSessionDuration is whole seconds from one to a day");
-    }
-    let expiresAfter: number | undefined;
-    if (input.expiresAfter !== undefined) {
-      const expiry = Duration.fromInput(input.expiresAfter);
-      expiresAfter = Option.isSome(expiry) ? Duration.toSeconds(expiry.value) : Number.NaN;
-      if (!(Number.isSafeInteger(expiresAfter) && expiresAfter >= 1))
-        return yield* invalid("expiresAfter is whole seconds, at least one");
-    }
-    const request = yield* tokenBody(
-      HttpClientRequest.post("/tokens").pipe(
-        HttpClientRequest.setHeader("reactor-api-key", Redacted.value(apiKey)),
-      ),
-      {
-        authorization_details: [
-          {
-            type: "session",
-            resources: {
-              models: { match: [input.modelName] },
-              ...(Arr.isReadonlyArrayNonEmpty(bind) ? { sessions: { bind } } : {}),
+        return yield* invalid("maxSessions is an integer from 1, or the bound count, to 500");
+      // Reactor's default leaves a bound token no room to create; any other token creates.
+      const creates = maxSessions !== undefined && maxSessions > bind.length;
+      const cap = input.maxSessionDuration;
+      let seconds: number | undefined;
+      if (cap === undefined) {
+        if (creates)
+          return yield* invalid(
+            'a token that creates sessions needs a maxSessionDuration: a duration or "unlimited"',
+          );
+      } else if (cap !== "unlimited") {
+        const duration = Duration.fromInput(cap);
+        seconds = Option.isSome(duration) ? Duration.toSeconds(duration.value) : Number.NaN;
+        if (!(Number.isInteger(seconds) && seconds >= 1 && seconds <= 86_400))
+          return yield* invalid("maxSessionDuration is whole seconds from one to a day");
+      }
+      let expiresAfter: number | undefined;
+      if (input.expiresAfter !== undefined) {
+        const expiry = Duration.fromInput(input.expiresAfter);
+        expiresAfter = Option.isSome(expiry) ? Duration.toSeconds(expiry.value) : Number.NaN;
+        if (!(Number.isSafeInteger(expiresAfter) && expiresAfter >= 1))
+          return yield* invalid("expiresAfter is whole seconds, at least one");
+      }
+      const request = yield* tokenBody(
+        HttpClientRequest.post("/tokens").pipe(
+          HttpClientRequest.setHeader("reactor-api-key", Redacted.value(apiKey)),
+        ),
+        {
+          authorization_details: [
+            {
+              type: "session",
+              resources: {
+                models: { match: [input.modelName] },
+                ...(Arr.isReadonlyArrayNonEmpty(bind) ? { sessions: { bind } } : {}),
+              },
+              ...(maxSessions === undefined && seconds === undefined
+                ? {}
+                : {
+                    constraints: {
+                      ...(maxSessions === undefined ? {} : { max_sessions: maxSessions }),
+                      ...(seconds === undefined ? {} : { max_session_duration_seconds: seconds }),
+                    },
+                  }),
             },
-            ...(maxSessions === undefined && seconds === undefined
-              ? {}
-              : {
-                  constraints: {
-                    ...(maxSessions === undefined ? {} : { max_sessions: maxSessions }),
-                    ...(seconds === undefined ? {} : { max_session_duration_seconds: seconds }),
-                  },
-                }),
-          },
-        ],
-        ...(expiresAfter === undefined ? {} : { expires_after: expiresAfter }),
-      },
-    );
-    const token = yield* app({
-      operation: "token",
-      request,
-      route: "public",
-      timeout: "8 seconds",
-    }).pipe(Effect.flatMap(decodeReply(TokenReply, "token")));
-    const protocol = (message: string) =>
-      ReactorError.fromCode("Protocol", message, { operation: "token", outcome: "replied" });
-    if (token.expires_at * 1_000 <= (yield* Clock.currentTimeMillis))
-      return yield* protocol("the token has already expired");
-    const [entry, ...others] = token.authorization_details ?? [];
-    if (others.length > 0) return yield* protocol("the token grants other authority than asked");
-    const stated = entry?.constraints?.max_session_duration_seconds;
-    const granted: Granted | undefined =
-      entry === undefined
-        ? undefined
-        : {
-            models: entry.resources.models.match,
-            maxSessions: entry.constraints?.max_sessions ?? undefined,
-            // A null cap says there is none; an absent one says nothing.
-            maxSessionSeconds: stated === null ? "unlimited" : stated,
-            bound: entry.resources.sessions?.bind ?? [],
-          };
-    if (
-      granted !== undefined &&
-      (granted.models.some((model) => model !== input.modelName) ||
-        granted.bound.some((id) => !bind.includes(id)) ||
-        (granted.maxSessions ?? 0) > (maxSessions ?? bind.length) ||
-        (seconds !== undefined &&
-          (granted.maxSessionSeconds === "unlimited" ||
-            (granted.maxSessionSeconds ?? 0) > seconds)))
-    )
-      return yield* protocol("the token grants more than was asked");
-    // A narrower grant caps each session at what it grants.
-    const narrower =
-      Predicate.isNumber(granted?.maxSessionSeconds) &&
-      (seconds === undefined || granted.maxSessionSeconds < seconds);
-    return {
-      jwt: Redacted.make(token.jwt),
-      expiresAt: token.expires_at,
-      maxSessionSeconds: narrower ? granted.maxSessionSeconds : seconds,
-      ...(granted === undefined ? {} : { granted }),
-    } satisfies TokenGrant;
-  });
+          ],
+          ...(expiresAfter === undefined ? {} : { expires_after: expiresAfter }),
+        },
+      );
+      const token = yield* app({
+        operation: "token",
+        request,
+        route: "public",
+        timeout: "8 seconds",
+      }).pipe(Effect.flatMap(decodeReply(TokenReply, "token")));
+      const protocol = (message: string) =>
+        ReactorError.fromCode("Protocol", message, { operation: "token", outcome: "replied" });
+      if (token.expires_at * 1_000 <= (yield* Clock.currentTimeMillis))
+        return yield* protocol("the token has already expired");
+      const [entry, ...others] = token.authorization_details ?? [];
+      if (others.length > 0) return yield* protocol("the token grants other authority than asked");
+      const stated = entry?.constraints?.max_session_duration_seconds;
+      const granted: Granted | undefined =
+        entry === undefined
+          ? undefined
+          : {
+              models: entry.resources.models.match,
+              maxSessions: entry.constraints?.max_sessions ?? undefined,
+              // A null cap says there is none; an absent one says nothing.
+              maxSessionSeconds: stated === null ? "unlimited" : stated,
+              bound: entry.resources.sessions?.bind ?? [],
+            };
+      if (
+        granted !== undefined &&
+        (granted.models.some((model) => model !== input.modelName) ||
+          granted.bound.some((id) => !bind.includes(id)) ||
+          (granted.maxSessions ?? 0) > (maxSessions ?? bind.length) ||
+          (seconds !== undefined &&
+            (granted.maxSessionSeconds === "unlimited" ||
+              (granted.maxSessionSeconds ?? 0) > seconds)))
+      )
+        return yield* protocol("the token grants more than was asked");
+      // A narrower grant caps each session at what it grants.
+      const narrower =
+        Predicate.isNumber(granted?.maxSessionSeconds) &&
+        (seconds === undefined || granted.maxSessionSeconds < seconds);
+      return {
+        jwt: Redacted.make(token.jwt),
+        expiresAt: token.expires_at,
+        maxSessionSeconds: narrower ? granted.maxSessionSeconds : seconds,
+        ...(granted === undefined ? {} : { granted }),
+      } satisfies TokenGrant;
+    },
+    Effect.withSpan(
+      "CoordinatorClient.mintToken",
+      { kind: "client" },
+      { captureStackTrace: false },
+    ),
+  );
 
   return CoordinatorClient.of({
     apiUrl,
@@ -1200,27 +1213,34 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
         { captureStackTrace: false },
       ),
     ),
-    inspect: Effect.fn("CoordinatorClient.inspect")(function* (sessionId: string) {
-      const value = yield* app({
-        operation: "inspect",
-        request: HttpClientRequest.get(sessionPath(sessionId)),
-        timeout: "1 second",
-      }).pipe(Effect.flatMap(decodeReply(SessionDescription, "inspect")));
-      if (value.session_id !== sessionId)
-        return yield* ReactorError.fromCode("Protocol", "inspection names another session", {
+    inspect: Effect.fnUntraced(
+      function* (sessionId: string) {
+        const value = yield* app({
           operation: "inspect",
-          outcome: "replied",
-        });
-      return {
-        observedAt: yield* Clock.currentTimeMillis,
-        state: value.state,
-        hasCapabilities: value.capabilities != null,
-        selectedTransport: value.selected_transport ?? null,
-        cluster: value.cluster ?? null,
-        zone: value.zone ?? null,
-        serverVersion: value.server_info?.server_version ?? null,
-      } satisfies Inspection;
-    }),
+          request: HttpClientRequest.get(sessionPath(sessionId)),
+          timeout: "1 second",
+        }).pipe(Effect.flatMap(decodeReply(SessionDescription, "inspect")));
+        if (value.session_id !== sessionId)
+          return yield* ReactorError.fromCode("Protocol", "inspection names another session", {
+            operation: "inspect",
+            outcome: "replied",
+          });
+        return {
+          observedAt: yield* Clock.currentTimeMillis,
+          state: value.state,
+          hasCapabilities: value.capabilities != null,
+          selectedTransport: value.selected_transport ?? null,
+          cluster: value.cluster ?? null,
+          zone: value.zone ?? null,
+          serverVersion: value.server_info?.server_version ?? null,
+        } satisfies Inspection;
+      },
+      Effect.withSpan(
+        "CoordinatorClient.inspect",
+        (sessionId) => ({ kind: "client", attributes: { "reactor.session.id": sessionId } }),
+        { captureStackTrace: false },
+      ),
+    ),
     terminate: appSignaling.terminate,
     downloadClip: appSignaling.downloadClip,
   });

@@ -16,6 +16,7 @@ import {
   Result,
   Scope,
   Stream,
+  Tracer,
 } from "effect";
 import * as CoordinatorClient from "../src/CoordinatorClient.js";
 import * as H3 from "../src/H3.js";
@@ -191,6 +192,97 @@ layer(hosted)("order", (it) => {
         const [, second] = group.parts;
         assert.strictEqual((yield* second?.outcome ?? Effect.die("no second part"))._tag, "Ended");
       }),
+  );
+});
+
+layer(hosted)("tracing queued items", (it) => {
+  it.effect(
+    "keeps each admission's trace through waiting, duplicate submission and renewal",
+    () => {
+      const spans: Array<Tracer.Span> = [];
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+          spans.push(span);
+          return span;
+        },
+      });
+      return Effect.gen(function* () {
+        const { playout, starts, events } = yield* start({
+          lifetime: "18 seconds",
+          renewal: { lead: "6 seconds" },
+        }).pipe(
+          Effect.withSpan(
+            "acquisition",
+            { root: true, sampled: false },
+            { captureStackTrace: false },
+          ),
+        );
+        const first = yield* playout
+          .submit({ key: key("first"), lane: "line", request: clip("first") })
+          .pipe(Effect.withSpan("caller.first", { root: true }, { captureStackTrace: false }));
+        const spec = { key: key("second"), lane: "line", request: clip("second", 10) };
+        const second = yield* playout
+          .submit(spec)
+          .pipe(
+            Effect.withSpan(
+              "caller.second",
+              { root: true, sampled: false },
+              { captureStackTrace: false },
+            ),
+          );
+        const duplicate = yield* playout
+          .submit(spec)
+          .pipe(Effect.withSpan("caller.duplicate", { root: true }, { captureStackTrace: false }));
+
+        assert.strictEqual((yield* first.outcome)._tag, "Ended");
+        assert.strictEqual((yield* second.outcome)._tag, "Ended");
+        assert.deepStrictEqual(yield* duplicate.outcome, yield* second.outcome);
+        assert.deepStrictEqual(yield* starts, ["first", "second"]);
+        assert.isAtLeast(
+          (yield* events).filter(
+            (event) => event._tag === "Session" && event.event._tag === "Opened",
+          ).length,
+          2,
+        );
+        const callers = ["caller.first", "caller.second"].map((name) =>
+          spans.find((span) => span.name === name),
+        );
+        for (const caller of callers) assert.isDefined(caller);
+        const enqueues = spans.filter((span) => span.name === "H3.enqueue");
+        assert.deepStrictEqual(
+          enqueues.map((span) => span.traceId),
+          callers.map((span) => span?.traceId),
+        );
+        assert.deepStrictEqual(
+          enqueues.map((span) => span.sampled),
+          [true, false],
+        );
+        assert.deepStrictEqual(
+          spans
+            .filter(
+              (span) =>
+                span.name === "Session.command" &&
+                span.attributes.get("reactor.operation") === "enqueue",
+            )
+            .map((span) => span.traceId),
+          callers.map((span) => span?.traceId),
+        );
+        // The playout's own work, its opens and autonomous commands, keeps the acquisition's
+        // decision not to sample: only the traces of sampled callers are exported.
+        const exported = new Set(
+          spans
+            .filter((span) => span.name.startsWith("caller.") && span.sampled)
+            .map((span) => span.traceId),
+        );
+        assert.deepStrictEqual(
+          spans
+            .filter((span) => span.sampled && !exported.has(span.traceId))
+            .map((span) => span.name),
+          [],
+        );
+      }).pipe(Effect.withTracer(tracer));
+    },
   );
 });
 
