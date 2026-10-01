@@ -8,7 +8,8 @@ server can record, analyse, re-encode or restream a session's media directly, wh
 client would need a headless browser to reach it. In paid runs on hosted H3 from 2026-09-24 to
 09-28, on the 0.3.0-rc.0 to 0.8.0 libraries, it received 1344×768 video at about 24 fps with no
 frame lost. Those runs used the in-process host under Bun and the isolated host under Node; the
-in-process host under Node, and 0.9.0, have not run there yet.
+in-process host under Node has not run there yet. On 0.9.0, the published addon recorded 958 frames
+at 1344×768 and 24 fps under Bun in the `showreel` check on 2026-10-01.
 
 **[Documentation](https://mannyc2.github.io/reactor-effect-client/)** ·
 [Frames in Node and Bun](https://mannyc2.github.io/reactor-effect-client/guides/native/) ·

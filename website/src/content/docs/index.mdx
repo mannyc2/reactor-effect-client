@@ -5,7 +5,7 @@ template: splash
 hero:
   tagline: Build on Reactor's real-time video models, H3 today, from Node, Bun and the browser. Keep a channel on air across session caps, read decoded frames without a browser, and run the whole application offline before it spends a cent.
   image:
-    file: ../../assets/logo.svg
+    html: '<video class="hero-reel" src="https://github.com/mannyc2/reactor-effect-client/releases/download/media/showreel-loop.mp4" poster="https://github.com/mannyc2/reactor-effect-client/releases/download/media/showreel-poster.jpg" autoplay muted loop playsinline aria-label="H3 video decoded and recorded by reactor-effect: a red convertible crossing a desert, five scenes back to back"></video>'
   actions:
     - text: Quickstart, no API key
       link: /reactor-effect-client/start/quickstart/
@@ -24,6 +24,10 @@ hero:
 ---
 
 import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
+
+The video above is H3's own output, decoded in-process and recorded by the hosted `showreel` check on
+October 1, 2026: one `Playout`, five scenes on one session, seams of 89–120 ms with no dark frame.
+[The whole reel, with sound](https://github.com/mannyc2/reactor-effect-client/releases/download/media/showreel.mp4).
 
 ## What it does
 
@@ -58,9 +62,10 @@ import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
   </Card>
 </CardGrid>
 
-The hosted figures come from 21 paid runs between 2026-09-24 and 2026-09-29, on the 0.3.0-rc.0 to
-0.8.0 libraries. 0.9.0's published packages, the browser package and the in-process native host
-under Node have not run on hosted Reactor yet.
+The hosted figures come from 22 paid runs between 2026-09-24 and 2026-10-01, on the 0.3.0-rc.0 to
+0.9.0 libraries; on 0.9.0 only the one-session `showreel` check (2026-10-01) has run. 0.9.0's other checks, its published client
+packages, the browser package and the in-process native host under Node have not run on hosted
+Reactor yet.
 
 ## Start here
 

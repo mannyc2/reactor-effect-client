@@ -36,3 +36,12 @@
   border-radius: 0.75rem;
   border: 1px solid var(--sl-color-gray-5);
 }
+
+.hero .hero-reel {
+  width: 100%;
+  max-width: 34rem;
+  aspect-ratio: 1344 / 768;
+  border-radius: 0.75rem;
+  border: 1px solid var(--sl-color-gray-5);
+  box-shadow: 0 1.5rem 3rem rgb(0 0 0 / 0.35);
+}

@@ -23,6 +23,12 @@ and run the whole application offline before it spends a cent.
 
 <br />
 
+<a href="https://github.com/mannyc2/reactor-effect-client/releases/download/media/showreel.mp4"><img src="https://github.com/mannyc2/reactor-effect-client/releases/download/media/showreel-loop.gif" width="100%" alt="H3 video recorded by reactor-effect: a red convertible on a desert road, across a seam between two clips." /></a>
+
+<sub>Real H3 output, decoded in-process and recorded by the hosted <code>showreel</code> check on October 1, 2026: one <code>Playout</code>, five scenes back to back, seams of 89–120 ms with no dark frame. <a href="https://github.com/mannyc2/reactor-effect-client/releases/download/media/showreel.mp4">The whole reel, with sound</a>.</sub>
+
+<br />
+
 <img src="website/public/playout-renewal.svg" alt="Playout keeps H3 on air across a session renewal: session 2 opens before session 1's cap, and the air switches between them at a clip boundary." />
 
 ## Try it in a minute, no API key
@@ -127,13 +133,15 @@ H3, the playout, media, errors, testing and cost control.
 CI runs every check against `ReactorTest`. Hosted Reactor is exercised by paid checks the
 maintainer runs with a budget, and each run keeps its evidence in
 [`integration/hosted/evidence`](./integration/hosted/evidence). The runs below date from 2026-09-24
-to 2026-09-29, on the 0.3.0-rc.0 to 0.8.0 libraries, with the native host in process under Bun or
-isolated under Node. 0.9.0's published packages, the browser package and the in-process native host
-under Node have not run on hosted Reactor yet.
+to 2026-10-01, on the 0.3.0-rc.0 to 0.9.0 libraries, with the native host in process under Bun or
+isolated under Node. On 0.9.0 only the `showreel` check has run, from a checkout with the published
+addon; 0.9.0's other checks, its published client packages, the browser package and the in-process
+native host under Node have not run on hosted Reactor yet.
 
 | What                                                | Measured                                                                               | Runs                             |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------- | -------------------------------- |
 | Video through the native host                       | 1344×768 at 23.7–24.2 fps, all 124 frames of each clip                                 | 0.3.0 to 0.8.0, 09-24 to 09-28   |
+| Five scenes on one session, recorded in-process     | 958 frames at 1344×768 and 24 fps; seams 89–120 ms, no dark frame; about $1.68         | `showreel` on 0.9.0, 10-01       |
 | Seams between clips on one session                  | 46–169 ms, no dark frame                                                               | 0.8.0, 09-28 and 09-29           |
 | A planned switch to a renewed session               | 420–432 ms                                                                             | two `show` runs, 09-28 and 09-29 |
 | A dropped connection, recovered on the same session | ready 1.64–1.84 s later, picture back at 1.82–1.95 s, nothing re-allocated             | two `show` runs, 09-28 and 09-29 |

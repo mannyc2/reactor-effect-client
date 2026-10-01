@@ -109,7 +109,8 @@ Each module's doc comments state its options' defaults and bounds.
 - **`Playout` keeps H3 on air**: it renews sessions before their cap and switches at a clip
   boundary, with lanes, filler, windows, cues, edits and placement. In paid runs of the 0.8.0
   library on hosted H3 (2026-09-28 and 09-29), seams measured 46–169 ms with no dark frame and a
-  planned switch 420–432 ms. 0.9.0 has not run on hosted Reactor yet.
+  planned switch 420–432 ms. On 0.9.0 only the one-session `showreel` check has run there (seams of
+  89–120 ms, 2026-10-01); its renewal and placement have run only on `ReactorTest`.
 - **`ReactorTest` runs the same application offline**, at hosted timing, or on `TestClock` where
   an hour of programme with six renewals takes about 20 seconds, with faults to inject.
 - **A provider `Started` fact is not proof** that a frame was presented or encoded.

@@ -71,10 +71,11 @@ that create and connect a session carry its own `sdk_type`, so Reactor can tell 
 
 - **Every change** runs the client, browser and hosted-rehearsal suites on Node and on Bun, real
   Chrome against the native host, and the examples. None of it allocates a paid session.
-- **Hosted Reactor** is exercised by paid checks the maintainer runs with a budget: 21 runs from
-  2026-09-24 to 2026-09-29, on the 0.3.0-rc.0 to 0.8.0 libraries. Each run records its evidence:
-  frames, seams, timings, and every session confirmed ended. 0.9.0's published packages, the browser
-  package and the in-process native host under Node have not run there yet.
+- **Hosted Reactor** is exercised by paid checks the maintainer runs with a budget: 22 runs from
+  2026-09-24 to 2026-10-01, on the 0.3.0-rc.0 to 0.9.0 libraries. Each run records its evidence:
+  frames, seams, timings, and every session confirmed ended. On 0.9.0 only the `showreel` check has
+  run; 0.9.0's other checks, its published client packages, the browser package and the in-process
+  native host under Node have not run there yet.
   [Hosted evidence](/reactor-effect-client/reference/hosted-evidence/) lists every run.
 
 ## Next

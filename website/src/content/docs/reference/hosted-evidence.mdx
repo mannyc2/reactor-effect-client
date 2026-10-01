@@ -23,7 +23,7 @@ its worst case in a ledger before any token exists, and a ledger's total is capp
 
 ## Every run
 
-21 runs, 27 sessions, from 2026-09-24 to 2026-09-29. Every session ended with its termination
+22 runs, 28 sessions, from 2026-09-24 to 2026-10-01. Every session ended with its termination
 confirmed by an independent read.
 
 | Started (UTC)    | Code                 | Check               | Sessions | Estimate | Result                                                       |
@@ -49,6 +49,7 @@ confirmed by an independent read.
 | 2026-09-28 23:37 | checkout `87d9f67`   | `show`              | 3        | $1.538   | Pass, all 25 criteria                                        |
 | 2026-09-29 14:00 | checkout `c9f3f96`   | `unconnected`       | 2        | $0.900   | Pass                                                         |
 | 2026-09-29 14:03 | checkout `c9f3f96`   | `show`              | 3        | $1.413   | Pass, every criterion                                        |
+| 2026-10-01 02:01 | checkout `d013d00`   | `showreel`          | 1        | $1.680   | Pass, every criterion; footage on the `media` release        |
 
 The summaries, one per ledger:
 [0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md),
@@ -138,6 +139,13 @@ and [0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integr
 **Termination**: every one of the 27 sessions confirmed ended; where timed, `CLOSED` read
 0.63–0.86 s after the `DELETE`.
 
+**The showreel** ([0.9.0-showreel](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.9.0-showreel/summary.md),
+2026-10-01): one `Playout` over one 70 s-capped session aired five 8-second scenes back to back,
+and the decoded frames and audio were recorded in-process under Bun as they arrived: 958 frames at
+1344×768 and 24 fps, the reader never behind, seams of 89–120 ms with no dark frame, gaps on air of
+2–67 ms between scenes, about $1.68. The footage is on the
+[`media` release](https://github.com/mannyc2/reactor-effect-client/releases/tag/media).
+
 ## What the runs found about the platform
 
 These are behaviours of hosted Reactor and H3 the runs recorded, worth knowing whatever client you
@@ -171,9 +179,10 @@ use:
 
 ## Not yet run on hosted Reactor
 
-- **0.9.0's published bytes.** No paid run has exercised 0.9.0: `Playout.place` and `follows`, the
-  `CoordinatorClient` rename and 0.9.0's fixes have run only on `ReactorTest`. The newest runs used
-  a checkout matching the 0.8.0 release.
+- **Most of 0.9.0.** One paid run has exercised 0.9.0: the one-session `showreel` check, from a
+  checkout with the published linux-x64 addon. `Playout.place` and `follows`, 0.9.0's renewal and
+  its other checks have run only on `ReactorTest`, and its published client packages have not run on
+  hosted Reactor.
 - **The `turn` check**, the vertical from a network that blocks outbound UDP so a relay must carry
   the media. Every paid run went over a direct path.
 - **`reactor-effect-browser`.** No paid run has used the browser host.
