@@ -325,6 +325,11 @@ interface Session {
   /** A selected follower fences autoplay before its enqueue is sent. */
   readonly guardItem?: ItemKey | undefined;
   /**
+   * The clip whose start a `Started` event last reported here. A state read alone may name a clip
+   * H3 still holds armed through its seam.
+   */
+  readonly startSeen?: string | undefined;
+  /**
    * An explicit start goes again only after its queues change or a second passes: one that
    * failed, or one that succeeded while its start is not seen yet.
    */
@@ -2221,6 +2226,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           break;
         case "Started":
           started(input.sessionId, event.clip);
+          updateSession(input.sessionId, { startSeen: event.clip.clipId });
           break;
         case "Ended":
           ended(input.sessionId, event);
@@ -2646,13 +2652,15 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const guarded = guarding !== undefined;
     if (!guarded && value.playRetry !== undefined)
       updateSession(value.id, { playRetry: undefined });
-    // Inside a boundary H3 holds the next clip armed, and turning autoplay off then leaves it
-    // unstarted: on air the fence goes up only while the clip playing has more left than the
-    // readiness margin, so the command lands before it ends, or stays as it is.
+    // Inside a boundary H3 holds the next clip armed, names it playing, and turning autoplay off
+    // then leaves it unstarted: on air the fence goes up only while a clip seen to start plays with
+    // more left than the readiness margin, so the command lands before it ends, or stays as it is.
     const fenceable =
       value.id !== state.air ||
       value.autoplay === false ||
-      (value.source?.playing !== undefined && playingRestMs(value) > readinessMarginMs);
+      (value.source?.playing !== undefined &&
+        value.startSeen === value.source.playing.clipId &&
+        playingRestMs(value) > readinessMarginMs);
     const autoplay =
       value.wantAutoplay && state.cutting?.sessionId !== value.id && !(guarded && fenceable);
     if (value.source?.available === true && value.autoplay !== autoplay) {
