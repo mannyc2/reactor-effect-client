@@ -85,6 +85,7 @@ export default defineConfig({
             { slug: "guides/browser" },
             { slug: "guides/native" },
             { slug: "guides/cost-control" },
+            { slug: "guides/plain-typescript" },
           ],
         },
         {

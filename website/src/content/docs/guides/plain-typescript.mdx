@@ -1,0 +1,131 @@
+---
+title: Use it from plain TypeScript
+description: "Call a playout from an Express, Hono or Next.js route with async functions: one ManagedRuntime, promises out, refusals as data."
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+You do not have to write your application in Effect to use reactor-effect. Build the SDK's layers
+into one `ManagedRuntime` when the process starts, and wrap what you need in ordinary async
+functions. The runtime opens sessions on first use, keeps them for every call, and closes them when
+you dispose it. Your routes, handlers and jobs stay plain TypeScript.
+
+## A module with three functions
+
+This module runs one `Playout` over the simulated Reactor and exposes it as `sendPrompt`,
+`outcomeOf` and `shutdown`. For hosted H3, swap the `ReactorTest` layer for the hosted ones in
+[Going live](/reactor-effect-client/start/going-live/); nothing else changes.
+
+```ts title="channel.ts"
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { Effect, Layer, ManagedRuntime, Redacted, Result } from "effect";
+import {
+  CoordinatorClient,
+  H3,
+  H3Source,
+  Playout,
+  Reactor,
+  ReactorTest,
+} from "reactor-effect-client";
+
+/** Each session the playout opens runs on a token capped at ten minutes. */
+const open = Effect.gen(function* () {
+  const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  return yield* H3Source.open({
+    tokens: coordinator.tokens({ modelName: H3.modelName, maxSessionDuration: "10 minutes" }),
+  });
+});
+
+/** The playout over the simulated Reactor; see "Going live" for the hosted layer. */
+const Channel = Playout.layer({ open, lanes: [{ name: "viewer" }] }).pipe(
+  Layer.provideMerge(Reactor.layer()),
+  Layer.provideMerge(CoordinatorClient.layer({ apiKey: Redacted.make("demo") })),
+  Layer.provideMerge(ReactorTest.layer({ timing: ReactorTest.Timing.hosted, apiKey: "demo" })),
+  Layer.provideMerge(NodeServices.layer),
+);
+
+/** Built on first use, shared by every call, released by `dispose`. */
+const runtime = ManagedRuntime.make(Channel);
+
+export type Submitted =
+  | { readonly accepted: true }
+  | { readonly accepted: false; readonly reason: string };
+
+/** Each accepted item's handle, by key, to read what became of it later. */
+const handles = new Map<string, Playout.ItemHandle>();
+
+/** Queues a prompt. A refusal comes back as data, named by the playout's error tag. */
+export async function sendPrompt(key: string, prompt: string): Promise<Submitted> {
+  const submitted = await runtime.runPromise(
+    Effect.gen(function* () {
+      const playout = yield* Playout.Playout;
+      return yield* playout.submit({
+        key: Playout.ItemKey.make(key),
+        lane: "viewer",
+        request: { prompt, seconds: 8 },
+      });
+    }).pipe(Effect.result),
+  );
+  if (Result.isFailure(submitted)) return { accepted: false, reason: submitted.failure._tag };
+  handles.set(key, submitted.success);
+  return { accepted: true };
+}
+
+/** Resolves once the item has settled: Ended, Dropped, Failed, Unobserved or Unknown. */
+export async function outcomeOf(key: string): Promise<string | undefined> {
+  const handle = handles.get(key);
+  if (handle === undefined) return undefined;
+  const settled = await runtime.runPromise(handle.outcome);
+  return settled._tag;
+}
+
+/** Closes the playout and every session it holds; call it on shutdown. */
+export async function shutdown(): Promise<void> {
+  await runtime.dispose();
+}
+```
+
+Two prompts sent through it, offline:
+
+```ts
+import { outcomeOf, sendPrompt, shutdown } from "./channel.ts";
+
+console.log(await sendPrompt("first", "A lighthouse at dusk")); // { accepted: true }
+console.log(await outcomeOf("first")); // "Ended", once it has aired
+await shutdown();
+```
+
+## From an HTTP route
+
+Call the functions from any framework's handler. A refusal (`WouldMissDeadline`, `LaneBusy`,
+`InvalidItem`, `PlayoutClosed`) comes back as `{ accepted: false, reason }`, so the route chooses its
+own status code instead of catching an exception:
+
+```ts
+app.post("/prompts", async (req, res) => {
+  const result = await sendPrompt(req.body.id, req.body.prompt);
+  res.status(result.accepted ? 202 : 409).json(result);
+});
+```
+
+Dispose the runtime when the process stops, so every session is terminated and its end confirmed
+instead of billing until its cap:
+
+```ts
+process.on("SIGTERM", () => void shutdown().then(() => process.exit(0)));
+```
+
+<Aside>
+  `runPromise` rejects only on a defect or an error you did not handle. Turning the errors you expect
+  into values, as `sendPrompt` does with `Effect.result`, keeps them typed on the Effect side and
+  plain on yours.
+</Aside>
+
+## What you still get
+
+- The playout renews sessions before their cap and keeps the air covered, whoever calls it.
+- Sessions are closed and confirmed when the runtime is disposed.
+- The same module runs offline on `ReactorTest` in your tests, with no key.
+
+The [browser example](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/browser/examples)
+uses the same pattern from ordinary DOM code.
