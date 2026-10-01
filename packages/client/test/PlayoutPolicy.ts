@@ -676,20 +676,22 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
         const next = value.ready.shift();
         if (next === undefined) return send({ _tag: "Tick" });
         value.playing = next;
-        send({ _tag: "Source", sessionId: airId(), event: { _tag: "Started", clip: next } });
-        return observe(airId());
+        const sessionId = airId();
+        send({ _tag: "Source", sessionId, event: { _tag: "Started", clip: next } });
+        return observe(sessionId);
       }
       case "end": {
         const value = onAir();
         if (value?.playing === undefined) return send({ _tag: "Tick" });
         const ended = value.playing;
+        const sessionId = airId();
         value.playing = undefined;
         send({
           _tag: "Source",
-          sessionId: airId(),
+          sessionId,
           event: { _tag: "Ended", clip: ended, termination: "finished" },
         });
-        return observe(airId());
+        return observe(sessionId);
       }
       case "lost": {
         const sessionId = [...sessions.keys()][0];
