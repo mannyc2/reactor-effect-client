@@ -604,7 +604,7 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/7e46b84145b960c08f55b82cb35682ea425cfb52...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/2418ac1f5ebbf86f38c2cda2c622bf79aec77a31...main
 [0.9.2]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.2
 [0.9.1]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.1
 [0.9.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.0
