@@ -2624,12 +2624,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     if (!guarded && value.playRetry !== undefined)
       updateSession(value.id, { playRetry: undefined });
     // Inside a boundary H3 holds the next clip armed, and turning autoplay off then leaves it
-    // unstarted: on air the fence goes up only while a clip plays with time to spare, as a cut's
-    // does, or stays as it is.
+    // unstarted: on air the fence goes up only while the clip playing has more left than the
+    // readiness margin, so the command lands before it ends, or stays as it is.
     const fenceable =
       value.id !== state.air ||
       value.autoplay === false ||
-      (value.source?.playing !== undefined && playingRestMs(value) > cutMarginMs);
+      (value.source?.playing !== undefined && playingRestMs(value) > readinessMarginMs);
     const autoplay =
       value.wantAutoplay && state.cutting?.sessionId !== value.id && !(guarded && fenceable);
     if (value.source?.available === true && value.autoplay !== autoplay) {
@@ -2825,6 +2825,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const floorSeconds = fillerFloor();
     const drainingNeeds = state.drains.length === 0 || fillerNeeded;
     for (const item of eligible(floorSeconds)) {
+      const fenced = item.spec.follows === undefined || value.autoplay === false;
+      // A follower's fence goes up once a clip plays here with time to spare. Until the next clip
+      // starts, a seam away, nothing builds ahead of it.
+      if (!fenced && !fenceable && readyOf(value).length > 0) return;
       // What cannot air before this session's cap waits for its replacement, and so does what
       // follows it, which would otherwise air ahead of it.
       if (!fits(target, item.spec.seconds)) break;
@@ -2833,8 +2837,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         : { _tag: "from" as const, clipId: undefined, follows: undefined };
       if (from._tag === "wait") continue;
       if (drainingNeeds && coverFirst(target, item, from.clipId !== undefined, room)) return;
-      if (item.spec.follows !== undefined && value.autoplay !== false) {
-        // It goes once a clip plays here with time to spare.
+      if (!fenced) {
+        // With nothing to start next, what else can air goes first.
         if (!fenceable) continue;
         updateSession(value.id, { guardItem: item.spec.key });
         return queueCommand(value.id, { _tag: "Autoplay", enabled: false }, item.spec.key);
