@@ -89,7 +89,15 @@ export interface Cue {
 export interface Window {
   readonly notBefore?: Duration.Input | undefined;
   readonly startBy?: Duration.Input | undefined;
-  /** A firm item is dropped at `startBy`; a soft one may still air, recorded as late. */
+  /**
+   * A firm item is refused with `WouldMissDeadline` when the plan, at the
+   * median build rates, projects it to start no earlier than `startBy`:
+   * every clip queued to air ahead of it airs first, at its own length,
+   * built or not, and a boundary the next of them is not Ready for goes to
+   * whichever clip is, filler included. Admitted, it is dropped as `late`
+   * at `startBy`, or before it is sent once even its earliest start is past
+   * it. A soft one may still air, recorded as late.
+   */
   readonly firm: boolean;
 }
 

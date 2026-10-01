@@ -1093,16 +1093,42 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * The earliest a clip in `item`'s place could start, optimistically, as the time passes: at
    * `time` it is `Math.max(from, time + after)`. The end of the clip on air and the builds in
    * flight fix `from`; the air ahead and the builds it waits for add `after` to the time, as
-   * they do once that clip is over.
+   * they do once that clip is over. The air ahead is every clip the plan keeps queued to air
+   * before it on the session taking new work, built or not, and the first of those not built
+   * yet airs only once it is. `kept` holds what was decided of the items ahead.
    */
-  const projection = (item: Item): { readonly from: number; readonly after: number } => {
+  const projection = (
+    item: Item,
+    kept: Map<Item, boolean> = new Map(),
+  ): { readonly from: number; readonly after: number } => {
     const target = preferred() ?? session(state.air);
     const rank = rankItem(item);
-    const aheadMs = (target === undefined ? [] : readyOf(target))
-      .filter(
-        (clip) => compareRank(rankClip(clip), rank) < 0 && itemOf(clip)?.withdraw === undefined,
-      )
+    const readyMs = (target === undefined ? [] : readyOf(target))
+      .filter((clip) => {
+        const other = itemOf(clip);
+        return (
+          compareRank(rankClip(clip), rank) < 0 &&
+          other?.withdraw === undefined &&
+          (other === undefined || keeps(other, kept))
+        );
+      })
       .reduce((total, clip) => total + clip.seconds * 1000, 0);
+    const unbuilt = [...items.values()].filter(
+      (other) =>
+        other.spec.key !== item.spec.key &&
+        (other.phase === "Accepted" ||
+          (other.phase === "Building" && other.sessionId === target?.id)) &&
+        airsItem(items, other, now) &&
+        // A replacement and what it replaces take one place, which airs once.
+        (other.replaces === undefined || !live(replacedOf(other))) &&
+        compareRank(rankItem(other), rank) < 0 &&
+        keeps(other, kept),
+    );
+    const unbuiltMs = unbuilt.reduce(
+      (total, other) => total + airedLengthOf(state.samples, other.spec.seconds) * 1000,
+      0,
+    );
+    const aheadMs = readyMs + unbuiltMs;
     const air = session(state.air);
     const end = playingEndOf(air);
     const playable = {
@@ -1138,19 +1164,65 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       )
       .reduce((total, other) => total + buildMs(other.spec.seconds), 0);
     const waits = first + buildMs(item.spec.seconds);
-    return {
-      from: Math.max(playable.from, Math.max(...inFlight) + waits),
-      after: Math.max(playable.after, waits),
-    };
+    let from = Math.max(playable.from, Math.max(...inFlight) + waits);
+    let after = Math.max(playable.after, waits);
+    // The clips ahead still to build air once the first of them is Ready: one in flight as its
+    // build ends, else one sent once the builds in flight are done.
+    const building = unbuilt.filter((other) => other.phase === "Building");
+    if (building.length > 0) {
+      const ready = building.map(
+        (other) => (other.dispatchedAt ?? now.mono) + buildMs(other.spec.seconds),
+      );
+      from = Math.max(from, Math.min(...ready) + unbuiltMs);
+    } else if (unbuilt.length > 0) {
+      const shortest = Math.min(...unbuilt.map((other) => buildMs(other.spec.seconds)));
+      from = Math.max(from, Math.max(...inFlight) + shortest + unbuiltMs);
+      after = Math.max(after, shortest + unbuiltMs);
+    }
+    return { from, after };
   };
   /**
    * Whether a clip in `item`'s place could not start before `startBy`, as projected. Once
    * nothing holds it, the projection grows with the time: it misses from `startBy - after` on.
    */
-  const misses = (item: Item, startBy: number): boolean => {
-    const { from, after } = projection(item);
+  const misses = (item: Item, startBy: number, kept: Map<Item, boolean> = new Map()): boolean => {
+    const { from, after } = projection(item, kept);
     return Math.max(from, now.mono + after) >= startBy || now.mono >= startBy - after;
   };
+  /**
+   * Whether `run`, a forward run of the plan, starts `item` before `startBy`: it airs it in
+   * time, or stopped short of both the item and `startBy`, and so cannot tell. Two are left to
+   * `misses`: an item in a lane that cuts, which airs once Ready rather than at a boundary, and
+   * the run projects no cut; and one that follows a clip, which `misses` puts behind everything
+   * queued, since until it is admitted nothing records whether that clip has aired.
+   */
+  const startsBefore = (run: Run, item: Item, startBy: number): boolean => {
+    if (cuts(item) || item.spec.follows !== undefined) return true;
+    if (run.gone.has(item)) return false;
+    const aired = run.aired.find((entry) => entry.clip.item === item);
+    if (aired !== undefined) return aired.start < startBy;
+    const last = run.aired.at(-1);
+    return last === undefined || last.start + last.clip.seconds * 1000 < startBy;
+  };
+  /**
+   * Whether the plan keeps `other` to air, as a projection counts the air ahead: all but a firm
+   * item past its `startBy`, or not sent and projected to miss it, which the plan drops. Only
+   * items ahead of it decide that, so `kept` gathers each once.
+   */
+  function keeps(other: Item, kept: Map<Item, boolean>): boolean {
+    if (
+      other.spec.window?.firm === true &&
+      other.startBy !== undefined &&
+      now.mono >= other.startBy
+    )
+      return false;
+    if (!lateWhenProjected(other)) return true;
+    const known = kept.get(other);
+    if (known !== undefined) return known;
+    const value = !misses(other, other.startBy, kept);
+    kept.set(other, value);
+    return value;
+  }
   /** Whether `item` is firm, not sent, and dropped once projected to miss its `startBy`. */
   const lateWhenProjected = (item: Item): item is Item & { readonly startBy: number } =>
     item.phase === "Accepted" &&
@@ -1420,6 +1492,22 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         }
       }
     }
+    const deadlines = adds.flatMap((key) => {
+      const item = items.get(key)!;
+      return item.spec.window?.firm === true && item.startBy !== undefined ? [item.startBy] : [];
+    });
+    // A clip not Ready a margin before its boundary gives that boundary to the next one Ready,
+    // filler included, which only a forward run projects. It runs on until about a clip a second
+    // has aired up to the last deadline, so each item has aired or gone by then.
+    const run =
+      deadlines.length === 0
+        ? undefined
+        : forward(
+            undefined,
+            [...items.values()].filter(live).length +
+              Math.ceil((Math.max(...deadlines) - now.mono) / 1000) +
+              1,
+          );
     for (const key of adds) {
       const item = items.get(key)!;
       if (
@@ -1432,7 +1520,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       if (
         item.spec.window?.firm === true &&
         item.startBy !== undefined &&
-        misses(item, item.startBy)
+        (misses(item, item.startBy) ||
+          (run !== undefined && !startsBefore(run, item, item.startBy)))
       ) {
         items.clear();
         for (const [other, value] of saved.items) items.set(other, value);

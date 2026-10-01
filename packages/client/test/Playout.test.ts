@@ -785,18 +785,18 @@ layer(hosted)("time", (it) => {
       const median = (yield* playout.state).estimates.build?.median ?? 0;
       assert.isAbove(median, 0);
       // Nothing airs, and none may build before 5 s: each would miss its startBy from 8 s less
-      // its own build on, a time for each length.
+      // its own build on, a time for each length. Each goes alone, on the lane that cuts, which
+      // airs a clip once it is Ready, so only that projection decides it.
       const lengths = [8, 9, 10, 11, 12, 13];
-      const firm = yield* Effect.forEach(lengths, (seconds) =>
-        playout.submit({
+      for (const seconds of lengths) {
+        const firm = yield* playout.submit({
           key: key(`firm ${String(seconds)}`),
-          lane: "line",
+          lane: "urgent",
           request: clip(`firm ${String(seconds)}`, seconds),
           window: { notBefore: "5 seconds", startBy: "8 seconds", firm: true },
-        }),
-      );
-      for (const handle of firm)
-        assert.deepStrictEqual(yield* handle.outcome, { _tag: "Dropped", reason: "late" });
+        });
+        assert.deepStrictEqual(yield* firm.outcome, { _tag: "Dropped", reason: "late" });
+      }
       const all = yield* events;
       const at = (name: string, status: string) =>
         all.flatMap((event) =>
@@ -851,6 +851,45 @@ const seamed = environment({
     http: "40 millis",
     channel: "20 millis",
   }),
+});
+
+layer(seamed)("admission", (it) => {
+  // Viewers' prompts reaching a channel at once. Each clip ahead takes its own length of air, and
+  // the first, not Ready a margin before the clip on air ends, leaves that boundary to the filler:
+  // the fourth would start over 2 s past its startBy.
+  it.effect("airs every firm item it admits, refusing those that would start too late", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start({
+        filler: {
+          runway: { floor: "8 seconds", target: "16 seconds" },
+          clip: ({ index }) => clip(`idle ${index}`, 8),
+        },
+      });
+      // Filler on air, its builds measured.
+      yield* Effect.sleep("40 seconds");
+      const submitted = yield* Effect.forEach(
+        Array.from({ length: 8 }, (_, index) => index),
+        (index) =>
+          Effect.result(
+            playout.submit({
+              key: key(`viewer ${index}`),
+              lane: "line",
+              request: clip(`viewer ${index}`, 8),
+              window: { startBy: "34 seconds", firm: true },
+            }),
+          ),
+      );
+      const outcomes = yield* Effect.forEach(submitted, (result) =>
+        Result.isSuccess(result)
+          ? Effect.map(result.success.outcome, (outcome) => outcome._tag)
+          : Effect.succeed(result.failure._tag),
+      );
+      assert.deepStrictEqual(outcomes, [
+        ...Array.from({ length: 3 }, () => "Ended"),
+        ...Array.from({ length: 5 }, () => "WouldMissDeadline"),
+      ]);
+    }),
+  );
 });
 
 layer(seamed)("follows", (it) => {
