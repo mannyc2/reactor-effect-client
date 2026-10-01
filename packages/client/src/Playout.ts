@@ -66,7 +66,12 @@ export type Start =
   | { readonly _tag: "Follow" }
   /** The next boundary, ahead of everything waiting in every lane. */
   | { readonly _tag: "Asap" }
-  /** Built ahead and held until `release(key)`, then as `Asap`. */
+  /**
+   * Held until `release(key)`, then as `Asap`. It is built ahead only while
+   * filler keeps the runway at its floor, and taken back to be built again
+   * if it would air next before then; otherwise it is built once released,
+   * as always on a playout without filler.
+   */
   | { readonly _tag: "Manual" }
   | {
       readonly _tag: "At";
