@@ -3,7 +3,7 @@
 import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
-import { Config, Effect, FileSystem, Layer, Path, Redacted } from "effect";
+import { Config, Duration, Effect, FileSystem, Layer, Option, Path, Redacted } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
@@ -12,29 +12,48 @@ import { Api, TokenUnavailable } from "./Api.ts";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 /**
- * Mints one token per request. A token that creates a session caps it at five
- * minutes, so a page closed without cleanup leaves it running no longer than
- * that; Reactor bills it by the minute. A bound token lets that session go on
- * past its first token. A real deployment authenticates and rate-limits this
- * endpoint, and binds only sessions the caller created: every token it hands
- * out can start or act on a paid session.
+ * A token that creates a session caps it at five minutes, so a page closed
+ * without cleanup leaves it running no longer than that: Reactor bills a
+ * session per second from ready until it ends.
+ */
+const sessionCap = Duration.minutes(5);
+
+/**
+ * Mints one token per request. A bound token lets a session go on past its
+ * first token. A real deployment authenticates and rate-limits this endpoint,
+ * and binds only sessions the caller created: every token it hands out can
+ * start or act on a paid session. Without `REACTOR_API_KEY` it mints nothing,
+ * and the page runs offline.
  */
 const SessionHandlers = HttpApiBuilder.group(
   Api,
   "session",
   Effect.fn(function* (handlers) {
-    const apiKey = yield* Config.Redacted("REACTOR_API_KEY");
+    const apiKey = yield* Config.Redacted("REACTOR_API_KEY").pipe(Config.option);
     const apiUrl = yield* Config.String("REACTOR_API_URL").pipe(
-      Config.withDefault("https://api.reactor.inc"),
+      Config.withDefault(CoordinatorClient.defaultApiUrl),
     );
+    const unavailable = TokenUnavailable.make({ message: "No session token is available" });
+    if (Option.isNone(apiKey)) {
+      yield* Effect.logInfo("REACTOR_API_KEY is not set: the page runs offline");
+      return handlers.handleAll({
+        live: () => Effect.succeed({ _tag: "Unavailable" } as const),
+        token: () => Effect.fail(unavailable),
+      });
+    }
     const coordinator = yield* CoordinatorClient.make({ apiUrl });
     const tokens = coordinator.tokens({
-      apiKey,
+      apiKey: apiKey.value,
       modelName: H3.modelName,
-      maxSessionDuration: "5 minutes",
+      maxSessionDuration: sessionCap,
       expiresAfter: "6 minutes",
     });
     return handlers.handleAll({
+      live: () =>
+        Effect.succeed({
+          _tag: "Available",
+          maxSessionSeconds: Duration.toSeconds(sessionCap),
+        } as const),
       token: ({ payload }) =>
         (payload.session === undefined ? tokens.create : tokens.bind(payload.session)).pipe(
           Effect.map((grant) => ({
@@ -47,9 +66,7 @@ const SessionHandlers = HttpApiBuilder.group(
           Effect.tapError((error) =>
             Effect.logWarning("token refused", { reason: error.reason._tag }),
           ),
-          Effect.mapError(() =>
-            TokenUnavailable.make({ message: "No session token is available" }),
-          ),
+          Effect.mapError(() => unavailable),
         ),
     });
   }),

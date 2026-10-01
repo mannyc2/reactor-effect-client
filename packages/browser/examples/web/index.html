@@ -3,54 +3,760 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Reactor in the browser</title>
+    <meta name="color-scheme" content="dark" />
+    <title>H3 Studio · reactor-effect</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%238b7cff'/%3E%3Cpath d='M12 9v14l11-7z' fill='%230b0d12'/%3E%3C/svg%3E"
+    />
     <style>
-      body {
-        font:
-          15px/1.5 system-ui,
-          sans-serif;
-        max-width: 960px;
-        margin: 0 auto;
-        padding: 16px;
+      :root {
+        --bg: #0b0d12;
+        --panel: #12151d;
+        --panel-2: #171b25;
+        --line: #232937;
+        --text: #e7eaf2;
+        --muted: #8a93a6;
+        --accent: #8b7cff;
+        --accent-2: #b3a8ff;
+        --ok: #3ecf8e;
+        --warn: #f5a524;
+        --err: #ff5c6c;
+        --info: #4aa8ff;
+        --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+        --radius: 12px;
       }
-      video {
-        width: 100%;
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          14px/1.5 system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      button,
+      input,
+      textarea {
+        font: inherit;
+        color: inherit;
+      }
+      .app {
+        max-width: 1440px;
+        margin: 0 auto;
+        padding: 16px 20px 28px;
+        display: grid;
+        gap: 16px;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px 16px;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: 0.2px;
+      }
+      header h1 span {
+        color: var(--muted);
+        font-weight: 400;
+      }
+      .about {
+        flex: 1 1 420px;
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.6px;
+        text-transform: uppercase;
+        border: 1px solid var(--line);
+        color: var(--muted);
+      }
+      .badge::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .badge.live {
+        color: var(--err);
+        border-color: color-mix(in srgb, var(--err) 45%, transparent);
+      }
+      .badge.offline {
+        color: var(--info);
+        border-color: color-mix(in srgb, var(--info) 45%, transparent);
+      }
+      main {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+        gap: 16px;
+        align-items: start;
+      }
+      .column {
+        display: grid;
+        gap: 16px;
+        min-width: 0;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 14px 16px;
+        min-width: 0;
+      }
+      .panel h2 {
+        margin: 0 0 10px;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+        color: var(--muted);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .panel h2 .spacer {
+        flex: 1;
+      }
+      /* The stage: the session's picture, with what is on air over it. */
+      .screen {
+        position: relative;
         aspect-ratio: 16 / 9;
         background: #000;
+        border-radius: var(--radius);
+        overflow: hidden;
+        border: 1px solid var(--line);
       }
-      form,
-      .controls {
+      .screen video,
+      .screen canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #000;
+      }
+      .screen canvas {
+        image-rendering: pixelated;
+      }
+      .screen .empty {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        text-align: center;
+        color: var(--muted);
+        padding: 24px;
+        background: rgb(11 13 18 / 0.86);
+      }
+      .screen .empty[hidden] {
+        display: none;
+      }
+      .screen .empty strong {
+        display: block;
+        color: var(--text);
+        font-size: 18px;
+        margin-bottom: 4px;
+      }
+      .frame-caption {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        padding: 3px 8px;
+        border-radius: 6px;
+        background: rgb(0 0 0 / 0.55);
+        font: 12px var(--mono);
+        color: #d6dbe6;
+      }
+      .frame-caption:empty {
+        display: none;
+      }
+      .on-air {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        padding: 28px 16px 12px;
+        background: linear-gradient(transparent, rgb(0 0 0 / 0.78));
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        min-height: 56px;
+      }
+      .on-air[hidden] {
+        display: none;
+      }
+      .on-air .tag {
+        flex: none;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        color: #fff;
+        background: var(--err);
+        padding: 2px 7px;
+        border-radius: 4px;
+      }
+      .on-air .text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #f3f5fa;
+      }
+      .on-air .progress {
+        position: absolute;
+        left: 0;
+        bottom: 0;
+        height: 3px;
+        width: 100%;
+        background: var(--err);
+        transform-origin: left;
+        animation-name: progress;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+      @keyframes progress {
+        from {
+          transform: scaleX(0);
+        }
+        to {
+          transform: scaleX(1);
+        }
+      }
+      /* The composer. */
+      textarea {
+        width: 100%;
+        min-height: 76px;
+        resize: vertical;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        outline: none;
+      }
+      textarea:focus {
+        border-color: var(--accent);
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 14px;
+        margin-top: 10px;
+      }
+      .row .grow {
+        flex: 1 1 200px;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      input[type="range"] {
+        width: 100%;
+        accent-color: var(--accent);
+      }
+      .length {
+        font: 12px var(--mono);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .length b {
+        color: var(--text);
+        font-weight: 600;
+      }
+      .references {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        min-height: 64px;
+        padding: 8px;
+        border: 1px dashed var(--line);
+        border-radius: 10px;
+        transition:
+          border-color 0.15s,
+          background 0.15s;
+      }
+      .references.dragging {
+        border-color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 8%, transparent);
+      }
+      .reference {
+        position: relative;
+        width: 84px;
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+      }
+      .reference img {
+        display: block;
+        width: 100%;
+        height: 50px;
+        object-fit: cover;
+      }
+      .reference span {
+        display: block;
+        padding: 2px 5px;
+        font: 10px var(--mono);
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .reference button {
+        position: absolute;
+        top: 3px;
+        right: 3px;
+        width: 20px;
+        height: 20px;
+        padding: 0;
+        border-radius: 50%;
+        font-size: 11px;
+        line-height: 1;
+      }
+      button {
+        cursor: pointer;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        border-radius: 8px;
+        padding: 6px 12px;
+        transition:
+          background 0.15s,
+          border-color 0.15s,
+          opacity 0.15s;
+      }
+      button:hover:not(:disabled) {
+        border-color: #39415a;
+        background: #1d2230;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #0b0d12;
+        font-weight: 600;
+      }
+      button.primary:hover:not(:disabled) {
+        background: var(--accent-2);
+        border-color: var(--accent-2);
+      }
+      button.danger:hover:not(:disabled) {
+        border-color: var(--err);
+        color: var(--err);
+      }
+      .icon {
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        display: inline-grid;
+        place-items: center;
+        font-size: 13px;
+      }
+      .composer-failure:empty {
+        display: none;
+      }
+      /* Chips: facts and failures. */
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 11px;
+        line-height: 18px;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .chip.ok {
+        color: var(--ok);
+        border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+      }
+      .chip.warn {
+        color: var(--warn);
+        border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+      }
+      .chip.err {
+        color: var(--err);
+        border-color: color-mix(in srgb, var(--err) 45%, transparent);
+        background: color-mix(in srgb, var(--err) 8%, transparent);
+      }
+      .chip.info {
+        color: var(--info);
+        border-color: color-mix(in srgb, var(--info) 40%, transparent);
+      }
+      .chip.accent {
+        color: var(--accent-2);
+        border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+      }
+      .failure {
+        margin-top: 6px;
+        padding: 6px 8px;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--err) 7%, transparent);
+        border: 1px solid color-mix(in srgb, var(--err) 30%, transparent);
+        font-size: 12px;
+      }
+      .failure p {
+        margin: 4px 0 0;
+        color: #ffc2c8;
+      }
+      /* The session panel. */
+      dl {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 6px 12px;
+        margin: 0;
+        font-size: 13px;
+      }
+      dt {
+        color: var(--muted);
+      }
+      dd {
+        margin: 0;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .mono {
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .buttons {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .toggle input {
+        accent-color: var(--accent);
+        width: 15px;
+        height: 15px;
+        margin: 0;
+      }
+      .report {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+      }
+      .report[hidden] {
+        display: none;
+      }
+      .report h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+      }
+      /* The queue. */
+      .queue h3 {
+        margin: 14px 0 6px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+        color: var(--muted);
+        display: flex;
+        gap: 6px;
+        align-items: baseline;
+      }
+      .queue h3:first-of-type {
+        margin-top: 0;
+      }
+      .queue h3 small {
+        font-weight: 400;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .clips {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 6px;
+      }
+      .clips:empty::after {
+        content: attr(data-empty);
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .clip {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 10px;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+      }
+      .clip.playing {
+        border-color: color-mix(in srgb, var(--err) 55%, transparent);
+      }
+      .clip .meta {
         display: flex;
         gap: 8px;
-        margin: 12px 0 4px;
+        align-items: baseline;
+        font: 11px var(--mono);
+        color: var(--muted);
       }
-      input {
-        flex: 1;
-        padding: 6px 8px;
-        font: inherit;
+      .clip .prompt {
+        margin: 2px 0 6px;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        font-size: 13px;
       }
-      #log {
-        font:
-          12px/1.6 ui-monospace,
-          monospace;
-        white-space: pre-wrap;
+      .clip .controls {
+        display: flex;
+        gap: 4px;
+        align-items: start;
+      }
+      /* Faults. */
+      .faults {
+        display: grid;
+        gap: 8px;
+      }
+      .fault button {
+        width: 100%;
+        text-align: left;
+      }
+      .fault p {
+        margin: 4px 2px 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      /* The event log. */
+      .log {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        max-height: 300px;
+        overflow: auto;
+        font: 12px/1.65 var(--mono);
+      }
+      .log li {
+        display: grid;
+        grid-template-columns: 96px 76px minmax(0, 1fr);
+        gap: 8px;
+        padding: 2px 0;
+        border-bottom: 1px solid #161a23;
+      }
+      .log time {
+        color: var(--muted);
+      }
+      .log .kind {
+        color: var(--muted);
+      }
+      .log .kind.is-session {
+        color: var(--info);
+      }
+      .log .kind.is-h3 {
+        color: var(--accent-2);
+      }
+      .log .kind.is-command {
+        color: var(--warn);
+      }
+      .log .kind.is-failure {
+        color: var(--err);
+      }
+      .log .kind.is-fault {
+        color: var(--warn);
+      }
+      .log .text {
+        overflow-wrap: anywhere;
+      }
+      .log .text .chips {
+        display: inline-flex;
+        margin-left: 6px;
+        vertical-align: 1px;
+      }
+      footer {
+        color: var(--muted);
+        font-size: 12px;
+        text-align: center;
+      }
+      footer a {
+        color: var(--accent-2);
+      }
+      @media (max-width: 980px) {
+        main {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .log li {
+          grid-template-columns: 84px minmax(0, 1fr);
+        }
+        .log .kind {
+          display: none;
+        }
       }
     </style>
   </head>
   <body>
-    <h1>Reactor in the browser</h1>
-    <video id="video" autoplay muted playsinline></video>
-    <audio id="audio"></audio>
-    <div class="controls">
-      <button id="start">Start</button>
-      <button id="sound">Sound on</button>
-      <button id="stop">Stop</button>
+    <div class="app">
+      <header>
+        <h1>H3 Studio <span>· reactor-effect</span></h1>
+        <span id="mode" class="badge">Loading</span>
+        <p id="about" class="about">Building the page's runtime…</p>
+      </header>
+
+      <main>
+        <div class="column">
+          <div id="screen" class="screen">
+            <div id="empty" class="empty">
+              <div>
+                <strong>No session</strong>
+                Start a session, then send a prompt. H3 builds each clip and plays it in turn.
+              </div>
+            </div>
+            <div id="on-air" class="on-air" hidden>
+              <span class="tag">On air</span>
+              <span id="on-air-text" class="text"></span>
+              <span id="on-air-progress" class="progress"></span>
+            </div>
+          </div>
+
+          <section class="panel" aria-labelledby="composer-title">
+            <h2 id="composer-title">
+              Next clip<span class="spacer"></span><span id="tokens" class="hint"></span>
+            </h2>
+            <form id="composer">
+              <textarea id="prompt" maxlength="12000" required>
+A paper boat drifts down a rain-soaked street at dusk, neon signs rippling in the puddles</textarea>
+              <div class="row">
+                <label class="grow">
+                  <span class="hint">Clip length</span>
+                  <input id="seconds" type="range" step="0.1" value="8" />
+                </label>
+                <span id="length" class="length"></span>
+              </div>
+              <div class="row">
+                <div id="references" class="references grow">
+                  <span id="references-hint" class="hint"
+                    >Reference images (H3 is reference-to-video): drop PNG, JPEG or WebP here</span
+                  >
+                </div>
+              </div>
+              <div class="row">
+                <input
+                  id="files"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  multiple
+                  hidden
+                />
+                <button id="add-images" type="button">Add images…</button>
+                <button id="sample-image" type="button">Add a sample image</button>
+                <span class="grow"></span>
+                <button id="send" class="primary" type="submit" disabled>Send to H3</button>
+              </div>
+              <div id="composer-failure" class="composer-failure"></div>
+            </form>
+          </section>
+        </div>
+
+        <div class="column">
+          <section class="panel" aria-labelledby="session-title">
+            <h2 id="session-title">Session</h2>
+            <dl>
+              <dt>Session</dt>
+              <dd id="session-id" class="mono">none</dd>
+              <dt>State</dt>
+              <dd id="session-state"><span class="chip">idle</span></dd>
+              <dt>Connection</dt>
+              <dd id="session-generation">no connection yet</dd>
+              <dt>H3</dt>
+              <dd id="provider-state">not observed</dd>
+              <dt>Playback</dt>
+              <dd>
+                <label class="toggle"
+                  ><input id="autoplay" type="checkbox" disabled /> autoplay</label
+                >
+                &nbsp;
+                <label class="toggle"
+                  ><input id="hold" type="checkbox" disabled /> hold last frame</label
+                >
+              </dd>
+            </dl>
+            <div class="buttons">
+              <button id="start" class="primary" disabled>Start session</button>
+              <button id="stop" class="danger" disabled>Stop session</button>
+              <button
+                id="reconnect"
+                disabled
+                title="A new connection generation of the same session"
+              >
+                Reconnect
+              </button>
+              <button id="sound" disabled>Sound on</button>
+            </div>
+            <div id="report" class="report" hidden></div>
+          </section>
+
+          <section id="queue" class="panel queue" aria-labelledby="queue-title">
+            <h2 id="queue-title">
+              H3 queue<span class="spacer"></span><span id="queue-counts" class="hint"></span>
+            </h2>
+            <h3>On air</h3>
+            <ul id="playing" class="clips" data-empty="Nothing is playing."></ul>
+            <h3>Playout <small>ready, plays in this order</small></h3>
+            <ul id="playout" class="clips" data-empty="No clip is ready."></ul>
+            <h3>Generation <small>building in this order</small></h3>
+            <ul id="generation" class="clips" data-empty="Nothing is waiting to build."></ul>
+            <h3>Done</h3>
+            <ul id="done" class="clips" data-empty="No clip has ended."></ul>
+          </section>
+
+          <section id="faults-panel" class="panel" aria-labelledby="faults-title" hidden>
+            <h2 id="faults-title">Rehearse a failure</h2>
+            <div id="faults" class="faults"></div>
+          </section>
+        </div>
+      </main>
+
+      <section class="panel" aria-labelledby="log-title">
+        <h2 id="log-title">
+          Event log<span class="spacer"></span><span class="hint">newest first</span>
+        </h2>
+        <ol id="log" class="log"></ol>
+      </section>
+
+      <footer>
+        Built with
+        <a href="https://github.com/mannyc2/reactor-effect-client">reactor-effect</a>, an
+        independent Effect SDK for Reactor's real-time video models.
+      </footer>
     </div>
-    <form id="form">
-      <input id="prompt" maxlength="2000" placeholder="Describe the next clip" />
-      <button>Send</button>
-    </form>
-    <div id="log"></div>
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="app.js"></script>
   </body>
 </html>

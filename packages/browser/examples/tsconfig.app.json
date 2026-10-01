@@ -4,5 +4,15 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable", "ESNext.Disposable"],
     "types": []
   },
-  "include": ["src/app.ts", "src/Api.ts", "src/WebCrypto.ts"]
+  "include": [
+    "src/app.ts",
+    "src/playground.ts",
+    "src/Api.ts",
+    "src/Live.ts",
+    "src/Offline.ts",
+    "src/Page.ts",
+    "src/Stage.ts",
+    "src/Studio.ts",
+    "src/WebCrypto.ts"
+  ]
 }

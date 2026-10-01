@@ -2,7 +2,7 @@
   "name": "reactor-effect-browser-examples",
   "version": "0.9.0",
   "private": true,
-  "description": "reactor-effect-browser example: a page that runs a Reactor session over the browser's WebRTC, with a token server",
+  "description": "reactor-effect-browser example: H3 Studio, a page that runs an H3 session over the browser's WebRTC with a token server, or offline on ReactorTest",
   "type": "module",
   "dependencies": {
     "@effect/platform-node": "catalog:",
@@ -14,8 +14,9 @@
     "@types/node": "catalog:"
   },
   "scripts": {
-    "build": "bun build src/app.ts --target=browser --outdir=dist",
-    "start": "node src/server.ts",
+    "build": "bun build src/app.ts src/playground.ts --target=browser --minify --outdir=dist",
+    "build:playground": "bun run build && rm -rf dist/playground && mkdir -p dist/playground && cp dist/playground.js dist/playground/app.js && cp web/index.html dist/playground/index.html",
+    "start": "bun run build && node src/server.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.app.json --noEmit"
   }
 }
