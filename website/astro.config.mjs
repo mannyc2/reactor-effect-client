@@ -18,6 +18,16 @@ export default defineConfig({
       logo: { src: "./src/assets/logo.svg", replacesTitle: false },
       favicon: "/favicon.svg",
       social: [{ icon: "github", label: "GitHub", href: repository }],
+      head: [
+        {
+          tag: "meta",
+          attrs: {
+            property: "og:image",
+            content: "https://mannyc2.github.io/reactor-effect-client/og.png",
+          },
+        },
+        { tag: "meta", attrs: { name: "twitter:card", content: "summary_large_image" } },
+      ],
       editLink: { baseUrl: `${repository}/edit/main/website/` },
       lastUpdated: true,
       customCss: ["./src/styles/theme.css"],
