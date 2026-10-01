@@ -3,4 +3,316 @@ title: Frames in Node and Bun
 description: "Decoded BGRA frames and PCM from the libwebrtc addon, in process or isolated per connection."
 ---
 
-This page is being written.
+import { Aside, Steps, Tabs, TabItem } from "@astrojs/starlight/components";
+
+Read a hosted session's decoded video frames and PCM in Node or Bun, with no browser, and do
+something with them: here, write a clip to an MP4 file.
+
+## The pieces
+
+`reactor-effect-native` binds the session's peer to a libwebrtc addon through Node-API. Session
+allocation, commands and tokens stay in `reactor-effect-client`; the addon carries the connection
+and the media.
+
+**`NativePeer.layer(options)`** runs the peer in your process. Building the layer loads the addon,
+so a host that cannot run it fails there, before any session is allocated: `UnsupportedHost` with
+no platform package, `Native` for an addon of another version or one that cannot load. Its options:
+
+- `addon`: the absolute path of another `.node` addon; you own its provenance.
+- `shutdownTimeout`: how long closing a connection waits for the native owner thread to finish,
+  10 seconds by default. Past it, the close reports `Shutdown` in its `localErrors` and still
+  terminates the session.
+
+**`NativePeer.layerIsolated(options)`** runs each connection's peer in a child process of its own,
+driven over Effect RPC. A crash inside libwebrtc, or an owner thread that never finishes, then
+takes down that child, not your application: the connection fails with `Native`, calls already
+sent to the child end with outcome `unknown`, and a reconnect starts a new child. Credentials,
+allocation and termination stay in the parent; the child sees the ICE configuration, SDP, channel
+bytes and media, and starts with an empty environment. It costs:
+
+- about half a second to start a child, which overlaps allocation;
+- two extra copies of every frame, one across the process boundary (a 1344×768 BGRA frame is about
+  4 MB);
+- a Node parent: under Bun the layer fails to build with `UnsupportedCapability`.
+
+**`session.decoded`** is the current connection's media:
+
+- `video(name)` streams `VideoFrame`s: `width`, `height`, `format` (`"BGRA"`), and `data`, exactly
+  `width × height × 4` bytes that own a whole `ArrayBuffer`. `sequence` numbers each frame on its
+  track; `frameId` and `timestampMicros` carry the sender's identity and clock when it sends them.
+- `audio(name)` streams `AudioFrame`s: `sampleRate`, `channels` and `samples`, interleaved signed
+  16-bit PCM.
+- `pressure` reports what the host delivered, dropped and still holds, and how many readers fell
+  behind.
+
+H3 sends `main_video` and `main_audio`. On hosted H3 they arrived as 1344×768 BGRA at 24 fps and
+48 kHz mono PCM in 10 ms blocks of 480 samples.
+
+**Bounds.** The addon holds at most 8 frames (333 ms at 24 fps), 256 PCM blocks (2.56 s) and 1,024
+events. A full media queue drops its oldest item and counts it, and the drop is a gap in the
+`sequence` numbers. Each reader then holds at most 24 frames (a second at 24 fps) or 128 PCM
+blocks; a reader that falls further behind fails alone with `Overflow`, and `pressure` counts it.
+`Media.recorder(stream)` turns a track into its frames plus a `Lost { after, count }` wherever the
+host dropped some.
+
+**Generations.** Media belongs to one connection. When the session reconnects a dropped connection,
+the old readers end; read `session.decoded` again once the session is ready (`session.changes`
+says when). A playout's `video` and `audio` do this for you, across reconnects and renewals.
+
+Two small readers, for a session already open:
+
+```ts
+import { Console, Effect, Stream } from "effect";
+import type { Media, Session } from "reactor-effect-client";
+
+/** The root mean square of a block of 16-bit PCM, from 0 to 1. */
+const level = (block: Media.AudioFrame) => {
+  let sum = 0;
+  for (const sample of block.samples) sum += sample * sample;
+  return Math.sqrt(sum / Math.max(1, block.samples.length)) / 32768;
+};
+
+/** Prints the sound's level once a second: 100 blocks of 10 ms. */
+const meter = Effect.fn("meter")(function* (session: Session.Session) {
+  const media = yield* session.decoded;
+  yield* media.audio("main_audio").pipe(
+    Stream.filter((block) => block.sequence % 100n === 0n),
+    Stream.runForEach((block) =>
+      Console.log(`${block.sampleRate} Hz × ${block.channels}: level ${level(block).toFixed(3)}`),
+    ),
+  );
+});
+
+/** The newest frame only, for a preview that must never fall behind. */
+const preview = Effect.fn("preview")(function* (session: Session.Session) {
+  const media = yield* session.decoded;
+  return media.video("main_video").pipe(Stream.buffer({ capacity: 1, strategy: "sliding" }));
+});
+```
+
+## Record a clip to MP4
+
+<Steps>
+
+1. **The layers.** The hosted layer reads the key from `REACTOR_API_KEY` and runs the peer in
+   process; the offline one runs the same program on `ReactorTest`, which sends small solid-colour
+   frames, one colour per clip.
+
+   ```ts
+   import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+   import * as NodeServices from "@effect/platform-node/NodeServices";
+   import {
+     Cause,
+     Console,
+     Deferred,
+     Effect,
+     Fiber,
+     Layer,
+     Queue,
+     Redacted,
+     Schema,
+     Stream,
+   } from "effect";
+   import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+   import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+   import { CoordinatorClient, H3, Media, Reactor, ReactorTest } from "reactor-effect-client";
+   import { NativePeer } from "reactor-effect-native";
+
+   const Hosted = Reactor.layer().pipe(
+     Layer.provideMerge(Layer.mergeAll(CoordinatorClient.layerConfig, NativePeer.layer())),
+     Layer.provide(FetchHttpClient.layer),
+   );
+
+   const Offline = Reactor.layer().pipe(
+     Layer.provideMerge(CoordinatorClient.layer({ apiKey: Redacted.make("offline") })),
+     Layer.provideMerge(
+       ReactorTest.layer({
+         timing: ReactorTest.Timing.hosted,
+         apiKey: "offline",
+         width: 320,
+         height: 180,
+       }),
+     ),
+   );
+   ```
+
+   For a peer per child process, swap `NativePeer.layer()` for `NativePeer.layerIsolated()`.
+
+2. **The encoder.** The host's drops are filled with the frame before them, so the file keeps the
+   source's timing. ffmpeg reads raw BGRA on its standard input and writes H.264:
+
+   ```ts
+   class NoVideo extends Schema.TaggedError<NoVideo>()("NoVideo", {}) {}
+
+   /** Each frame, with every run the host dropped filled by the frame before it. */
+   const filled = <E>(frames: Stream.Stream<Media.VideoFrame, E>) =>
+     Media.recorder(frames).pipe(
+       Stream.mapAccum(
+         (): Media.VideoFrame | undefined => undefined,
+         (last, item): readonly [Media.VideoFrame | undefined, ReadonlyArray<Media.VideoFrame>] => {
+           if (item._tag === "Frame") return [item.frame, [item.frame]];
+           if (last === undefined) return [last, []];
+           return [last, Array.from({ length: Number(item.count) }, () => last)];
+         },
+       ),
+     );
+
+   /** Encodes BGRA frames to H.264 in an MP4, and completes once ffmpeg has written the file. */
+   const toMp4 = Effect.fn("toMp4")(function* <E>(
+     path: string,
+     frames: Stream.Stream<Media.VideoFrame, E>,
+   ) {
+     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+     // Read from now on, so nothing is missed while ffmpeg starts.
+     const queue = yield* Queue.bounded<Media.VideoFrame, Cause.Done>(48);
+     yield* filled(frames).pipe(
+       Stream.catch(() => Stream.empty),
+       Stream.runIntoQueue(queue),
+       Effect.forkScoped({ startImmediately: true }),
+     );
+     const first = yield* Queue.take(queue).pipe(Effect.mapError(() => NoVideo.make({})));
+     const ffmpeg = yield* spawner.spawn(
+       ChildProcess.make("ffmpeg", [
+         ...["-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgra"],
+         ...["-s", `${first.width}x${first.height}`, "-r", "24", "-i", "pipe:0"],
+         ...["-c:v", "libx264", "-pix_fmt", "yuv420p", path],
+       ]),
+     );
+     // The writer ends ffmpeg's input itself when the frames end; ffmpeg then exits.
+     yield* Stream.concat(Stream.succeed(first), Stream.fromQueue(queue)).pipe(
+       Stream.map((frame) => frame.data),
+       Stream.run(ffmpeg.stdin),
+       Effect.ignore,
+       Effect.forkDetach,
+     );
+     return yield* ffmpeg.exitCode;
+   });
+   ```
+
+   The queue holds two seconds of frames, so a short stall in the encoder does not hold up the
+   reader.
+
+3. **One clip, from its start to its end.** The recording starts before the clip is submitted
+   (`startImmediately` subscribes the reader at once) and keeps the frames between the clip's
+   `started` and `ended` facts:
+
+   ```ts
+   const capture = Effect.gen(function* () {
+     const coordinator = yield* CoordinatorClient.CoordinatorClient;
+     const reactor = yield* Reactor.Reactor;
+     const session = yield* reactor.create({
+       model: H3.modelName,
+       tokens: coordinator.tokens({ modelName: H3.modelName, maxSessionDuration: "2 minutes" }),
+     });
+     const h3 = yield* H3.make(session);
+     yield* h3.setAutoplay(true);
+     const media = yield* session.decoded;
+
+     const started = yield* Deferred.make<void>();
+     const ended = yield* Deferred.make<void>();
+     const writing = yield* toMp4(
+       "clip.mp4",
+       media.video("main_video").pipe(
+         Stream.dropUntilEffect(() => Deferred.isDone(started)),
+         Stream.haltWhen(Deferred.await(ended)),
+       ),
+     ).pipe(Effect.forkScoped({ startImmediately: true }));
+
+     const submission = yield* h3.prepare({
+       prompt: "A paper boat on a rain-soaked street",
+       seconds: 5,
+     });
+     yield* submission.submit;
+     const clip = yield* h3.operation(submission);
+     yield* clip.reached("started");
+     yield* Deferred.succeed(started, undefined);
+     yield* clip.ended;
+     yield* Deferred.succeed(ended, undefined);
+
+     const exitCode = yield* Fiber.join(writing);
+     const pressure = yield* media.pressure;
+     yield* Console.log(
+       `ffmpeg exited ${exitCode}; the host dropped ${pressure.droppedVideo} frames`,
+     );
+   }).pipe(Effect.scoped);
+   ```
+
+   Closing the scope closes the session, which terminates it and confirms the end.
+
+4. **Run it.** Provide one of the layers and Node's services, which include the child-process
+   spawner and `Crypto`:
+
+   <Tabs syncKey="edge">
+   <TabItem label="Offline">
+
+   ```ts
+   capture.pipe(Effect.provide(Layer.mergeAll(Offline, NodeServices.layer)), NodeRuntime.runMain);
+   ```
+
+   </TabItem>
+   <TabItem label="Hosted H3">
+
+   ```ts
+   capture.pipe(Effect.provide(Layer.mergeAll(Hosted, NodeServices.layer)), NodeRuntime.runMain);
+   ```
+
+   </TabItem>
+   </Tabs>
+
+   Offline on 2026-09-30, with ffmpeg 6.1, it ran in 12.5 s and wrote a 5.125 s H.264 file of 123
+   frames at 320×180 and 24 fps, with no frame dropped. Hosted H3 sends 1344×768.
+
+</Steps>
+
+The [capture example](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/native/examples)
+is a command line built this way, with the audio on a second pipe, a reference image and an
+`--isolated` switch. The [terminal viewer](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/terminal)
+draws decoded frames in a terminal, offline by default and live with a key.
+
+## Measured performance
+
+The native media path was last measured on September 23, 2026, before the addon moved to napi-rs.
+The queues, owner thread and bounds it measured are unchanged, and the media load tests pass on the
+current addon on Linux x64. A local libwebrtc sender sent 1344×768 BGRA at 24 fps, with its
+congestion controller held at 8 Mbps.
+
+- **Linux x64**, in a 4-vCPU container and on GitHub's runner: every session outside the stall
+  test received 23–24 frames a second, and the bridge never held more than one frame. Audio arrived
+  at about 100 blocks a second with none dropped, and control round trips stayed under 21 ms at
+  p95. End-to-end latency, printed but not asserted, was 19–95 ms at p95 outside the stalls.
+- **macOS arm64**, on GitHub's 3-core runner: sessions received 21.6–24.3 frames a second, the
+  bridge held at most one frame at p95, and no audio was dropped. End-to-end latency reached 332 ms
+  at p95, and audio arrived at 50–65 blocks a second, because the sender's pushes ran 20–60 ms late
+  there; neither delay is the bridge's.
+- **One CPU-bound process per core:** Node passed the whole suite. Bun passed throughput, stall and
+  renewal, but its two-session readers fell just outside their bounds: 3 frames dropped where 2 were
+  allowed, or 4 held at p95 where 2 were.
+
+On hosted H3, in the paid `vertical` and `audio` runs from 2026-09-24 to 09-28, the last of them on
+the current napi-rs addon, the in-process host under Bun received all 124 frames of each 5-second
+clip at 1344×768 and 23.7–24.2 fps, with 48 kHz audio and nothing lost. Over a direct path the media
+arrived at a median 4.9–8.3 Mbps, with 20–22 ms round trips
+([0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md),
+[0.3.1](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.1/summary.md),
+[0.8.0-dev](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dev/summary.md)).
+The isolated host ran an owner under Node in the paid `adoption` check on 2026-09-28
+([evidence](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md)).
+
+## Pitfalls and limits
+
+- **Start the reader before you submit.** A reader subscribed after the clip starts misses its
+  opening frames.
+- **Let the writer end the pipe.** In `@effect/platform-node` `4.0.0-rc.117`, the child-process
+  spawner leaves a child's input pipe without an error listener once its writer is interrupted, so a
+  write still buffered when ffmpeg exits surfaces as an uncaught `EPIPE`. Let the writer finish and end the pipe
+  itself, as above, rather than interrupting it.
+- **Not frame-exact.** The recording starts and stops on the clip's `started` and `ended` facts,
+  which arrive on the control channel; its first and last frames are as close as those facts.
+- **A slow consumer loses frames.** A reader more than a second behind fails with `Overflow`. For a
+  preview, keep only the newest frame.
+- **One video and one audio track.** The native peer accepts at most one incoming video track and
+  one incoming audio track, which is what H3 sends. libwebrtc's callbacks do not yet say which
+  negotiated track a frame belongs to, so a session that declares more fails with
+  `UnsupportedCapability` before negotiation.
+- **Platforms.** Linux x64 with glibc and macOS arm64. Hosted runs so far used Linux x64 only: the
+  macOS addon is qualified in CI, not yet on hosted Reactor.

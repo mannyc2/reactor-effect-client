@@ -3,4 +3,273 @@ title: Run a 24/7 channel
 description: "Keep a channel on air across session caps and broadcast it to many viewers."
 ---
 
-This page is being written.
+import { Aside, Steps, Tabs, TabItem } from "@astrojs/starlight/components";
+
+Keep one H3 channel on air around the clock, across sessions that each end at their cap, and show
+it to any number of viewers from one server that holds the key.
+
+## The pieces
+
+A channel is one `Playout` on a server. Viewers never touch Reactor: they send prompts to your
+server and watch the stream it encodes. The [Playout concept](/reactor-effect-client/concepts/playout/)
+has the whole model; these are the parts a channel uses.
+
+- **Sessions come from `open`.** `H3Source.open({ tokens, onAllocated })` mints a token, allocates
+  an H3 session, runs `onAllocated` with the owner record before it connects, and sets H3 up for a
+  playout: autoplay off until the playout turns it on, and the last frame held between clips. The
+  playout calls `open` for the first session and for each replacement. A session's lifetime is what
+  remains of its token's cap.
+- **Renewal.** `renewal.lead` (30 seconds by default) before a session's cap, the playout opens the
+  replacement. New clips build there; the retiring session plays what it already holds, and the air
+  switches at a clip boundary once it is idle and `renewal.grace` (250 ms) has passed. A session
+  lost early is replaced, and the clips it never aired are rebuilt on the next one.
+- **Lanes,** listed highest first. A lane queues by default, `conflict: "replace"` replaces its
+  waiting items make-before-break, and `conflict: "skip"` refuses an item while one waits or plays
+  (`LaneBusy`). A `cut: true` lane stops a lower lane's playing clip once its own clip is Ready,
+  unless that clip ends within a second.
+- **Filler** is the bottom lane. It keeps a runway of Ready air between `runway.floor` and
+  `runway.target`, built from `filler.clip(context)`, which the playout calls once per clip.
+- **Admission windows.** An item's `window` (`notBefore`, `startBy`, `firm`) counts from its
+  submission. The playout refuses at once, with `WouldMissDeadline`, an item it cannot start by
+  `startBy`. If the plan slips later, a firm item is dropped `late` and a soft one airs late.
+- **Starts.** `Follow` (the default) keeps its lane's order, `Asap` goes at the next boundary ahead
+  of everything waiting, `Manual` is built ahead and held until `release(key)`, and `At` airs at
+  the first boundary after a wall-clock time.
+- **What aired.** `playout.events` reports each item's as-run status, sessions opening and
+  switching, cues, filler, and `Starved` when nothing was Ready. `playout.state` gives the clip on
+  air, the lanes and the runway in seconds. `playout.failure` completes with why the playout
+  stopped.
+- **The picture.** `playout.video` and `playout.audio` are the on-air session's decoded frames and
+  PCM, continuing across renewals.
+
+## Build the channel
+
+<Steps>
+
+1. **Sessions.** Each starts on a token capped at 30 minutes and carries on with tokens bound to
+   it. The owner record is logged here; [Cost control](/reactor-effect-client/guides/cost-control/)
+   writes it somewhere durable.
+
+   ```ts
+   import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+   import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+   import { Effect, Layer, Redacted, Stream } from "effect";
+   import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+   import {
+     CoordinatorClient,
+     H3,
+     H3Source,
+     Playout,
+     Reactor,
+     ReactorTest,
+   } from "reactor-effect-client";
+   import { NativePeer } from "reactor-effect-native";
+
+   const house = [
+     "A slow dolly shot through a sunlit greenhouse full of ferns",
+     "Waves rolling onto a black sand beach at dusk, seen from a low angle",
+     "A paper lantern drifting along a quiet canal at night",
+   ];
+
+   const open = Effect.gen(function* () {
+     const coordinator = yield* CoordinatorClient.CoordinatorClient;
+     return yield* H3Source.open({
+       tokens: coordinator.tokens({ modelName: H3.modelName, maxSessionDuration: "30 minutes" }),
+       onAllocated: ({ allocation }) => Effect.logInfo("session allocated", allocation),
+     });
+   });
+   ```
+
+2. **The playout.** A `breaking` lane that cuts in, viewers' prompts below it, and a house rotation
+   as filler, renewed 45 seconds before each cap:
+
+   ```ts
+   const Channel = Playout.layer({
+     open,
+     lanes: [{ name: "breaking", cut: true }, { name: "viewer" }],
+     filler: {
+       runway: { floor: "8 seconds", target: "16 seconds" },
+       clip: ({ index, seconds }) => ({ prompt: house[index % house.length] ?? "", seconds }),
+     },
+     renewal: { lead: "45 seconds" },
+   });
+   ```
+
+   `filler.clip` gets the length to ask for in `seconds`: usually the shortest `filler.lengths`
+   allows, which keeps boundaries frequent; long enough to cover an item's build when the air would
+   otherwise go dark; or one of equal tiles that fill the gap before an `At` item. A filler request
+   outside H3's limits fails the playout with `InvalidFiller`, since asking again would get the same
+   request.
+
+3. **Admission.** A viewer's prompt starts within 37 seconds, or is refused up front, or, if the
+   plan slips after it was accepted, is dropped `late`. The key makes a retry safe: submitting the
+   same key with the same spec returns the same handle.
+
+   ```ts
+   const submitPrompt = Effect.fn("submitPrompt")(function* (id: string, prompt: string) {
+     const playout = yield* Playout.Playout;
+     return yield* playout.submit({
+       key: Playout.ItemKey.make(`viewer-${id}`),
+       lane: "viewer",
+       request: { prompt, seconds: 8 },
+       window: { startBy: "37 seconds", firm: true },
+     });
+   });
+   ```
+
+   Its failure is a `SubmitError`: `WouldMissDeadline` and `LaneBusy` (ask the viewer to wait),
+   `InvalidItem` (outside H3's limits, naming each field), `KeyMismatch` and `PlayoutClosed`. Map
+   them onto your API's responses with `Effect.catchTags`.
+
+4. **Watching the air.** The events, logged as they happen:
+
+   ```ts
+   const logAir = Effect.gen(function* () {
+     const playout = yield* Playout.Playout;
+     yield* playout.events.pipe(
+       Stream.runForEach((event) => {
+         switch (event._tag) {
+           case "Session":
+             return Effect.logInfo("session", event.event);
+           case "AsRun":
+             return Effect.logInfo("as-run", event.event.key, event.event.status._tag);
+           case "Starved":
+             return Effect.logWarning("nothing Ready to air");
+           default:
+             return Effect.void;
+         }
+       }),
+     );
+   });
+
+   const Air = Layer.effectDiscard(Effect.forkScoped(logAir)).pipe(Layer.provideMerge(Channel));
+   ```
+
+5. **The network edge.** The same channel runs live or offline; only the layers beneath it change.
+   `Layer.launch` runs it until the process is stopped, and closing it on Ctrl-C ends every
+   session.
+
+   <Tabs syncKey="edge">
+   <TabItem label="Offline">
+
+   ```ts
+   const Offline = Air.pipe(
+     Layer.provide(Reactor.layer()),
+     Layer.provide(CoordinatorClient.layer({ apiKey: Redacted.make("offline") })),
+     Layer.provide(
+       Layer.mergeAll(
+         ReactorTest.layer({ timing: ReactorTest.Timing.hosted, apiKey: "offline" }),
+         NodeCrypto.layer,
+       ),
+     ),
+   );
+
+   Layer.launch(Offline).pipe(NodeRuntime.runMain);
+   ```
+
+   </TabItem>
+   <TabItem label="Hosted H3">
+
+   ```ts
+   // The key from REACTOR_API_KEY; each connection's native peer in a child process.
+   const Live = Air.pipe(
+     Layer.provide(Reactor.layer()),
+     Layer.provide(CoordinatorClient.layerConfig),
+     Layer.provide(
+       Layer.mergeAll(NativePeer.layerIsolated(), FetchHttpClient.layer, NodeCrypto.layer),
+     ),
+   );
+
+   Layer.launch(Live).pipe(NodeRuntime.runMain);
+   ```
+
+   </TabItem>
+   </Tabs>
+
+   Offline, it logs a simulated session's owner record, then its `Opened` event with the rest of the
+   30-minute cap as `lifetimeSeconds`. `NativePeer.layerIsolated()` needs Node; on Bun, use
+   `NativePeer.layer()`.
+
+</Steps>
+
+## Broadcast it
+
+`playout.video` and `playout.audio` follow the air across renewals, so one reader of each serves the
+channel's whole life. Encode once and fan the result out:
+
+- **Read** both streams for as long as the channel runs, whether anyone watches or not. A reader
+  that falls more than a second behind fails alone with `Overflow`, which the playout reports as a
+  `ReaderOverflow` event, and reads on from the next frame. For a preview, keep only the newest
+  frame with `Stream.buffer({ capacity: 1, strategy: "sliding" })`.
+- **Encode** the BGRA frames and 16-bit PCM once, for example with ffmpeg reading raw frames on
+  standard input and PCM on a second pipe. A steady 24 fps clock that repeats the newest frame
+  between clips gives the encoder constant-rate input.
+- **Fan out** the encoder's output with `Stream.share`, so every viewer gets the same bytes and no
+  viewer slows another. Viewers never hold a token.
+
+The [live channel](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/livestream)
+example does all of this: one playout on the native host, renewed before each cap, encoded once to
+fragmented MP4 and shared with any number of `<video>` elements, with prompts and an event feed over
+an `HttpApi`. It runs offline by default and live with a key.
+
+**Restreaming.** The same encoder output can go to an RTMP ingest, such as YouTube's or Twitch's,
+with ffmpeg's FLV output. That is application code over the decoded media, and no restream of
+hosted H3 has been run with this SDK yet.
+
+## Session caps as a cost bound
+
+A session bills from `ready` until it ends, so its cap is the most it can cost: at H3's rate on
+2026-09-30, $63 for a 30-minute session. A channel on air all day bills about $3,024 a day, plus
+each renewal's overlap, while the replacement is open and the retiring session finishes: 6 to 9
+seconds in the paid `show` runs, which used a 30-second lead.
+
+To bound the whole channel, count the sessions `open` may make and fail past a budget; the
+[cost control guide](/reactor-effect-client/guides/cost-control/) shows a wrapper. An open refused
+with nothing allocated billed nothing, so while a session holds the air the playout asks again
+later; once nothing is on air, opens that keep failing end the playout after
+`renewal.maxSetupFailures` (3).
+
+## Measured on hosted H3
+
+The paid `show` check runs one playout over three 75-second sessions with a 30-second lead and 5–8
+seconds of filler runway. It passed every criterion twice, on 2026-09-28 and 2026-09-29
+([first](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+[second](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-rc/summary.md)):
+
+- 20 clips and 2,372 frames at 22.2 fps in the first run, no frame lost, and the show's own reader
+  never fell behind;
+- seams of 46–169 ms with no dark frame, and a planned switch between sessions with 420 and 432 ms
+  between clips on air;
+- an edit batch that took effect 0.91–1.05 s before its boundary, its withdrawn clip never aired;
+- cues 0–1 ms from due, and an `At` item 545–559 ms late, never early;
+- a dropped connection back on the same session in 1.64 and 1.84 s, with no replacement opened;
+- a session ended under a playing clip (by moderation, then by the API key) replaced, its Ready clip
+  carried and aired on a session opened 3.17 s after the moderation verdict;
+- a cut lane that stopped a playing clip with one `stop` and a 165–168 ms pause.
+
+The second run's checkout matches the 0.8.0 release's library source except for its version string;
+the first ran on an earlier commit of the same API. The longest hosted run lasted under two
+minutes: no multi-hour session has run yet.
+
+## Pitfalls
+
+- **Lead and cap.** The replacement takes new work from the moment it opens, so a session airs
+  roughly its cap less the lead. Keep the cap long against the lead.
+- **Five sessions per account.** Each renewal holds two sessions for a few seconds, and every other
+  session the account runs counts too.
+- **Moderation.** Reactor ends a session given flagged content, and the verdict names no clip. The
+  playout blames the item whose enqueue went there last, fails it `Moderated`, never builds it
+  again, and stops after `maxModerations` (2) moderated sessions rather than keep opening paid
+  ones.
+- **Supervision.** A stopped playout stays stopped. To restart it, fail with
+  `playout.failure` and retry under a `Schedule`; see the
+  [Playout concept](/reactor-effect-client/concepts/playout/).
+- **A start is a provider fact.** `Started` means H3 reported the clip started, not that a viewer
+  saw a frame.
+- **Media needs decoded frames.** `playout.video` fails with `UnsupportedCapability` on a host with
+  only platform tracks, such as a browser. Run the channel on the native host.
+
+<Aside type="note">
+  `Playout.place` and `follows`, which hold a clip right after the one it was written to follow, are
+  new in 0.9.0 and have run only on `ReactorTest`.
+</Aside>
