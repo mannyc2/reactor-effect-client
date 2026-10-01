@@ -20,7 +20,12 @@ const house = [
   "Waves rolling onto a black sand beach at dusk, seen from a low angle",
   "A paper lantern drifting along a quiet canal at night",
   "A time-lapse of clouds pouring over a mountain ridge",
+  "Steam rising off a still mountain lake at dawn, a heron standing in the shallows",
+  "Snow falling past the lit windows of a small railway station at night",
 ];
+
+/** The house rotation's prompt for the filler clip at `index`. */
+export const housePrompt = (index: number): string => house[index % house.length] ?? "";
 
 /**
  * The channel's playout: viewers' prompts in one lane, the house rotation as
@@ -72,10 +77,7 @@ export const layer = Layer.unwrap(
           floor: Duration.seconds(settings.clipSeconds),
           target: Duration.seconds(2 * settings.clipSeconds),
         },
-        clip: ({ index }) => ({
-          prompt: house[index % house.length] ?? "",
-          seconds: settings.clipSeconds,
-        }),
+        clip: ({ index }) => ({ prompt: housePrompt(index), seconds: settings.clipSeconds }),
       },
       renewal: { lead: settings.lead },
     });

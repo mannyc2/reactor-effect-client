@@ -3,69 +3,994 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Reactor live channel</title>
+    <meta name="color-scheme" content="dark" />
+    <title>Live channel</title>
     <style>
-      body {
+      :root {
+        --bg: #07080c;
+        --panel: #0e1117;
+        --panel-2: #131722;
+        --line: #1d2230;
+        --text: #e9ecf3;
+        --muted: #8c94a8;
+        --dim: #5c6478;
+        --red: #ff3b4e;
+        --amber: #f5a524;
+        --green: #2ed47a;
+        --blue: #5aa9ff;
+        --violet: #a78bfa;
         font:
-          15px/1.5 system-ui,
+          15px/1.45 Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          Roboto,
           sans-serif;
-        max-width: 960px;
+        color: var(--text);
+        background: var(--bg);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(1200px 500px at 15% -10%, #1a1030 0%, transparent 60%),
+          radial-gradient(900px 400px at 100% 0%, #0b2233 0%, transparent 55%), var(--bg);
+      }
+      [hidden] {
+        display: none !important;
+      }
+
+      /* Header */
+      .bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 14px 24px;
+        border-bottom: 1px solid var(--line);
+        background: rgb(7 8 12 / 70%);
+        backdrop-filter: blur(10px);
+        position: sticky;
+        top: 0;
+        z-index: 5;
+      }
+      .brand,
+      .meta {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        min-width: 0;
+      }
+      .mark {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        background: conic-gradient(from 210deg, var(--red), var(--violet), var(--blue), var(--red));
+        box-shadow: 0 0 24px rgb(255 59 78 / 35%);
+        flex: none;
+      }
+      h1 {
+        margin: 0;
+        font-size: 19px;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        white-space: nowrap;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        background: var(--panel-2);
+        color: var(--muted);
+        border: 1px solid var(--line);
+      }
+      .badge i {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .badge[data-state="live"] {
+        background: var(--red);
+        color: #fff;
+        border-color: transparent;
+      }
+      .badge[data-state="live"] i {
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+      .badge[data-state="buffering"] {
+        color: var(--amber);
+      }
+      @keyframes pulse {
+        50% {
+          opacity: 0.25;
+        }
+      }
+      .pill {
+        font-size: 12.5px;
+        color: var(--muted);
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .pill[data-mode="simulated"] {
+        color: #c4b5fd;
+        border-color: #3b2f63;
+        background: rgb(167 139 250 / 8%);
+      }
+      .viewers {
+        font-size: 13px;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .viewers b {
+        color: var(--text);
+      }
+      .feed {
+        font-size: 12.5px;
+        color: var(--amber);
+        white-space: nowrap;
+      }
+
+      /* Layout */
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 400px;
+        gap: 20px;
+        padding: 20px 24px 28px;
+        max-width: 1720px;
         margin: 0 auto;
-        padding: 16px;
+      }
+      .stage {
+        min-width: 0;
+      }
+      .side {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        min-width: 0;
+        max-height: calc(100vh - 100px);
+        position: sticky;
+        top: 80px;
+      }
+      @media (max-width: 1100px) {
+        .layout {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .side {
+          position: static;
+          max-height: none;
+        }
+      }
+
+      /* The screen */
+      .screen {
+        position: relative;
+        aspect-ratio: 16 / 9;
+        border-radius: 14px;
+        overflow: hidden;
+        background: #000;
+        border: 1px solid var(--line);
+        box-shadow:
+          0 30px 80px rgb(0 0 0 / 55%),
+          0 0 0 1px rgb(255 255 255 / 2%) inset;
       }
       video {
         width: 100%;
-        aspect-ratio: 16 / 9;
+        height: 100%;
+        display: block;
+        object-fit: contain;
         background: #000;
       }
-      form {
+      .bug {
+        position: absolute;
+        top: 16px;
+        left: 18px;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: rgb(255 255 255 / 85%);
+        text-shadow: 0 1px 8px rgb(0 0 0 / 70%);
         display: flex;
+        align-items: center;
         gap: 8px;
-        margin: 12px 0 4px;
+      }
+      .bug i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--red);
+        box-shadow: 0 0 10px var(--red);
+      }
+      .sound {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        font: inherit;
+        font-size: 12.5px;
+        color: #fff;
+        background: rgb(0 0 0 / 45%);
+        border: 1px solid rgb(255 255 255 / 18%);
+        border-radius: 999px;
+        padding: 5px 12px;
+        cursor: pointer;
+        backdrop-filter: blur(6px);
+      }
+      .sound:hover {
+        background: rgb(0 0 0 / 65%);
+      }
+      .third {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        padding: 56px 24px 18px;
+        background: linear-gradient(to top, rgb(0 0 0 / 85%), rgb(0 0 0 / 55%) 55%, transparent);
+      }
+      .kicker {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+      .tag {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        padding: 3px 8px;
+        border-radius: 4px;
+        background: var(--red);
+        color: #fff;
+      }
+      .tag[data-state="starting"],
+      .tag[data-state="between"] {
+        background: rgb(255 255 255 / 14%);
+      }
+      .left {
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+        font-size: 12.5px;
+        color: rgb(255 255 255 / 75%);
+      }
+      .title {
+        margin: 0;
+        font-size: clamp(17px, 2vw, 24px);
+        font-weight: 650;
+        line-height: 1.25;
+        text-shadow: 0 2px 14px rgb(0 0 0 / 60%);
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .progress {
+        height: 3px;
+        margin: 12px 0 8px;
+        border-radius: 3px;
+        background: rgb(255 255 255 / 18%);
+        overflow: hidden;
+      }
+      .progress i {
+        display: block;
+        height: 100%;
+        width: 0;
+        background: linear-gradient(90deg, var(--red), #ff7a85);
+      }
+      .fine {
+        margin: 0;
+        font-size: 12px;
+        color: rgb(255 255 255 / 62%);
+      }
+      .curtain {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-content: center;
+        gap: 6px;
+        text-align: center;
+        background: rgb(7 8 12 / 82%);
+      }
+      .curtain strong {
+        font-size: 22px;
+      }
+      .curtain span {
+        color: var(--muted);
+      }
+
+      /* Chips */
+      .chip {
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        padding: 2px 7px;
+        border-radius: 5px;
+        background: rgb(255 255 255 / 10%);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .chip[data-kind="viewer"] {
+        color: var(--blue);
+        background: rgb(90 169 255 / 12%);
+      }
+      .chip[data-kind="mine"] {
+        color: #0b1020;
+        background: var(--blue);
+      }
+      .chip[data-kind="house"] {
+        color: #c4b5fd;
+        background: rgb(167 139 250 / 12%);
+      }
+      .chip[data-kind="Ready"],
+      .chip[data-kind="ended"] {
+        color: var(--green);
+        background: rgb(46 212 122 / 12%);
+      }
+      .chip[data-kind="Building"] {
+        color: var(--amber);
+        background: repeating-linear-gradient(
+          -45deg,
+          rgb(245 165 36 / 16%) 0 6px,
+          rgb(245 165 36 / 8%) 6px 12px
+        );
+      }
+      .chip[data-kind="air"] {
+        color: #fff;
+        background: var(--red);
+      }
+      .chip[data-kind="dropped"] {
+        color: var(--amber);
+        background: rgb(245 165 36 / 12%);
+      }
+      .chip[data-kind="failed"] {
+        color: var(--red);
+        background: rgb(255 59 78 / 12%);
+      }
+      .chip[data-kind="unknown"] {
+        color: var(--violet);
+        background: rgb(167 139 250 / 12%);
+      }
+
+      /* The prompt box */
+      .ask {
+        margin-top: 16px;
+        padding: 16px;
+        border-radius: 14px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+      }
+      .ask label {
+        display: block;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
       }
       input {
         flex: 1;
-        padding: 6px 8px;
+        min-width: 0;
         font: inherit;
+        color: var(--text);
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 11px 14px;
+        outline: none;
       }
-      #log {
-        font:
-          12px/1.6 ui-monospace,
-          monospace;
-        white-space: pre-wrap;
-        max-height: 18em;
+      input:focus {
+        border-color: #3a4560;
+        box-shadow: 0 0 0 3px rgb(90 169 255 / 15%);
+      }
+      button#send {
+        font: inherit;
+        font-weight: 700;
+        color: #fff;
+        background: linear-gradient(180deg, #ff4d5e, #e8293c);
+        border: 0;
+        border-radius: 10px;
+        padding: 0 18px;
+        cursor: pointer;
+        white-space: nowrap;
+        min-width: 140px;
+      }
+      button#send:disabled {
+        cursor: default;
+        color: var(--muted);
+        background: var(--panel-2);
+        box-shadow: 0 0 0 1px var(--line) inset;
+      }
+      .note {
+        margin: 10px 2px 0;
+        min-height: 1.45em;
+        font-size: 13.5px;
+        color: var(--muted);
+      }
+      .note[data-kind="ok"] {
+        color: var(--green);
+      }
+      .note[data-kind="busy"] {
+        color: var(--amber);
+      }
+      .note[data-kind="error"] {
+        color: var(--red);
+      }
+
+      /* Side cards */
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px 16px;
+        min-height: 0;
+      }
+      .card h2 {
+        margin: 0 0 10px;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--dim);
+        display: flex;
+        justify-content: space-between;
+      }
+      .log {
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 160px;
+      }
+      .log .list {
         overflow: auto;
+        flex: 1;
+      }
+      .next .list {
+        max-height: 330px;
+        overflow: auto;
+      }
+      .next .when {
+        min-width: 14px;
+      }
+      .list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .list li {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 2px 10px;
+        padding: 9px 0;
+        border-top: 1px solid var(--line);
+      }
+      .list li:first-child {
+        border-top: 0;
+        padding-top: 2px;
+      }
+      .list .when {
+        grid-row: span 2;
+        font-variant-numeric: tabular-nums;
+        font-size: 12px;
+        color: var(--dim);
+        padding-top: 2px;
+        min-width: 58px;
+      }
+      .list .what {
+        font-size: 13.5px;
+        line-height: 1.35;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+      .list .what.quiet {
+        color: var(--muted);
+        font-style: italic;
+      }
+      .list .tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+      }
+      .empty {
+        font-size: 13px;
+        color: var(--dim);
+        padding: 4px 0;
+        border: 0 !important;
+        display: block !important;
+      }
+      .facts {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 7px 14px;
+        margin: 0;
+        font-size: 13px;
+      }
+      .facts dt {
+        color: var(--dim);
+      }
+      .facts dd {
+        margin: 0;
+        font-variant-numeric: tabular-nums;
+        overflow-wrap: anywhere;
+      }
+      .facts code {
+        font:
+          12.5px ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        color: var(--text);
+      }
+      .facts .soft {
+        color: var(--muted);
+      }
+      footer {
+        text-align: center;
+        font-size: 12px;
+        color: var(--dim);
+        padding: 0 0 22px;
+      }
+      footer a {
+        color: var(--muted);
+      }
+      /* On a phone the caption goes under the picture, and the header wraps. */
+      @media (max-width: 700px) {
+        .bar {
+          flex-wrap: wrap;
+          padding: 10px 14px;
+          row-gap: 8px;
+        }
+        .meta {
+          width: 100%;
+          justify-content: space-between;
+        }
+        .layout {
+          padding: 12px;
+          gap: 12px;
+        }
+        .screen {
+          aspect-ratio: auto;
+        }
+        video {
+          aspect-ratio: 16 / 9;
+          height: auto;
+        }
+        .third {
+          position: static;
+          padding: 12px 14px 14px;
+          background: var(--panel);
+          border-top: 1px solid var(--line);
+        }
+        .title {
+          text-shadow: none;
+        }
+        .row {
+          flex-direction: column;
+        }
+        button#send {
+          padding: 11px 18px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .badge i {
+          animation: none !important;
+        }
       }
     </style>
   </head>
   <body>
-    <h1>Reactor live channel</h1>
-    <video id="video" autoplay muted playsinline controls></video>
-    <form id="form">
-      <input id="prompt" maxlength="2000" placeholder="Describe the next clip" required />
-      <button>Send</button>
-    </form>
-    <p id="note"></p>
-    <div id="log"></div>
+    <header class="bar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"></span>
+        <h1 id="name">Live channel</h1>
+        <span id="badge" class="badge" data-state="connecting"
+          ><i></i><b id="badge-text">Connecting</b></span
+        >
+      </div>
+      <div class="meta">
+        <span id="feed" class="feed" hidden>Reconnecting to the channel…</span>
+        <span id="mode" class="pill" hidden></span>
+        <span id="viewers" class="viewers"></span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="stage">
+        <div class="screen">
+          <video id="video" autoplay muted playsinline></video>
+          <div class="bug"><i></i><span id="bug"></span></div>
+          <button id="sound" class="sound" type="button">Sound off</button>
+          <div id="curtain" class="curtain" hidden>
+            <strong id="curtain-title">Off air</strong><span id="curtain-text"></span>
+          </div>
+          <div id="third" class="third" hidden>
+            <div class="kicker">
+              <span id="now-tag" class="tag">Now</span>
+              <span id="now-origin" class="chip"></span>
+              <span id="now-left" class="left"></span>
+            </div>
+            <p id="now-prompt" class="title"></p>
+            <div class="progress"><i id="now-bar"></i></div>
+            <p id="now-fine" class="fine"></p>
+          </div>
+        </div>
+
+        <form id="form" class="ask" autocomplete="off">
+          <label for="prompt" id="ask-label">Suggest the next scene</label>
+          <div class="row">
+            <input
+              id="prompt"
+              maxlength="2000"
+              placeholder="A paper boat drifting down a rain-soaked street at night"
+              required
+            />
+            <button id="send">Send to air</button>
+          </div>
+          <p id="note" class="note" role="status"></p>
+        </form>
+      </section>
+
+      <aside class="side">
+        <section class="card next">
+          <h2>Up next</h2>
+          <ol id="next" class="list"></ol>
+        </section>
+        <section class="card">
+          <h2>Session</h2>
+          <dl id="session" class="facts"></dl>
+        </section>
+        <section class="card log">
+          <h2><span>As-run</span><span id="asrun-count"></span></h2>
+          <ol id="asrun" class="list"></ol>
+        </section>
+      </aside>
+    </main>
+    <footer>
+      One Reactor H3 playout, encoded once and watched by everyone ·
+      <a href="/docs">API</a>
+    </footer>
+
     <script type="module">
-      const video = document.getElementById("video");
-      const note = document.getElementById("note");
-      const log = document.getElementById("log");
-      const write = (text) => {
-        log.textContent = `${new Date().toLocaleTimeString()}  ${text}\n${log.textContent}`.slice(
-          0,
-          20000,
+      // Everything below is drawn from the server's status, which the event
+      // feed sends first and again at every change. The page derives only the
+      // clock arithmetic (progress, countdowns) and the state of its own video.
+      const $ = (id) => document.getElementById(id);
+      const video = $("video");
+      const mine = new Set(JSON.parse(sessionStorage.getItem("mine") ?? "[]"));
+      let last = sessionStorage.getItem("last");
+      let status = null;
+      let offset = 0;
+      let picture = "connecting";
+      let retryUntil = 0;
+
+      const now = () => Date.now() + offset;
+      const clock = (ms) => new Date(ms - offset).toLocaleTimeString([], { hour12: false });
+      const span = (ms) => {
+        const seconds = Math.max(0, Math.ceil(ms / 1000));
+        return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+      };
+      const short = (id) => `…${id.slice(-6)}`;
+      const make = (tag, className, text) => {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      };
+      const chip = (text, kind) => {
+        const node = make("span", "chip", text);
+        node.dataset.kind = kind;
+        return node;
+      };
+
+      // Who a clip is from, and its words.
+      const origin = (clip) => {
+        switch (clip.origin) {
+          case "viewer":
+            return mine.has(clip.key) ? ["Your prompt", "mine"] : ["Viewer", "viewer"];
+          case "house":
+            return ["House rotation", "house"];
+          default:
+            return ["Other clip", "other"];
+        }
+      };
+      const words = (clip) => {
+        if (clip.prompt !== null) return [clip.prompt, false];
+        if (clip.origin === "house") return ["From the house rotation", true];
+        return ["A clip this channel did not send", true];
+      };
+
+      // How a clip settled, in the playout's words.
+      const outcome = (entry) => {
+        const settled = entry.outcome;
+        if (settled === null) return ["On air", "air"];
+        switch (settled._tag) {
+          case "Ended": {
+            const seconds =
+              settled.airedSeconds ??
+              (entry.startedAt === null ? null : (settled.at - entry.startedAt) / 1000);
+            const parts = [
+              "Ended",
+              settled.termination,
+              seconds === null ? null : `${seconds.toFixed(1)} s`,
+            ];
+            return [parts.filter((part) => part !== null).join(" · "), "ended"];
+          }
+          case "Dropped":
+            return [`Dropped · ${settled.reason}`, "dropped"];
+          case "Failed":
+            return [`Failed · ${settled.reason}`, "failed"];
+          default:
+            return [settled._tag, "unknown"];
+        }
+      };
+
+      // The badge: on air as the server says, and playing here.
+      const renderBadge = () => {
+        const badge = $("badge");
+        let state = picture;
+        if (status?.offAir) state = "off";
+        const labels = {
+          live: "Live",
+          buffering: "Buffering",
+          connecting: "Connecting",
+          off: "Off air",
+        };
+        badge.dataset.state = state;
+        $("badge-text").textContent = labels[state] ?? "Connecting";
+      };
+
+      const renderHeader = () => {
+        if (status === null) return;
+        $("name").textContent = status.name;
+        $("bug").textContent = status.name;
+        document.title = `${status.name} · live`;
+        const mode = $("mode");
+        mode.hidden = false;
+        mode.dataset.mode = status.mode;
+        mode.textContent =
+          status.mode === "simulated"
+            ? "Simulated Reactor · offline, nothing billed"
+            : "Hosted Reactor H3";
+        const viewers = $("viewers");
+        viewers.replaceChildren(make("b", "", String(status.viewers)), ` watching`);
+        $("ask-label").textContent =
+          `Suggest the next scene · it airs if it can start within ${Math.round(status.startWithinSeconds)} s`;
+        const off = status.offAir !== null;
+        $("curtain").hidden = !off;
+        if (off) $("curtain-text").textContent = status.offAir;
+        renderBadge();
+      };
+
+      // The lower third: what the session reports on air, and whether the
+      // broadcast has received a frame since that start.
+      const renderNow = () => {
+        if (status === null || status.offAir !== null) {
+          $("third").hidden = true;
+          return;
+        }
+        $("third").hidden = false;
+        const playing = status.playing;
+        const tag = $("now-tag");
+        if (playing === null) {
+          const next = status.upNext[0];
+          tag.textContent = "Between clips";
+          tag.dataset.state = "between";
+          $("now-origin").hidden = true;
+          $("now-left").textContent = "";
+          $("now-prompt").textContent = next
+            ? `Next: ${words(next)[0]}`
+            : "The house rotation fills the air";
+          $("now-bar").style.width = "0";
+          $("now-fine").textContent = "Nothing is on air at this moment.";
+          return;
+        }
+        const [label, kind] = origin(playing);
+        const pictured = playing.pictureAt !== null;
+        tag.textContent = pictured ? "Now" : "Starting";
+        tag.dataset.state = pictured ? "now" : "starting";
+        const source = $("now-origin");
+        source.hidden = false;
+        source.textContent = label;
+        source.dataset.kind = kind;
+        $("now-prompt").textContent = words(playing)[0];
+        const length = playing.seconds === null ? null : playing.seconds * 1000;
+        const elapsed = now() - playing.startedAt;
+        $("now-bar").style.width =
+          length === null ? "0" : `${Math.min(100, (elapsed / length) * 100).toFixed(1)}%`;
+        $("now-left").textContent = length === null ? "" : `${span(length - elapsed)} left`;
+        $("now-fine").textContent = pictured
+          ? `Started ${clock(playing.startedAt)} as the session reported · picture reached the broadcast ${Math.max(0, playing.pictureAt - playing.startedAt)} ms later`
+          : `Started ${clock(playing.startedAt)} as the session reported · no picture has reached the broadcast since`;
+      };
+
+      const renderNext = () => {
+        const list = $("next");
+        const rows = status.upNext.map((clip, index) => {
+          const row = make("li");
+          row.append(make("span", "when", String(index + 1)));
+          const [text, quiet] = words(clip);
+          row.append(make("span", quiet ? "what quiet" : "what", text));
+          const tags = make("span", "tags");
+          const [label, kind] = origin(clip);
+          tags.append(chip(clip.phase, clip.phase), chip(label, kind));
+          if (clip.afterSwitch) tags.append(chip("after the switch", "other"));
+          row.append(tags);
+          return row;
+        });
+        list.replaceChildren(
+          ...(rows.length > 0
+            ? rows
+            : [make("li", "empty", "Nothing lined up yet: the house rotation fills the air.")]),
         );
       };
 
-      // One long fragmented MP4. It ends when the encoder restarts, so reconnect;
-      // and jump to the live edge whenever playback falls behind it.
+      const renderSession = () => {
+        if (status === null) return;
+        const facts = $("session");
+        const t = now();
+        const rows = [];
+        const add = (term, ...value) => {
+          const dd = make("dd");
+          dd.append(...value);
+          rows.push(make("dt", "", term), dd);
+        };
+        const onAir = status.sessions.find((session) => session.role === "on-air");
+        const next = status.sessions.find((session) => session.role === "replacement");
+        if (onAir === undefined) add("On air", make("span", "soft", "Opening a session…"));
+        else {
+          add(
+            "On air",
+            make("code", "", short(onAir.sessionId)),
+            make("span", "soft", onAir.openedAt === null ? "" : ` since ${clock(onAir.openedAt)}`),
+          );
+          if (onAir.endsAt !== null)
+            add(
+              "Cap",
+              `${clock(onAir.endsAt)} `,
+              make("span", "soft", `in ${span(onAir.endsAt - t)}`),
+            );
+          if (next !== undefined)
+            add(
+              "Renewal",
+              make("code", "", short(next.sessionId)),
+              make(
+                "span",
+                "soft",
+                " is open; it takes the air once the session on air has played what it holds",
+              ),
+            );
+          else if (onAir.renewsAt !== null)
+            add(
+              "Renewal",
+              onAir.renewsAt > t ? `opens ${clock(onAir.renewsAt)} ` : "opening the replacement",
+              make("span", "soft", onAir.renewsAt > t ? `in ${span(onAir.renewsAt - t)}` : ""),
+            );
+        }
+        const switched = status.switches[0];
+        if (switched !== undefined)
+          add(
+            "Last switch",
+            make("code", "", short(switched.from)),
+            " → ",
+            make("code", "", short(switched.to)),
+            make("span", "soft", ` at ${clock(switched.at)}`),
+          );
+        const reconnects = status.sessions.reduce(
+          (total, session) => total + session.reconnects,
+          0,
+        );
+        const reconnecting = status.sessions.some((session) => session.reconnecting);
+        add("Reconnects", reconnecting ? "reconnecting now" : String(reconnects));
+        add("Air secured", `${status.runwaySeconds.toFixed(1)} s`);
+        add("Ran dry", status.starved === 0 ? "never" : `${status.starved} times`);
+        if (status.replaced > 0) add("Sessions lost", String(status.replaced));
+        facts.replaceChildren(...rows);
+      };
+
+      const renderAsRun = () => {
+        const list = $("asrun");
+        $("asrun-count").textContent =
+          status.asRun.length > 0 ? `${status.asRun.length} latest` : "";
+        const rows = status.asRun.map((entry) => {
+          const row = make("li");
+          const when = entry.startedAt ?? entry.outcome?.at ?? null;
+          row.append(make("span", "when", when === null ? "" : clock(when)));
+          const [text, quiet] = words(entry);
+          row.append(make("span", quiet ? "what quiet" : "what", text));
+          const tags = make("span", "tags");
+          const [label, kind] = origin(entry);
+          const [result, resultKind] = outcome(entry);
+          tags.append(chip(result, resultKind), chip(label, kind));
+          if (entry.startedAt !== null && entry.pictureAt === null && entry.outcome !== null)
+            tags.append(chip("no picture received", "unknown"));
+          row.append(tags);
+          return row;
+        });
+        list.replaceChildren(
+          ...(rows.length > 0 ? rows : [make("li", "empty", "Nothing has aired yet.")]),
+        );
+      };
+
+      // The viewer's own prompt, followed through the status.
+      const followMine = () => {
+        if (last === null || status === null || retryUntil > Date.now()) return;
+        if (status.playing?.key === last) return setNote("Your prompt is on air now.", "ok");
+        const aired = status.asRun.find((entry) => entry.key === last);
+        if (aired?.outcome) {
+          const [result] = outcome(aired);
+          const kind = aired.outcome._tag === "Ended" ? "ok" : "error";
+          return setNote(`Your prompt: ${result}.`, kind);
+        }
+        const lined = status.upNext.find((clip) => clip.key === last);
+        if (lined) setNote(`Your prompt is lined up (${lined.phase}).`, "ok");
+      };
+
+      const setNote = (text, kind) => {
+        $("note").textContent = text;
+        $("note").dataset.kind = kind;
+      };
+
+      const renderRetry = () => {
+        const send = $("send");
+        const left = Math.ceil((retryUntil - Date.now()) / 1000);
+        if (left > 0) {
+          send.disabled = true;
+          send.textContent = `Try again in ${left} s`;
+          setNote(`The next clips are already lined up. Try again in ${left} s.`, "busy");
+        } else if (send.disabled && retryUntil !== 0) {
+          retryUntil = 0;
+          send.disabled = false;
+          send.textContent = "Send to air";
+          setNote("There is room again: send your prompt.", "");
+        }
+      };
+
+      const render = () => {
+        renderHeader();
+        renderNow();
+        renderNext();
+        renderSession();
+        renderAsRun();
+        followMine();
+      };
+
+      // One long fragmented MP4. It ends when the encoder restarts, so
+      // reconnect; and jump to the live edge whenever playback falls behind it.
       const connect = () => {
         video.src = `/live.mp4?at=${Date.now()}`;
         video.play().catch(() => {});
       };
-      video.addEventListener("error", () => setTimeout(connect, 1000));
-      video.addEventListener("ended", () => setTimeout(connect, 1000));
+      const setPicture = (state) => {
+        picture = state;
+        renderBadge();
+      };
+      video.addEventListener("playing", () => setPicture("live"));
+      video.addEventListener("waiting", () => setPicture("buffering"));
+      for (const name of ["error", "ended"])
+        video.addEventListener(name, () => {
+          setPicture("connecting");
+          setTimeout(connect, 1000);
+        });
       setInterval(() => {
         const ranges = video.buffered;
         const edge = ranges.length > 0 ? ranges.end(ranges.length - 1) : 0;
@@ -73,41 +998,61 @@
       }, 1000);
       connect();
 
-      const describe = (event) => {
-        switch (event._tag) {
-          case "Clip":
-            return `clip ${event.clipId.slice(-8)} ${event.phase}${event.prompt ? `: ${event.prompt}` : ""}`;
-          case "Renewal":
-            return `renewal ${event.phase}${event.session ? ` (session ${event.session.slice(-8)})` : ""}${event.lostClips ? `, ${event.lostClips} clips lost` : ""}`;
-          case "Media":
-            return `media ${event.state}${event.session ? ` (session ${event.session.slice(-8)})` : ""}`;
-          case "Starved":
-            return "nothing ready to play";
-          case "OffAir":
-            return `off air: ${event.reason}`;
-        }
-      };
-      new EventSource("/api/events").onmessage = (message) =>
-        write(describe(JSON.parse(message.data)));
+      $("sound").addEventListener("click", () => {
+        video.muted = !video.muted;
+        $("sound").textContent = video.muted ? "Sound off" : "Sound on";
+      });
 
-      document.getElementById("form").addEventListener("submit", async (submit) => {
+      const feed = new EventSource("/api/events");
+      feed.onmessage = (message) => {
+        status = JSON.parse(message.data);
+        offset = status.at - Date.now();
+        $("feed").hidden = true;
+        render();
+      };
+      feed.onerror = () => {
+        $("feed").hidden = false;
+      };
+
+      setInterval(() => {
+        renderNow();
+        renderSession();
+        renderRetry();
+      }, 250);
+
+      $("form").addEventListener("submit", async (submit) => {
         submit.preventDefault();
-        const input = document.getElementById("prompt");
-        const response = await fetch("/api/prompts", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ prompt: input.value.trim() }),
-        });
-        const body = await response.json().catch(() => ({}));
-        if (response.ok && body._tag === "Accepted") {
-          note.textContent = `Queued as clip ${body.clipId.slice(-8)}.`;
-          input.value = "";
-        } else if (response.ok) {
-          note.textContent = "Sent, but its outcome is unknown; watch the log.";
-        } else if (response.status === 429) {
-          note.textContent = `${body.message}. Try again in ${body.retryAfterSeconds} s.`;
-        } else {
-          note.textContent = body.message ?? `The channel refused the prompt (${response.status}).`;
+        const input = $("prompt");
+        const send = $("send");
+        send.disabled = true;
+        try {
+          const response = await fetch("/api/prompts", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ prompt: input.value.trim() }),
+          });
+          const body = await response.json().catch(() => ({}));
+          if (response.status === 202) {
+            mine.add(body.key);
+            last = body.key;
+            sessionStorage.setItem("mine", JSON.stringify([...mine]));
+            sessionStorage.setItem("last", last);
+            input.value = "";
+            setNote("Taken. Watch for it in Up next.", "ok");
+            if (status !== null) render();
+          } else if (response.status === 429) {
+            retryUntil = Date.now() + body.retryAfterSeconds * 1000;
+          } else {
+            setNote(
+              body.message ?? `The channel refused the prompt (${response.status}).`,
+              "error",
+            );
+          }
+        } catch {
+          setNote("The channel can't be reached.", "error");
+        } finally {
+          if (retryUntil <= Date.now()) send.disabled = false;
+          renderRetry();
         }
       });
     </script>
