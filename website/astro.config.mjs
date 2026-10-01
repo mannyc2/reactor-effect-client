@@ -1,6 +1,7 @@
 // @ts-check
 import starlight from "@astrojs/starlight";
 import { defineConfig } from "astro/config";
+import starlightLinksValidator from "starlight-links-validator";
 import starlightLlmsTxt from "starlight-llms-txt";
 
 const repository = "https://github.com/mannyc2/reactor-effect-client";
@@ -32,6 +33,10 @@ export default defineConfig({
       lastUpdated: true,
       customCss: ["./src/styles/theme.css"],
       plugins: [
+        // Fails the build on a broken internal link or anchor.
+        starlightLinksValidator({
+          exclude: ["/playground/", "/reactor-effect-client/playground/"],
+        }),
         starlightLlmsTxt({
           projectName: "reactor-effect",
           description:
