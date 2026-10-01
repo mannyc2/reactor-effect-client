@@ -203,18 +203,18 @@ export interface ItemSpec extends ClipSpec {
    * before that clip. It waits, not airing, until that clip has aired, and is
    * built only while the air ahead of it outlasts its build, or before builds
    * are measured once that clip is Ready ahead of it. Autoplay is fenced
-   * before its build, once a clip plays on that session, so an early end
-   * cannot air it before that clip. If it is not Ready, on a session still
-   * open, when that clip ends, fails on air or is lost on air with its
-   * session, it is dropped as `displaced`; a planned switch keeps it. While it
-   * waits on a session, that session starts its clips with a provider
-   * command, a round trip after each boundary, so a command whose outcome is
-   * unknown can hold the air there dark until the provider's reply deadline.
-   * Following an item in a pending batch, it may be built and then dropped
-   * before the batch commits. It gets no filler cover; with `continuity`, it
-   * builds independent rather than miss; a replacement keeps it. A firm
-   * window on it is checked against a projection that puts it behind
-   * everything queued, so it is likely refused. It is refused with
+   * before its build, once a clip the provider reported starting plays on
+   * that session, so an early end cannot air it before that clip. If it is
+   * not Ready, on a session still open, when that clip ends, fails on air or
+   * is lost on air with its session, it is dropped as `displaced`; a planned
+   * switch keeps it. While it waits on a session, that session starts its
+   * clips with a provider command, a round trip after each boundary, so a
+   * command whose outcome is unknown can hold the air there dark until the
+   * provider's reply deadline. Following an item in a pending batch, it may be
+   * built and then dropped before the batch commits. It gets no filler cover;
+   * with `continuity`, it builds independent rather than miss; a replacement
+   * keeps it. A firm window on it is checked against a projection that puts
+   * it behind everything queued, so it is likely refused. It is refused with
    * `InvalidItem` in a cutting lane, naming the item's own key or a group key,
    * or naming filler on a playout without filler or by an index that is not a
    * whole number.
@@ -252,18 +252,18 @@ export interface InsertSpec extends ClipSpec {
    * before that clip. It waits, not airing, until that clip has aired, and is
    * built only while the air ahead of it outlasts its build, or before builds
    * are measured once that clip is Ready ahead of it. Autoplay is fenced
-   * before its build, once a clip plays on that session, so an early end
-   * cannot air it before that clip. If it is not Ready, on a session still
-   * open, when that clip ends, fails on air or is lost on air with its
-   * session, it is dropped as `displaced`; a planned switch keeps it. While it
-   * waits on a session, that session starts its clips with a provider
-   * command, a round trip after each boundary, so a command whose outcome is
-   * unknown can hold the air there dark until the provider's reply deadline.
-   * Following an item in a pending batch, it may be built and then dropped
-   * before the batch commits. It gets no filler cover; with `continuity`, it
-   * builds independent rather than miss; a replacement keeps it. A firm
-   * window on it is checked against a projection that puts it behind
-   * everything queued, so it is likely refused. It is refused with
+   * before its build, once a clip the provider reported starting plays on
+   * that session, so an early end cannot air it before that clip. If it is
+   * not Ready, on a session still open, when that clip ends, fails on air or
+   * is lost on air with its session, it is dropped as `displaced`; a planned
+   * switch keeps it. While it waits on a session, that session starts its
+   * clips with a provider command, a round trip after each boundary, so a
+   * command whose outcome is unknown can hold the air there dark until the
+   * provider's reply deadline. Following an item in a pending batch, it may be
+   * built and then dropped before the batch commits. It gets no filler cover;
+   * with `continuity`, it builds independent rather than miss; a replacement
+   * keeps it. A firm window on it is checked against a projection that puts
+   * it behind everything queued, so it is likely refused. It is refused with
    * `InvalidItem` in a cutting lane, naming the item's own key or a group key,
    * or naming filler on a playout without filler or by an index that is not a
    * whole number.

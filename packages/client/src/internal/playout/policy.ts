@@ -329,6 +329,11 @@ interface Session {
   /** A selected follower fences autoplay before its enqueue is sent. */
   readonly guardItem?: ItemKey | undefined;
   /**
+   * The clip whose start a `Started` event last reported here. A state read alone may name a clip
+   * H3 still holds armed through its seam.
+   */
+  readonly startSeen?: string | undefined;
+  /**
    * An explicit start goes again only after its queues change or a second passes: one that
    * failed, or one that succeeded while its start is not seen yet.
    */
@@ -2343,6 +2348,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           break;
         case "Started":
           started(input.sessionId, event.clip);
+          updateSession(input.sessionId, { startSeen: event.clip.clipId });
           break;
         case "Ended":
           ended(input.sessionId, event);
@@ -2634,9 +2640,14 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     }
   }
 
-  // Each session's commands go one at a time on a lane of its own.
+  // Each session's commands go one at a time on a lane of its own. A session whose follower did
+  // not go on to its build once its fence was up looks again, so the fence comes down now.
+  const released = new Set<string>();
   endCut();
-  for (const value of state.sessions) decideCommand(value.id);
+  for (const value of state.sessions) {
+    decideCommand(value.id);
+    if (released.has(value.id) && session(value.id)?.busy === undefined) decideCommand(value.id);
+  }
   if (input._tag === "Place")
     actions.push({ _tag: "Placed", id: input.id, placement: place(input.probe) });
 
@@ -2762,13 +2773,15 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const guarded = guarding !== undefined;
     if (!guarded && value.playRetry !== undefined)
       updateSession(value.id, { playRetry: undefined });
-    // Inside a boundary H3 holds the next clip armed, and turning autoplay off then leaves it
-    // unstarted: on air the fence goes up only while the clip playing has more left than the
-    // readiness margin, so the command lands before it ends, or stays as it is.
+    // Inside a boundary H3 holds the next clip armed, names it playing, and turning autoplay off
+    // then leaves it unstarted: on air the fence goes up only while a clip seen to start plays with
+    // more left than the readiness margin, so the command lands before it ends, or stays as it is.
     const fenceable =
       value.id !== state.air ||
       value.autoplay === false ||
-      (value.source?.playing !== undefined && playingRestMs(value) > readinessMarginMs);
+      (value.source?.playing !== undefined &&
+        value.startSeen === value.source.playing.clipId &&
+        playingRestMs(value) > readinessMarginMs);
     const autoplay =
       value.wantAutoplay && state.cutting?.sessionId !== value.id && !(guarded && fenceable);
     if (value.source?.available === true && value.autoplay !== autoplay) {
@@ -2920,7 +2933,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       }
     }
     // A constrained clip cannot be left to autoplay: an early end or unexpectedly slow build
-    // can make it next before its removal lands. Start only the Ready head the plan can honour.
+    // can make it next before its removal lands. With autoplay off, start only the Ready head the
+    // plan can honour; with it still on, the provider starts the head itself.
     const head = actual[0];
     const headItem = itemOf(head);
     const retry = value.playRetry;
@@ -2932,6 +2946,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       headItem.clipId === head?.clipId;
     if (
       guarded &&
+      value.autoplay === false &&
       value.id === state.air &&
       value.source?.available === true &&
       value.source.playing === undefined &&
@@ -2963,11 +2978,21 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const room = runway();
     const floorSeconds = fillerFloor();
     const drainingNeeds = state.drains.length === 0 || fillerNeeded;
+    // A fence raised for a follower is up: its build goes now, or the follower no longer holds the
+    // fence, nor waits out its projected lateness, as one about to be sent.
+    if (value.guardItem !== undefined && value.autoplay === false) {
+      updateSession(value.id, { guardItem: undefined });
+      released.add(value.id);
+    }
     for (const item of eligible(floorSeconds)) {
       const fenced = item.spec.follows === undefined || value.autoplay === false;
-      // A follower's fence goes up once a clip plays here with time to spare. Until the next clip
-      // starts, a seam away, nothing builds ahead of it.
-      if (!fenced && !fenceable && readyOf(value).length > 0) return;
+      // A follower's fence goes up once a clip plays here with time to spare. While the next clip
+      // is about to start, nothing playing or the clip on air ending within the margin, nothing
+      // builds ahead of it. A clip of unknown length may play for a while: what else can air goes.
+      const starting =
+        playing === undefined ||
+        (playing.seconds !== undefined && playingRestMs(value) <= readinessMarginMs);
+      if (!fenced && !fenceable && starting && readyOf(value).length > 0) return;
       // What cannot air before this session's cap waits for its replacement, and so does what
       // follows it, which would otherwise air ahead of it.
       if (!fits(target, item.spec.seconds)) break;

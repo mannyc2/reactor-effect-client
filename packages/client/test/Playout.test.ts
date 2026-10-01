@@ -731,6 +731,57 @@ layer(hosted)("resume", (it) => {
       yield* Scope.close(owned, Exit.void);
     }),
   );
+
+  // Adopted, the clip on air has no known length, so no follower's fence can go up before it ends.
+  it.effect("builds on while a follower waits out a clip of unknown length", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const sessionTokens = yield* tokens("10 minutes");
+      const recorded = yield* Deferred.make<H3Source.Allocation>();
+      const owned = yield* Scope.make();
+      const owner = yield* H3Source.open({
+        tokens: sessionTokens,
+        onAllocated: ({ allocation }) => Deferred.succeed(recorded, allocation),
+      }).pipe(Scope.provide(owned));
+      yield* owner.setAutoplay(true);
+      const playing = yield* owner.enqueue(clip("playing", 15), {
+        _tag: "Item",
+        key: key("playing"),
+      });
+      yield* owner.events.pipe(
+        Stream.filter((event) => event._tag === "State" && event.state.playing?.clipId === playing),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      const allocation = yield* Deferred.await(recorded);
+      const playout = yield* Playout.make({
+        open: H3Source.resume({ allocation, tokens: sessionTokens }),
+        lanes: [{ name: "line" }],
+      });
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      yield* playout.events.pipe(
+        Stream.runForEach((event) =>
+          event._tag === "AsRun"
+            ? Ref.update(events, (all) => [...all, `${event.event.key} ${event.event.status._tag}`])
+            : Effect.void,
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      yield* playout.submit({ key: key("x"), lane: "line", request: clip("x") });
+      const u = yield* playout.insert({
+        key: key("u"),
+        request: clip("u"),
+        after: key("x"),
+        follows: { _tag: "Item", key: key("x") },
+      });
+      const y = yield* playout.submit({ key: key("y"), lane: "line", request: clip("y") });
+      assert.strictEqual((yield* y.outcome)._tag, "Ended");
+      assert.strictEqual((yield* u.outcome)._tag, "Ended");
+      const all = yield* Ref.get(events);
+      assert.isBelow(all.indexOf("y Ready"), all.indexOf("x Started"));
+      yield* Scope.close(owned, Exit.void);
+    }),
+  );
 });
 
 layer(hosted)("time", (it) => {
@@ -1003,7 +1054,7 @@ layer(seamed)("follows", (it) => {
 
   it.effect("answers no boundary its clip could not be Ready a margin before", () =>
     Effect.gen(function* () {
-      const { playout, starts } = yield* start();
+      const { playout } = yield* start();
       const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
         playout.submit({ key: key(name), lane: "line", request: clip(name) }),
       );
@@ -1016,16 +1067,7 @@ layer(seamed)("follows", (it) => {
       yield* line.started;
       // 2 s of it is left with nothing queued, and a 5 s clip takes over 2 s to build.
       yield* Effect.sleep("8 seconds");
-      const placement = yield* playout.place({ key: key("u") });
-      if (placement === null) return;
-      const u = yield* playout.insert({
-        key: key("u"),
-        request: clip("u"),
-        after: key("line"),
-        follows: placement.after,
-      });
-      assert.strictEqual((yield* u.started)._tag, "Started");
-      assert.deepStrictEqual((yield* starts).slice(-2), ["line", "u"]);
+      assert.isNull(yield* playout.place({ key: key("u") }));
     }),
   );
 
@@ -1096,13 +1138,15 @@ layer(hosted)("follows inside a boundary", (it) => {
       const ended = yield* c.outcome.pipe(Effect.timeoutOption("30 seconds"));
       assert.strictEqual(Option.getOrUndefined(ended)?._tag, "Ended");
       assert.deepStrictEqual(yield* starts, ["a", "b", "v", "c"]);
+      // Autoplay started every clip: none was held armed, nor played while armed at v's boundary.
+      assert.strictEqual((yield* commands("play")).length, 0);
     }),
   );
 });
 
 // Its own block: the scene's timing within a seam would move with the clock a block's tests share.
 layer(hosted)("follows inside a boundary, read mid-seam", (it) => {
-  it.effect("starts an armed clip itself once autoplay went off before its start", () =>
+  it.effect("never leaves unstarted a clip a state read names playing in its seam", () =>
     Effect.gen(function* () {
       const { playout, starts } = yield* start({}, "10 millis");
       const a = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a", 10) });
@@ -1112,7 +1156,7 @@ layer(hosted)("follows inside a boundary, read mid-seam", (it) => {
       const c = yield* playout.submit({ key: key("c"), lane: "line", request: clip("c") });
       yield* playout.submit({ key: key("z"), lane: "line", request: clip("z") });
       // z's removal lands in b's seam, and the state read after it names b playing with all of
-      // its length left, so the fence goes up while H3 still holds b armed.
+      // its length left while H3 still holds b armed.
       const end = started.at + started.seconds * 1000;
       yield* Effect.sleep(Duration.millis(end - 40 - (yield* Clock.currentTimeMillis)));
       yield* Effect.forkScoped(playout.withdraw(key("z")));
@@ -1126,6 +1170,49 @@ layer(hosted)("follows inside a boundary, read mid-seam", (it) => {
       const ended = yield* c.outcome.pipe(Effect.timeoutOption("30 seconds"));
       assert.strictEqual(Option.getOrUndefined(ended)?._tag, "Ended");
       assert.deepStrictEqual(yield* starts, ["a", "b", "v", "c"]);
+    }),
+  );
+});
+
+// Hosted runs measured seams up to 169 ms. Its own block, for the same reason as the one above.
+layer(
+  environment({
+    timing: ReactorTest.Timing.fixed({
+      buildSpeed: 2.4,
+      seam: "150 millis",
+      http: "40 millis",
+      channel: "20 millis",
+    }),
+  }),
+)("follows inside a long seam", (it) => {
+  it.effect("raises no fence on a clip a state read names playing before its start is seen", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start({}, "10 millis");
+      const a = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a", 10) });
+      const started = yield* a.started;
+      if (started._tag !== "Started") return yield* Effect.die("a never started");
+      yield* playout.submit({ key: key("b"), lane: "line", request: clip("b") });
+      const c = yield* playout.submit({ key: key("c"), lane: "line", request: clip("c") });
+      yield* playout.submit({ key: key("z"), lane: "line", request: clip("z") });
+      // z's removal and v's enqueue both land in b's seam, and the state reads after them name b
+      // playing; H3 says nothing more until v is Ready.
+      const end = started.at + started.seconds * 1000;
+      yield* Effect.sleep(Duration.millis(end - 20 - (yield* Clock.currentTimeMillis)));
+      yield* Effect.forkScoped(playout.withdraw(key("z")));
+      yield* a.outcome;
+      yield* playout.insert({
+        key: key("v"),
+        request: clip("v"),
+        after: key("b"),
+        follows: { _tag: "Item", key: key("b") },
+      });
+      yield* c.outcome;
+      const log = yield* (yield* ReactorTest.ReactorTest).log;
+      const messages = (name: string) =>
+        log.filter((entry) => entry.kind === "message" && entry.name === name);
+      const ended = messages("clip_finished")[0]?.at ?? 0;
+      const next = messages("clip_started")[1]?.at ?? Infinity;
+      assert.isBelow(next - ended, 1000, `b started ${next - ended} ms after a ended`);
     }),
   );
 });
@@ -1320,9 +1407,10 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
     () =>
       Effect.gen(function* () {
         const problems: Array<string> = [];
-        // Seed 13 places a clip whose slack the fence before its build would take, and seed 49
-        // one after a clip whose guarded start is under way as its deadline passes.
-        for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 13, 49])
+        // Seed 13 places a clip whose slack the fence before its build would take, seed 49 one
+        // after a clip whose guarded start is under way as its deadline passes, and seed 343 one
+        // that the replacement could not air before its cap at the first boundary it could make.
+        for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 13, 49, 343])
           problems.push(...(yield* forecast(seed, "75 seconds", 100, "15 seconds", "20 millis")));
         assert.deepStrictEqual(problems, []);
       }),
@@ -1333,7 +1421,7 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
 // Sessions of 50 s renewed 40 s before their cap: a replacement has little of its cap left by
 // the time it takes the air.
 layer(seamed)("place across short sessions", (it) => {
-  it.effect("answers only a boundary the replacement can air before its cap", () =>
+  it.effect("answers no boundary the replacement could not air before its cap", () =>
     Effect.gen(function* () {
       const { playout } = yield* start(
         {
@@ -1358,15 +1446,10 @@ layer(seamed)("place across short sessions", (it) => {
       });
       yield* playout.submit({ key: key("next"), lane: "line", request: clip("next") });
       yield* line.started;
+      // Built now on the replacement, the clip would air past that replacement's cap, and place
+      // projects no renewal after it.
       yield* Effect.sleep("6 seconds");
-      const placement = yield* playout.place({ key: key("u") });
-      if (placement === null) return;
-      const spec = { key: key("u"), request: clip("u"), follows: placement.after };
-      const u =
-        placement.anchor === "next"
-          ? yield* playout.submit({ ...spec, lane: "line", start: { _tag: "Asap" } })
-          : yield* playout.insert({ ...spec, after: placement.anchor });
-      assert.strictEqual((yield* u.started)._tag, "Started");
+      assert.isNull(yield* playout.place({ key: key("u") }));
     }),
   );
 });
