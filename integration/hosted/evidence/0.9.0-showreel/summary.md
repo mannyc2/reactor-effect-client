@@ -1,6 +1,6 @@
-| Run | Check | Mode | Verdict | Started | Worst case | Estimated |
-| --- | ----- | ---- | ------- | ------- | ---------- | --------- |
-| 8d283761 | showreel | paid | pass | 2026-10-01T02:01:20.733Z | $2.450 | $1.680 |
+| Run      | Check    | Mode | Verdict | Started                  | Worst case | Estimated |
+| -------- | -------- | ---- | ------- | ------------------------ | ---------- | --------- |
+| 8d283761 | showreel | paid | pass    | 2026-10-01T02:01:20.733Z | $2.450     | $1.680    |
 
 ### showreel: pass (paid, run 8d283761, 2026-10-01T02:01:20.733Z)
 
@@ -20,6 +20,5 @@
 - **Files beside the evidence:** reel.mp4 19639.7 KiB, poster.png 442.3 KiB, loop.gif 10102.9 KiB; poster at 19.945 s; loop from 11.945 s for 8 s
 - **Termination:** 1f7d4d96-ab51-43b2-8b72-52176276017b confirmed (trail CLOSED)
 - **Criteria:** ✓ every scene accepted, built, started and ended · ✓ every seam measured · ✓ no gap on air between scenes · ✓ the reel's readers keep up · ✓ confirmed termination · ✓ the reel was recorded · ✓ the poster and the loop were made after the session closed
-
 
 **Footage:** the reel, a loop and a poster are attached to the [`media` release](https://github.com/mannyc2/reactor-effect-client/releases/tag/media); the files beside the evidence stay out of Git.
