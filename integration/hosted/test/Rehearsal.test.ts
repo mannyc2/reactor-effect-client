@@ -335,9 +335,11 @@ rehearse("unconnected ends with the key a session its cap did not end", {
     assert.deepStrictEqual(probe?.states.at(-1)?.state, "ACTIVE");
     assert.strictEqual(probe?.ended?.by, "key");
     // The window ends 120 s after the request: 15 s for allocation, ACTIVE and ready, the cap,
-    // 30 s more and a 15 s margin. It ends past the cap and 30 s from each by 15 s at least.
+    // 30 s more and a 15 s margin. It ends past the cap and 30 s from each by 15 s at least. The
+    // check adds those to a time with a fraction of a millisecond, which a loaded machine's test
+    // clock reaches, so the difference can miss 120 s by a rounding error.
     const windowEndsMs = probe?.windowEndsMs ?? 0;
-    assert.strictEqual(windowEndsMs - (probe?.requestedMs ?? 0), 120_000);
+    assert.closeTo(windowEndsMs - (probe?.requestedMs ?? 0), 120_000, 0.001);
     const active = probe?.states.find((entry) => entry.state === "ACTIVE")?.firstMs;
     for (const startMs of [session?.allocatedMs, active, probe?.connectableMs])
       assert.isAtLeast(windowEndsMs - (startMs ?? Infinity) - 90_000, 15_000);
@@ -644,7 +646,7 @@ rehearse("unconnected holds a spent token's session 10 s past a wait it never be
     // Compared as the check computes it: a difference of times with a fraction of a millisecond,
     // which a loaded machine's test clock reaches, can fall short of 5 s by a rounding error.
     assert.isAtLeast(held?.heldFromMs ?? 0, (spent?.second?.answeredMs ?? Infinity) + 5_000);
-    assert.strictEqual((held?.endsMs ?? 0) - (held?.heldFromMs ?? Infinity), 10_000);
+    assert.closeTo((held?.endsMs ?? 0) - (held?.heldFromMs ?? Infinity), 10_000, 0.001);
     assert.isAtLeast(spending?.close?.requestedMs ?? 0, held?.endsMs ?? Infinity);
     assert.include(summarize([evidence]), " | 10.00 s past the wait | ");
   },
