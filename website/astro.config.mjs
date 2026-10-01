@@ -103,6 +103,7 @@ export default defineConfig({
           label: "Reference",
           items: [
             { slug: "reference/modules" },
+            { slug: "reference/tracing" },
             { slug: "reference/hosted-evidence" },
             { slug: "reference/limits" },
             { slug: "reference/agents" },

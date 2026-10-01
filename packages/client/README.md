@@ -113,6 +113,10 @@ Each module's doc comments state its options' defaults and bounds.
 - **`ReactorTest` runs the same application offline**, at hosted timing, or on `TestClock` where
   an hour of programme with six renewals takes about 20 seconds, with faults to inject.
 - **A provider `Started` fact is not proof** that a frame was presented or encoded.
+- **Every operation a caller can cancel is traced** through Effect's `Tracer`, and queued playout work
+  stays under the span that submitted it. Spans name identity and outcome, never credentials, inputs
+  or provider text. [Tracing](https://mannyc2.github.io/reactor-effect-client/reference/tracing/)
+  lists them.
 
 ## Example
 
