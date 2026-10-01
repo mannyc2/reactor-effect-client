@@ -230,7 +230,7 @@ const terminal = Command.make(
 );
 
 terminal.pipe(
-  Command.run({ version: "0.9.0" }),
+  Command.run({ version: "0.9.2" }),
   // The program's entry point.
   // @effect-diagnostics-next-line strictEffectProvide:off
   Effect.provide(NodeServices.layer),

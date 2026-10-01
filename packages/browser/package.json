@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-browser",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Reactor sessions in the browser for reactor-effect-client: the session transport on RTCPeerConnection and playback of its tracks",
   "keywords": [
     "reactor",
