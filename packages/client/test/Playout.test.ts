@@ -1032,6 +1032,8 @@ layer(hosted)("follows inside a boundary", (it) => {
       const ended = yield* c.outcome.pipe(Effect.timeoutOption("30 seconds"));
       assert.strictEqual(Option.getOrUndefined(ended)?._tag, "Ended");
       assert.deepStrictEqual(yield* starts, ["a", "b", "v", "c"]);
+      // Autoplay started every clip: none was held armed, nor played while armed at v's boundary.
+      assert.strictEqual((yield* commands("play")).length, 0);
     }),
   );
 });

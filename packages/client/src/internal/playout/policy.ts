@@ -2812,7 +2812,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       }
     }
     // A constrained clip cannot be left to autoplay: an early end or unexpectedly slow build
-    // can make it next before its removal lands. Start only the Ready head the plan can honour.
+    // can make it next before its removal lands. With autoplay off, start only the Ready head the
+    // plan can honour; with it still on, the provider starts the head itself.
     const head = actual[0];
     const headItem = itemOf(head);
     const retry = value.playRetry;
@@ -2824,6 +2825,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       headItem.clipId === head?.clipId;
     if (
       guarded &&
+      value.autoplay === false &&
       value.id === state.air &&
       value.source?.available === true &&
       value.source.playing === undefined &&
