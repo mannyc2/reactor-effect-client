@@ -200,26 +200,62 @@ scenario("closing the provider leaves undecided facts Indeterminate and the sess
   }),
 );
 
-scenario("a clip awaited when Reactor ends the session fails with why the session ended", () =>
-  Effect.gen(function* () {
-    yield* Effect.forkScoped(ReactorTest.flow());
-    const test = yield* ReactorTest.ReactorTest;
-    // Reactor ends the session 20 s after it is ready, as its cap would.
-    yield* test.inject({ _tag: "Expire", after: Duration.seconds(20) });
-    const provider = yield* H3.make(yield* connect);
-    yield* test.inject({ _tag: "StallBuild" });
-    const submission = yield* provider.prepare({ prompt: "never built", seconds: 5 });
-    yield* submission.submit;
-    const operation = yield* provider.operation(submission);
-    // The provider stays open, so only the session's end can settle the wait.
-    const ended = yield* operation.ended.pipe(Effect.flip, Effect.timeoutOption("1 minute"));
-    assert.isTrue(Option.isSome(ended), "the clip was still awaited a minute after the end");
-    if (Option.isSome(ended)) assert.strictEqual(ended.value.reason._tag, "TerminalSession");
-    const started = yield* Effect.flip(operation.reached("started"));
-    assert.strictEqual(started.reason._tag, "TerminalSession");
-    assert.isTrue((yield* operation.facts).indeterminate);
-  }),
-);
+/**
+ * The ways a session ends under an open provider: Reactor ends it at its cap or by its content
+ * moderation, or the application closes it. Each arms its faults before the session connects.
+ */
+const sessionEnds: ReadonlyArray<{
+  readonly name: string;
+  readonly reason: "TerminalSession" | "Moderated" | "Closed";
+  readonly faults: ReadonlyArray<ReactorTest.Fault>;
+  readonly prompt: string;
+  readonly close: boolean;
+}> = [
+  {
+    name: "Reactor ends the session at its cap",
+    reason: "TerminalSession",
+    faults: [{ _tag: "Expire", after: Duration.seconds(20) }],
+    prompt: "never built",
+    close: false,
+  },
+  {
+    name: "Reactor's moderation ends the session",
+    reason: "Moderated",
+    faults: [{ _tag: "Moderate", prompt: "flagged" }],
+    prompt: "flagged",
+    close: false,
+  },
+  {
+    name: "the application closes the session",
+    reason: "Closed",
+    faults: [],
+    prompt: "never built",
+    close: true,
+  },
+];
+
+for (const end of sessionEnds)
+  scenario(`a clip awaited when ${end.name} fails with why it ended`, () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      for (const fault of end.faults) yield* test.inject(fault);
+      const session = yield* connect;
+      const provider = yield* H3.make(session);
+      yield* test.inject({ _tag: "StallBuild" });
+      const submission = yield* provider.prepare({ prompt: end.prompt, seconds: 5 });
+      yield* submission.submit;
+      const operation = yield* provider.operation(submission);
+      if (end.close) yield* session.close;
+      // The provider stays open, so only the session's end can settle the wait.
+      const ended = yield* operation.ended.pipe(Effect.flip, Effect.timeoutOption("1 minute"));
+      assert.isTrue(Option.isSome(ended), "the clip was still awaited a minute after the end");
+      if (Option.isSome(ended)) assert.strictEqual(ended.value.reason._tag, end.reason);
+      const started = yield* Effect.flip(operation.reached("started"));
+      assert.strictEqual(started.reason._tag, end.reason);
+      assert.isTrue((yield* operation.facts).indeterminate);
+    }),
+  );
 
 // A coordinator may answer one read with 404 for a session that still runs. The session's own
 // reconnect stops there, and the application's reconnect then brings it back.
