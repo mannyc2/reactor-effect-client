@@ -12,7 +12,7 @@ import { trackFeed } from "../../Peer.js";
 import type { DataChannel, Peer, PeerEvent } from "../../Peer.js";
 import type { AudioFrame, VideoFrame } from "../../Media.js";
 import { documented } from "./h3.js";
-import { monotonic, until } from "./playout.js";
+import { monotonic, until } from "./runner.js";
 import type { Sessions } from "./sessions.js";
 
 export interface Frame {
