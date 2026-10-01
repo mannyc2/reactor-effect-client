@@ -313,7 +313,7 @@ const qualify = Command.make("qualify").pipe(
 );
 
 qualify.pipe(
-  Command.run({ version: "0.9.0" }),
+  Command.run({ version: "0.9.1" }),
   // The application's entry point.
   // @effect-diagnostics-next-line strictEffectProvide:off
   Effect.provide(NodeServices.layer),

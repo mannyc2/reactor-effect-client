@@ -827,6 +827,37 @@ const filled: Policy.Config = {
   },
 };
 
+describe("PlayoutPolicy, a follower's fence", () => {
+  // The fence goes out while a plays with time to spare, but lands only in b's seam, after a state
+  // read named b playing: H3 held b armed, and with autoplay off it never starts it.
+  it("plays a clip held armed by a fence that landed in its seam", () => {
+    const policy = drive();
+    policy.open("s1");
+    const a = clip("ca", item("a"), 10);
+    const b = clip("cb", item("b"));
+    policy.submit(spec("a", 1, 10), 10);
+    policy.reply({ _tag: "Done", clipId: "ca" }, 20);
+    policy.observe({ ready: [a] }, "s1", 30);
+    policy.submit(spec("b"), 40);
+    policy.reply({ _tag: "Done", clipId: "cb" }, 50);
+    policy.event({ _tag: "Started", clip: a }, "s1", 100);
+    policy.observe({ playing: a, ready: [b] }, "s1", 100);
+    const follower = { ...spec("v"), follows: item("b") };
+    policy.edit(
+      [{ _tag: "Insert", spec: follower, anchor: key("b"), side: "after" }],
+      false,
+      9_800,
+    );
+    assert.deepStrictEqual(policy.busy(), { _tag: "Autoplay", enabled: false });
+    policy.event({ _tag: "Ended", clip: a, termination: "finished" }, "s1", 10_100);
+    policy.observe({ playing: b, ready: [b] }, "s1", 10_120);
+    policy.reply({ _tag: "Done" }, 10_130);
+    policy.reply({ _tag: "Done", clipId: "cv" }, 10_170);
+    policy.observe({ ready: [b], building: [clip("cv", item("v"))] }, "s1", 10_200);
+    assert.deepStrictEqual(policy.busy(), { _tag: "Play", clipId: "cb" });
+  });
+});
+
 // What 0.7.0's scheduler guaranteed and the first Playout lost, found by an independent critique.
 describe("PlayoutPolicy, uncertainty and loss", () => {
   // 0.7.0 SchedulerRenewal "uncertain filler on the retiring source does not hold replacement
