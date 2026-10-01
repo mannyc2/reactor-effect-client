@@ -309,9 +309,9 @@ export const Options = Schema.Struct({
   playoutCapacity: count(10),
   /**
    * The rate the pricing API publishes, in credits a second, as it stated
-   * H3's for the paid runs: 125 at 10,000 a dollar is $0.0125 a second.
+   * H3's on September 30, 2026: 350 at 10,000 a dollar is $0.035 a second.
    */
-  creditsPerSecond: count(125),
+  creditsPerSecond: count(350),
   creditsPerDollar: count(10_000),
   /** Sessions the account may run at once, as Reactor's default quota; more are refused with 429. */
   concurrentSessions: count(5),

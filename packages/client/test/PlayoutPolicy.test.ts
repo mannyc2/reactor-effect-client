@@ -548,6 +548,32 @@ describe("PlayoutPolicy", () => {
     assert.strictEqual(status?._tag === "Failed" ? status.reason._tag : status?._tag, "Command");
   });
 
+  // Once Reactor or its moderation has ended a session, the provider refuses what it is sent
+  // with why, before its source reports the session lost.
+  for (const reason of ["TerminalSession", "Moderated"] as const)
+    it(`carries an enqueue an ended session refused unsent to the next session (${reason})`, () => {
+      const policy = drive();
+      policy.tick(0);
+      policy.open();
+      policy.submit(spec("a"));
+      policy.reply({
+        _tag: "Failed",
+        cause: CommandFailure.from(ReactorError.fromCode(reason, "the session ended"), {
+          operation: "enqueue",
+          outcome: "not-submitted",
+        }),
+      });
+      policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" });
+      policy.open("s2");
+      assert.deepStrictEqual(statuses(policy.actions, "a"), ["Accepted"]);
+      assert.deepStrictEqual(policy.busy("s2"), {
+        _tag: "Enqueue",
+        request: spec("a").request,
+        tag: item("a"),
+        continueFrom: undefined,
+      });
+    });
+
   for (const refusal of ["InvalidState", "Disconnected"] as const)
     it(`drops an item withdrawn while its enqueue was in flight once that fails unsent (${refusal})`, () => {
       const policy = drive();

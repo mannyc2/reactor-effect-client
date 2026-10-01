@@ -233,6 +233,8 @@ export interface ObserveOptions {
  * The library's own reply deadline, not a caller's wait: after dispatch its
  * expiry fails with `Timeout`, outcome `unknown`, and the request stays
  * attributable. To only stop waiting, fork the command and bound the join.
+ * A `replyTimeout` that is not a finite, non-negative duration fails the
+ * command with `InvalidInput`, not submitted.
  */
 export interface CommandOptions {
   /** 10 seconds by default. */
@@ -242,7 +244,10 @@ export interface CommandOptions {
 }
 
 export interface UploadOptions {
-  /** From allocation to notification; the session's upload timeout by default. */
+  /**
+   * From allocation to notification; the session's upload timeout by default. One that is not a
+   * finite, non-negative duration fails the upload with `InvalidInput`.
+   */
   readonly uploadTimeout?: Duration.Input | undefined;
 }
 
