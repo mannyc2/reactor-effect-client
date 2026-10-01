@@ -8,9 +8,9 @@
 Keep a channel on air across session caps, read decoded frames in Node without a browser,<br />
 and run the whole application offline before it spends a cent.
 
-[![npm](https://img.shields.io/npm/v/reactor-effect-client?color=22b8d6&label=npm)](https://www.npmjs.com/package/reactor-effect-client)
+[![npm](https://img.shields.io/npm/v/reactor-effect-client?color=13775B&label=npm)](https://www.npmjs.com/package/reactor-effect-client)
 [![CI](https://github.com/mannyc2/reactor-effect-client/actions/workflows/ci.yml/badge.svg)](https://github.com/mannyc2/reactor-effect-client/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-reactor--effect-8b5cf6)](https://mannyc2.github.io/reactor-effect-client/)
+[![Docs](https://img.shields.io/badge/docs-reactor--effect-A45F20)](https://mannyc2.github.io/reactor-effect-client/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 
 [Documentation](https://mannyc2.github.io/reactor-effect-client/) ·
@@ -29,7 +29,7 @@ and run the whole application offline before it spends a cent.
 
 <br />
 
-<img src="website/public/playout-renewal.svg" alt="Playout keeps H3 on air across a session renewal: session 2 opens before session 1's cap, and the air switches between them at a clip boundary." />
+<img src="website/public/playout-renewal.png" alt="Playout keeps H3 on air across a session renewal: session 2 opens before session 1's cap, and the air switches between them at a clip boundary." />
 
 ## Try it in a minute, no API key
 
