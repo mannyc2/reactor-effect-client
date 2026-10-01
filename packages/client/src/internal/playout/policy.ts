@@ -2524,9 +2524,14 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     }
   }
 
-  // Each session's commands go one at a time on a lane of its own.
+  // Each session's commands go one at a time on a lane of its own. A session whose follower did
+  // not go on to its build once its fence was up looks again, so the fence comes down now.
+  const released = new Set<string>();
   endCut();
-  for (const value of state.sessions) decideCommand(value.id);
+  for (const value of state.sessions) {
+    decideCommand(value.id);
+    if (released.has(value.id) && session(value.id)?.busy === undefined) decideCommand(value.id);
+  }
   if (input._tag === "Place")
     actions.push({ _tag: "Placed", id: input.id, placement: place(input.probe) });
 
@@ -2857,6 +2862,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const room = runway();
     const floorSeconds = fillerFloor();
     const drainingNeeds = state.drains.length === 0 || fillerNeeded;
+    // A fence raised for a follower is up: its build goes now, or the follower no longer holds the
+    // fence, nor waits out its projected lateness, as one about to be sent.
+    if (value.guardItem !== undefined && value.autoplay === false) {
+      updateSession(value.id, { guardItem: undefined });
+      released.add(value.id);
+    }
     for (const item of eligible(floorSeconds)) {
       const fenced = item.spec.follows === undefined || value.autoplay === false;
       // A follower's fence goes up once a clip plays here with time to spare. While the next clip
