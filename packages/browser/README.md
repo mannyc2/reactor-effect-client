@@ -1,13 +1,21 @@
 # reactor-effect-browser
 
-Browser WebRTC host for [`reactor-effect-client`](https://www.npmjs.com/package/reactor-effect-client). `BrowserPeer` binds the session's `Peer` port to the built-in `RTCPeerConnection`, and `BrowserMedia` reads a connected session's tracks as the browser's own `MediaStreamTrack`s and plays them.
+Run [Reactor](https://reactor.inc) sessions from a web page with
+[`reactor-effect-client`](https://www.npmjs.com/package/reactor-effect-client). `BrowserPeer` carries
+the session on the browser's own `RTCPeerConnection`, and `BrowserMedia` plays the session's tracks
+in your page's media elements. The page talks to Reactor directly for the lowest latency; your
+server only mints its session tokens, so the API key never reaches the browser.
 
-This is not an official Reactor SDK.
+**[Documentation](https://mannyc2.github.io/reactor-effect-client/)** ·
+[Sessions in the browser](https://mannyc2.github.io/reactor-effect-client/guides/browser/) ·
+[Example](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/browser/examples)
+
+This is an independent project, not an official Reactor SDK.
 
 ## Install
 
 ```sh
-npm install reactor-effect-client reactor-effect-browser effect@4.0.0-rc.117
+npm install --save-exact reactor-effect-client reactor-effect-browser effect@4.0.0-rc.117
 ```
 
 `reactor-effect-client` and Effect `4.0.0-rc.117` are peer dependencies, both exact: a later Effect rc needs a new SDK release. The package needs a browser with WebRTC. It has no Node dependency: its declarations compile with DOM types and without `@types/node`, and the workspace's installed-package check bundles it for the browser and runs that bundle without the Node `Buffer` global.

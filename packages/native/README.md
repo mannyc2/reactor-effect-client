@@ -1,8 +1,26 @@
 # reactor-effect-native
 
-Native WebRTC host for [`reactor-effect-client`](https://www.npmjs.com/package/reactor-effect-client). `reactor-effect-native` drives a Node-API addon, built with [napi-rs](https://napi.rs) from a small Rust crate over the pinned `reactor-webrtc` revision. Each supported platform's addon ships in its own package, `reactor-effect-native-linux-x64-gnu` or `reactor-effect-native-darwin-arm64`, which this package lists as exact-version optional dependencies, so a package manager installs only the one the host can run. Reactor session ownership, HTTP, command correlation, cancellation, and model policy stay in `reactor-effect-client`; this package owns transport and decoded media only.
+Decoded [Reactor](https://reactor.inc) video and audio in Node and Bun, with no browser. This is the
+native transport for [`reactor-effect-client`](https://www.npmjs.com/package/reactor-effect-client):
+a Node-API addon over libwebrtc hands your process owned BGRA frames and 16-bit PCM, in process or
+in a child process per connection. A server can record, analyse, re-encode or restream a session's
+media directly, where a browser-based client would need a headless browser to reach it. On hosted
+H3 it received 1344×768 video at about 24 fps with no frame lost.
 
-This is not an official Reactor SDK. Native WebRTC dependencies are attributed in [NOTICE](./NOTICE) and [`notices/`](./notices/).
+**[Documentation](https://mannyc2.github.io/reactor-effect-client/)** ·
+[Frames in Node and Bun](https://mannyc2.github.io/reactor-effect-client/guides/native/) ·
+[Terminal viewer](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/terminal) ·
+[MP4 capture](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/native/examples)
+
+The addon is built with [napi-rs](https://napi.rs) from a small Rust crate over the pinned
+`reactor-webrtc` revision. Each supported platform's addon ships prebuilt in its own package,
+`reactor-effect-native-linux-x64-gnu` or `reactor-effect-native-darwin-arm64`, which this package
+lists as exact-version optional dependencies, so a package manager installs only the one the host can
+run. Session ownership, HTTP, command correlation, cancellation and model policy stay in
+`reactor-effect-client`; this package owns transport and decoded media only.
+
+This is an independent project, not an official Reactor SDK. Native WebRTC dependencies are
+attributed in [NOTICE](./NOTICE) and [`notices/`](./notices/).
 
 ## Install
 
