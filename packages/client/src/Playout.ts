@@ -95,7 +95,7 @@ export interface Window {
 
 interface ClipSpec {
   readonly key: ItemKey;
-  /** `request.seconds` is the requested length; 5 seconds when absent. */
+  /** `request.seconds` is the requested length; the playout asks for 5 seconds without it. */
   readonly request: Request;
   readonly cues?: ReadonlyArray<Cue> | undefined;
   /**
@@ -637,7 +637,8 @@ export interface Options<R = never> {
         readonly runway: { readonly floor: Duration.Input; readonly target: Duration.Input };
         /**
          * Called once per clip, as it is first asked for; keep it pure. A request
-         * outside H3's documented limits fails the playout with `InvalidFiller`.
+         * without `seconds` asks for the context's `seconds`. A request outside
+         * H3's documented limits fails the playout with `InvalidFiller`.
          */
         readonly clip: (context: FillContext) => Request;
         /** Lengths a filler clip may take; H3's request range by default. */

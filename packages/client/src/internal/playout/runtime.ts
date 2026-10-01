@@ -71,6 +71,19 @@ const millis = (input: Duration.Input | undefined, fallback: number): number =>
 
 const monotonic = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos) / 1_000_000);
 
+type FillerClip = NonNullable<Policy.Config["filler"]>["clip"];
+
+/**
+ * The application's filler clips, each asking for the length it was asked for unless it names
+ * one: the plan counts it at that, and H3 would build one without a length at its session's own.
+ */
+const sized =
+  (clip: FillerClip): FillerClip =>
+  (context) => {
+    const request = clip(context);
+    return { ...request, seconds: request.seconds ?? context.seconds };
+  };
+
 /**
  * The wait until a wake `ms` away, in whole nanoseconds rounded up: the clock counts whole
  * nanoseconds, and a wake between two of them comes at the later one.
@@ -165,7 +178,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         : {
             floor: millis(options.filler.runway.floor, 0) / 1000,
             target: millis(options.filler.runway.target, 0) / 1000,
-            clip: options.filler.clip,
+            clip: sized(options.filler.clip),
             lengths: options.filler.lengths ?? requestSeconds,
             invalid: (request, index) => {
               const issues = requestIssues(request, { _tag: "Filler", index });
@@ -731,6 +744,9 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       const notBeforeMs = yield* duration(input.window?.notBefore);
       const startByMs = yield* duration(input.window?.startBy);
       const seconds = input.request.seconds ?? requestSeconds.min;
+      // Sent at the length the plan counts it at: H3 builds a request without one at its
+      // session's clip length, 15 s by default.
+      const request = { ...input.request, seconds };
       const window: Policy.Spec["window"] =
         input.window === undefined
           ? undefined
@@ -746,11 +762,11 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       const result: Policy.Spec = {
         key,
         lane: laneIndex,
-        request: input.request,
+        request,
         seconds,
         fingerprint: fingerprint([
           laneIndex,
-          input.request,
+          request,
           cues,
           input.continuity,
           window,

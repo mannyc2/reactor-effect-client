@@ -337,6 +337,31 @@ layer(hosted)("what airs", (it) => {
       );
     }),
   );
+
+  // H3 builds a request that names no length at its session's, 15 s by default.
+  it.effect("asks for the length it plans with when a request names none", () =>
+    Effect.gen(function* () {
+      const { playout, events } = yield* start({
+        filler: {
+          runway: { floor: "4 seconds", target: "8 seconds" },
+          clip: ({ index }) => ({ prompt: `idle ${index}` }),
+        },
+      });
+      const item = yield* playout.submit({ key: key("a"), lane: "line", request: { prompt: "a" } });
+      const started = yield* item.started;
+      const filler = yield* eventually(events, (all) =>
+        all.some((event) => event._tag === "Filler" && event.phase === "Started"),
+      );
+      // An item's 5 s and the filler's shortest, 5 s, on H3's grid: 124 frames at 24 fps.
+      assert.deepStrictEqual(
+        [
+          started._tag === "Started" ? started.seconds : started._tag,
+          filler.find((event) => event._tag === "Filler")?.seconds,
+        ],
+        [124 / 24, 124 / 24],
+      );
+    }),
+  );
 });
 
 // Its fault stays armed for the rest of a block, so it has one of its own.
