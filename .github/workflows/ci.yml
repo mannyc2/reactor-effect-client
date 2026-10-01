@@ -222,6 +222,9 @@ jobs:
 
       # A pull request's cache is private to its merge ref. Main can instead
       # reuse exact-input artifacts from a successful CI run in this repository.
+      # The artifact also holds that pull request's tracked platform files,
+      # which the key doesn't hash, so only the addon is taken: restaging
+      # writes its identity, license and notices from main's checkout.
       - name: Reuse an addon qualified by a pull request
         id: reused
         if: github.ref == 'refs/heads/main' && steps.staged.outputs.cache-hit != 'true'
@@ -258,8 +261,8 @@ jobs:
               continue
             fi
             rm -rf "$scratch"
-            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$addon" --dir "$scratch/addon" && gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$far_peer" --dir "$scratch/far-peer" && [ -f "$scratch/far-peer/far_peer" ] && [ -f "$scratch/addon/reactor-effect-native.$PLATFORM.node" ] && [ -f "$scratch/addon/native-identity.json" ]; then
-              cp -a "$scratch/addon/." "packages/native/npm/$PLATFORM/"
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$addon" --dir "$scratch/addon" && gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$far_peer" --dir "$scratch/far-peer" && [ -f "$scratch/far-peer/far_peer" ] && [ -f "$scratch/addon/reactor-effect-native.$PLATFORM.node" ]; then
+              cp "$scratch/addon/reactor-effect-native.$PLATFORM.node" "packages/native/npm/$PLATFORM/"
               mkdir -p packages/native/rust/target/release/examples
               cp "$scratch/far-peer/far_peer" packages/native/rust/target/release/examples/far_peer
               chmod +x packages/native/rust/target/release/examples/far_peer
