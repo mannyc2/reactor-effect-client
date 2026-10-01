@@ -91,7 +91,7 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))("b
       assert.strictEqual(report.remote.evidence, "terminal");
       const billing = yield* test.billing;
       assert.isTrue(billing.seconds >= 61 && billing.seconds < 62, `${billing.seconds} s`);
-      assert.strictEqual(billing.usd, (billing.seconds * 125) / 10_000);
+      assert.strictEqual(billing.usd, (billing.seconds * 350) / 10_000);
       assert.deepStrictEqual(
         (yield* test.sessions).map((info) => [info.state, info.deletes]),
         [["CLOSED", 1]],
@@ -382,7 +382,7 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4, seam: "1
         const coordinator = yield* CoordinatorClient.CoordinatorClient;
         const rate = yield* CoordinatorClient.modelRate(yield* coordinator.pricing, H3.modelName);
         assert.deepStrictEqual(rate, {
-          creditsPerSecond: 125,
+          creditsPerSecond: 350,
           creditsPerDollar: 10_000,
           per: "second",
         });

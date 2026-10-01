@@ -6,14 +6,16 @@
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   Clock,
-  type Duration,
+  Duration,
   Effect,
   Exit,
   Inspectable,
   type Layer,
+  Option,
   Result,
   Schema,
   Scope,
+  Stream,
   Tracer,
 } from "effect";
 import * as H3 from "../src/H3.js";
@@ -195,6 +197,96 @@ scenario("closing the provider leaves undecided facts Indeterminate and the sess
     yield* Scope.close(scope, Exit.void);
     assert.strictEqual((yield* Effect.flip(operation.ended)).reason._tag, "Indeterminate");
     assert.strictEqual((yield* session.snapshot).status, "ready");
+  }),
+);
+
+/**
+ * The ways a session ends under an open provider: Reactor ends it at its cap or by its content
+ * moderation, or the application closes it. Each arms its faults before the session connects.
+ */
+const sessionEnds: ReadonlyArray<{
+  readonly name: string;
+  readonly reason: "TerminalSession" | "Moderated" | "Closed";
+  readonly faults: ReadonlyArray<ReactorTest.Fault>;
+  readonly prompt: string;
+  readonly close: boolean;
+}> = [
+  {
+    name: "Reactor ends the session at its cap",
+    reason: "TerminalSession",
+    faults: [{ _tag: "Expire", after: Duration.seconds(20) }],
+    prompt: "never built",
+    close: false,
+  },
+  {
+    name: "Reactor's moderation ends the session",
+    reason: "Moderated",
+    faults: [{ _tag: "Moderate", prompt: "flagged" }],
+    prompt: "flagged",
+    close: false,
+  },
+  {
+    name: "the application closes the session",
+    reason: "Closed",
+    faults: [],
+    prompt: "never built",
+    close: true,
+  },
+];
+
+for (const end of sessionEnds)
+  scenario(`a clip awaited when ${end.name} fails with why it ended`, () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      for (const fault of end.faults) yield* test.inject(fault);
+      const session = yield* connect;
+      const provider = yield* H3.make(session);
+      yield* test.inject({ _tag: "StallBuild" });
+      const submission = yield* provider.prepare({ prompt: end.prompt, seconds: 5 });
+      yield* submission.submit;
+      const operation = yield* provider.operation(submission);
+      if (end.close) yield* session.close;
+      // The provider stays open, so only the session's end can settle the wait.
+      const ended = yield* operation.ended.pipe(Effect.flip, Effect.timeoutOption("1 minute"));
+      assert.isTrue(Option.isSome(ended), "the clip was still awaited a minute after the end");
+      if (Option.isSome(ended)) assert.strictEqual(ended.value.reason._tag, end.reason);
+      const started = yield* Effect.flip(operation.reached("started"));
+      assert.strictEqual(started.reason._tag, end.reason);
+      assert.isTrue((yield* operation.facts).indeterminate);
+    }),
+  );
+
+// A coordinator may answer one read with 404 for a session that still runs. The session's own
+// reconnect stops there, and the application's reconnect then brings it back.
+scenario("a provider outlasts a 404 the application's reconnect gets past", () =>
+  Effect.gen(function* () {
+    yield* Effect.forkScoped(ReactorTest.flow());
+    const test = yield* ReactorTest.ReactorTest;
+    yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(3) });
+    const session = yield* connect;
+    yield* test.inject({ _tag: "MissingSession", nth: 1 });
+    const provider = yield* H3.make(session);
+    const submission = yield* provider.prepare({ prompt: "aired after the reconnect", seconds: 5 });
+    yield* submission.submit;
+    const operation = yield* provider.operation(submission);
+    const stopped = yield* session.changes.pipe(
+      Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+      Stream.runHead,
+    );
+    assert.strictEqual(
+      Option.getOrUndefined(stopped)?.lastError?.reason._tag,
+      "Http",
+      "the session's own reconnect stopped at the 404",
+    );
+    yield* session.reconnect;
+    const refreshed = yield* Effect.exit(provider.refresh);
+    assert.isTrue(Exit.isSuccess(refreshed), "refresh after the reconnect");
+    const enqueued = yield* Effect.exit(provider.enqueue({ prompt: "after it", seconds: 5 }));
+    assert.isTrue(Exit.isSuccess(enqueued), "enqueue after the reconnect");
+    yield* provider.setAutoplay(true);
+    const ended = yield* operation.ended.pipe(Effect.timeoutOption("1 minute"));
+    assert.strictEqual(Option.getOrUndefined(ended)?.message, "clip_finished");
   }),
 );
 

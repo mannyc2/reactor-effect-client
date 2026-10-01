@@ -110,11 +110,15 @@ export type CommandResult =
 
 /**
  * Whether a command was refused unsent because its session was not in a state
- * to take it, as when its connection drops before its source can say so. Only a
- * change in what the session reports can mend that, so it waits for one.
+ * to take it, as when its connection drops, or Reactor or its moderation ends
+ * the session, before its source can say so. Only a change in what the session
+ * reports can mend that, so it waits for one.
  */
 const unready = (cause: CommandFailure): boolean =>
-  cause.context.outcome === "not-submitted" && cause.reason._tag === "InvalidState";
+  cause.context.outcome === "not-submitted" &&
+  (cause.reason._tag === "InvalidState" ||
+    cause.reason._tag === "TerminalSession" ||
+    cause.reason._tag === "Moderated");
 
 /** Whether a command that failed may have taken effect unseen. */
 const uncertain = (result: Exclude<CommandResult, { readonly _tag: "Done" }>): boolean =>
