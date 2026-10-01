@@ -13,17 +13,33 @@ export interface Ingest {
   readonly url: Redacted.Redacted<string>;
   /** The scheme and host, such as `rtmp://live.twitch.tv`. */
   readonly host: string;
+  /**
+   * What a log line must not show: the URL's path and query, its last path
+   * segment and its query alone, longest first. The stream key is one of them.
+   */
+  readonly hidden: Redacted.Redacted<ReadonlyArray<string>>;
 }
 
-// The scheme and host, then the rest. The URL goes to ffmpeg's tee muxer, which
-// reads whitespace, `|`, `[`, `]`, `\` and `'` as its own syntax.
-const ingestUrl = /^(rtmps?:\/\/[^\s/|[\]\\']+)[^\s|[\]\\']*$/;
+// The scheme and host, with no user or password, then the path and query.
+// The URL goes to ffmpeg's tee muxer, which reads whitespace, `|`, `[`, `]`,
+// `\` and `'` as its own syntax.
+const ingestUrl = /^(rtmps?:\/\/[^\s/?#@|[\]\\']+)([/?][^\s|[\]\\']*)?$/;
 
 const ingestOf = (url: Redacted.Redacted<string>): Effect.Effect<Ingest, SettingsError> => {
-  const host = ingestUrl.exec(Redacted.value(url))?.[1];
-  return host === undefined
-    ? SettingsError.make({ message: "CHANNEL_RTMP_URL must be an rtmp:// or rtmps:// URL" })
-    : Effect.succeed({ url, host });
+  const [, host, rest = ""] = ingestUrl.exec(Redacted.value(url)) ?? [];
+  if (host === undefined)
+    return SettingsError.make({
+      message: "CHANNEL_RTMP_URL must be an rtmp:// or rtmps:// URL with no user or password",
+    });
+  const mark = rest.indexOf("?");
+  const path = mark < 0 ? rest : rest.slice(0, mark);
+  const query = mark < 0 ? "" : rest.slice(mark + 1);
+  const last = path.slice(path.lastIndexOf("/") + 1);
+  return Effect.succeed({
+    url,
+    host,
+    hidden: Redacted.make([rest, last, query].filter((part) => part.length > 1)),
+  });
 };
 
 /**

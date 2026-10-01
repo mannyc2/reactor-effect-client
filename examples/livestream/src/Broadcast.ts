@@ -122,15 +122,38 @@ const encoderArgs = (frame: VideoFrame, ingest: string | undefined): readonly st
 ];
 
 /**
- * Cuts an ingest's path, which holds its stream key, out of a line ffmpeg
- * wrote: ffmpeg names its output with every connection that fails.
+ * Cuts the parts of an ingest's URL that may hold its stream key out of a
+ * line ffmpeg wrote: ffmpeg names its output with every connection that
+ * fails, and a server's refusal may name the key alone.
  */
-const redact =
-  (ingest: Ingest | undefined) =>
-  (line: string): string => {
-    const path = ingest === undefined ? "" : Redacted.value(ingest.url).slice(ingest.host.length);
-    return path.length > 1 ? line.replaceAll(path, "/…") : line;
-  };
+const redact = (ingest: Ingest | undefined): ((line: string) => string) => {
+  const hidden = ingest === undefined ? [] : Redacted.value(ingest.hidden);
+  return (line) =>
+    hidden.reduce((cut, part) => cut.replaceAll(part, part.startsWith("/") ? "/…" : "…"), line);
+};
+
+/**
+ * ffmpeg's lines for the log, each at most once a minute with how often it
+ * came in between: a refused ingest repeats the same lines at every retry.
+ */
+const collapse = <E>(
+  lines: Stream.Stream<string, E>,
+): Stream.Stream<{ readonly line: string; readonly repeats: number }, E> =>
+  lines.pipe(
+    Stream.mapEffect((line) => Effect.map(Clock.currentTimeMillis, (at) => ({ line, at }))),
+    Stream.mapAccum(
+      () => new Map<string, { readonly at: number; readonly repeats: number }>(),
+      (logged, { line, at }) => {
+        const last = logged.get(line);
+        if (last !== undefined && at - last.at < 60_000)
+          return [new Map(logged).set(line, { ...last, repeats: last.repeats + 1 }), []] as const;
+        return [
+          new Map(logged).set(line, { at, repeats: 0 }),
+          [{ line, repeats: last?.repeats ?? 0 }],
+        ] as const;
+      },
+    ),
+  );
 
 /**
  * A steady 24 ticks per second on the Effect clock. A late tick is followed at
@@ -184,7 +207,8 @@ export class Broadcast extends Context.Service<
   }
 >()("reactor-effect-example-livestream/Broadcast") {
   /**
-   * Fails when ffmpeg is not on PATH, or can't send to the ingest's protocol.
+   * Fails when ffmpeg is not on PATH, lacks an encoder or muxer the broadcast
+   * uses, or can't send to the ingest's protocol.
    * The application builds it before the playout, so a host that can't
    * broadcast never opens a paid session.
    */
@@ -200,7 +224,19 @@ export class Broadcast extends Context.Service<
               BroadcastError.make({ message: "the broadcast needs ffmpeg on PATH" }),
             ),
           );
-      yield* ffmpeg(["-version"]);
+      // Lists name one encoder or muxer a line, its flags first.
+      const named = (listing: string) =>
+        new Set(listing.split("\n").map((line) => line.trim().split(/\s+/)[1]));
+      const encoders = named(yield* ffmpeg(["-encoders"]));
+      const muxers = named(yield* ffmpeg(["-muxers"]));
+      const lacking = [
+        ...["libx264", "aac"].filter((name) => !encoders.has(name)),
+        ...["tee", "mp4", ...(ingest === undefined ? [] : ["fifo", "flv"])].filter(
+          (name) => !muxers.has(name),
+        ),
+      ];
+      if (lacking.length > 0)
+        return yield* BroadcastError.make({ message: `this ffmpeg lacks ${lacking.join(", ")}` });
       if (ingest === undefined) return;
       const scheme = ingest.host.slice(0, ingest.host.indexOf(":"));
       const protocols = yield* ffmpeg(["-protocols"]);
@@ -216,6 +252,7 @@ export class Broadcast extends Context.Service<
       const media = yield* ChannelMedia;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const { ingest } = yield* Settings;
+      const cut = redact(ingest);
       const latest = yield* Ref.make(Option.none<VideoFrame>());
       const arrived = yield* SubscriptionRef.make(0);
       const audience = yield* SubscriptionRef.make(0);
@@ -272,8 +309,10 @@ export class Broadcast extends Context.Service<
           yield* encoder.stderr.pipe(
             Stream.decodeText(),
             Stream.splitLines,
-            Stream.runForEach((line) =>
-              Effect.logWarning("ffmpeg", { line: redact(ingest)(line) }),
+            Stream.map(cut),
+            collapse,
+            Stream.runForEach(({ line, repeats }) =>
+              Effect.logWarning("ffmpeg", repeats === 0 ? { line } : { line, repeats }),
             ),
             Effect.ignore,
             Effect.forkScoped,

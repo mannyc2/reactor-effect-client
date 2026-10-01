@@ -6,7 +6,7 @@ The page shows the program with a LIVE badge, what is on air and who asked for i
 
 ## Run it offline
 
-Needs Node 22.18 or newer and `ffmpeg` on `PATH`. From the repository root:
+Needs Node 22.18 or newer and an `ffmpeg` with libx264 and AAC on `PATH`; the server checks it before it opens any session. From the repository root:
 
 ```sh
 bun install && bun run build
@@ -35,7 +35,7 @@ This example's live mode has not run on hosted Reactor. The 0.8.0 playout has, o
 CHANNEL_RTMP_URL=rtmp://live.twitch.tv/app/<stream key> node examples/livestream/src/main.ts
 ```
 
-Take the ingest URL and stream key from the platform's stream settings; the URL may be `rtmp://` or `rtmps://`. So far the restream has run only against a local `rtmp://` listener, not a platform's ingest. The encoder then runs whether or not a browser watches, and the same encode goes to the ingest as FLV. If the ingest refuses or drops the connection, ffmpeg connects again every 5 seconds and resumes at a keyframe; if it falls behind, it loses its own packets and the browsers never wait for it. The stream key is cut out of every log line. To try it offline, listen with ffmpeg and point the channel at it:
+Take the ingest URL and stream key from the platform's stream settings; the URL may be `rtmp://` or `rtmps://`. So far the restream has run only against a local `rtmp://` listener, not a platform's ingest. The encoder then runs whether or not a browser watches, and the same encode goes to the ingest as FLV. If the ingest refuses or drops the connection, ffmpeg connects again every 5 seconds and resumes at a keyframe; if it falls behind, it loses its own packets and the browsers never wait for it. The URL's path, its last segment and its query are cut out of every log line, and a URL with a user or password in it is refused. The URL, key included, is on ffmpeg's command line, where other users of the same host can read it in the process list, so run a restreaming channel on a host of its own. To try it offline, listen with ffmpeg and point the channel at it:
 
 ```sh
 ffmpeg -listen 1 -i rtmp://127.0.0.1:1935/live/test -c copy out.flv &
@@ -101,7 +101,7 @@ bun run check:examples     # from the root; or `npx vitest run` here
 ## Limits
 
 - **What a viewer sees is not proven.** A clip's start is the session's report, and the page waits for the broadcast to receive a frame after it; whether a viewer's screen showed it is their player's business.
-- **The ingest's state is in the server log only.** ffmpeg reports a failed connection there; the page does not show the restream.
+- **The ingest's state is in the server log only.** ffmpeg reports a failed connection there, each line at most once a minute with how often it repeated; the page does not show the restream.
 - **Prompts are public.** Anyone who can reach the server shares the channel; a real deployment authenticates viewers and moderates prompts before Reactor's own moderation does.
 - **Clip failure reasons stay private.** An H3 `clip_failed` reason is provider text, so the as-run log says only `Failed · Clip`.
 - **The encoder stops with its run.** Its input queues end before shutdown, and its writers belong to that run's scope. In this repository Bun patches the pinned Node process adapter (`patches/`) to keep input-pipe error listeners through teardown, so a pipe reset after writing ended cannot crash the channel. An application built from this example installs the unpatched adapter, where a reset at that moment can still end the process until Effect fixes it; ending the inputs first makes it rare. ffmpeg is killed with `SIGKILL`: it catches `SIGTERM` and can remain blocked reading an input pipe.
