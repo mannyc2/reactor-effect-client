@@ -83,8 +83,9 @@ A submission is refused before anything is sent with one of these tagged errors:
 | `WouldMissDeadline` | The plan cannot start the item before its firm `startBy`                |
 | `PlayoutClosed`     | The playout is draining or closed                                       |
 
-Give every request its `seconds`. The plan counts a request without one as 5 seconds, while H3
-builds it at the session's own clip length: 15 s on the simulated H3.
+An item whose request omits `seconds` is sent at 5 seconds, the length the plan counts it at.
+A filler request without `seconds` is sent at the length passed to its `clip` callback in
+`FillContext.seconds`. A request that names its length is sent unchanged.
 
 ## Lanes
 

@@ -91,10 +91,10 @@ const firstClip = Effect.gen(function* () {
   ready 3.06 s after the kill.
 - **Billing safety as an API.** Every creating token must state its session's cap, `close` confirms
   termination with an independent read, and `Session.mayStillBill` says whether a closed session
-  may still bill. All 27 paid sessions in the hosted evidence ended with termination confirmed.
+  may still bill. All 28 paid sessions in the hosted evidence ended with termination confirmed.
 
-The hosted figures come from paid runs between 2026-09-24 and 2026-09-29, on the 0.3.0-rc.0 to
-0.8.0 libraries; [below](#measured-on-hosted-reactor) each one names its run.
+The hosted figures come from paid runs between 2026-09-24 and 2026-10-01, on the 0.3.0-rc.0 to
+0.9.0 libraries; [below](#measured-on-hosted-reactor) each one names its run.
 
 ## Examples
 
