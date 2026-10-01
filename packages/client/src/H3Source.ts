@@ -10,7 +10,6 @@
  */
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
-import * as Context from "effect/Context";
 import type * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -24,12 +23,12 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import * as Tracer from "effect/Tracer";
 import type { TokenGrant, Tokens } from "./CoordinatorClient.js";
 import * as H3 from "./H3.js";
 import type { DecodedMedia, MediaPressure } from "./Media.js";
 import type { Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
 import * as Tag from "./internal/playout/tag.js";
+import { currentParent, spanOptions } from "./internal/trace.js";
 import { noAcquisition, Reactor } from "./Reactor.js";
 import type { CreateOptions } from "./Reactor.js";
 import { AcquisitionFailure, CommandFailure, ReactorError } from "./ReactorError.js";
@@ -245,17 +244,7 @@ const fromSession = Effect.fnUntraced(function* (
   session: Session,
   options: Options & { readonly resumed: boolean },
 ) {
-  let parent = Option.getOrUndefined(yield* Effect.serviceOption(Tracer.ParentSpan));
-  while (parent !== undefined && Context.get(parent.annotations, Tracer.DisablePropagation))
-    parent = parent._tag === "Span" ? Option.getOrUndefined(parent.parent) : undefined;
-  const acquisition =
-    parent === undefined
-      ? undefined
-      : Tracer.externalSpan({
-          traceId: parent.traceId,
-          spanId: parent.spanId,
-          sampled: parent.sampled,
-        });
+  const acquisition = yield* currentParent;
   const provider = yield* H3.make(session, options.provider);
   // A resumed session usually has the setting its owner gave it, so resuming only reads.
   const flush = !(options.holdLastFrame ?? true);
@@ -314,9 +303,7 @@ const fromSession = Effect.fnUntraced(function* (
       Effect.withSpan(
         "H3Source.recover",
         {
-          root: true,
-          sampled: acquisition?.sampled,
-          links: acquisition === undefined ? [] : [{ span: acquisition, attributes: {} }],
+          ...spanOptions({ acquisition }),
           attributes: { "reactor.session.id": session.id },
         },
         { captureStackTrace: false },

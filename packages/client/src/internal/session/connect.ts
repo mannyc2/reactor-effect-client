@@ -30,6 +30,7 @@ import type { ReadyDescriptor } from "../../Session.js";
 import { take } from "../queue.js";
 import * as Stats from "../stats.js";
 import type { Token } from "../token.js";
+import { currentParent, spanOptions } from "../trace.js";
 import { type Generation, retired } from "./generation.js";
 import type { Ice } from "./ice.js";
 import type { Inbound } from "./inbound.js";
@@ -517,11 +518,11 @@ export const make = ({
    * interrupt that comes while it begins lands in the negotiation, and still fails and closes it.
    * The session's own attempt that fails before it has a generation says why, as a failed
    * generation does: no caller hears of it otherwise. Its span begins a trace of its own, linked
-   * to the session's `acquisition`, which may have ended hours before, and it keeps the generation
-   * it begins in `began`. A reconnect asked for while the session reconnects on its own waits that
-   * reconnect out, and ends as it does.
+   * to the session's `acquisition`, which may have ended hours before, and unsampled if that was,
+   * and it keeps the generation it begins in `began`. A reconnect asked for while the session
+   * reconnects on its own waits that reconnect out, and ends as it does.
    */
-  const attempt = (kind: Attempt, acquisition?: Tracer.AnySpan, began?: Ref.Ref<bigint>) =>
+  const attempt = (kind: Attempt, acquisition?: Tracer.ExternalSpan, began?: Ref.Ref<bigint>) =>
     Effect.acquireUseRelease(
       kind === "own"
         ? begin(kind, began).pipe(
@@ -549,13 +550,7 @@ export const make = ({
       Effect.scoped,
       Effect.withSpan(
         kind === "connect" ? "Session.connect" : "Session.reconnect",
-        kind === "own"
-          ? {
-              kind: "client",
-              root: true,
-              links: acquisition === undefined ? [] : [{ span: acquisition, attributes: {} }],
-            }
-          : { kind: "client" },
+        kind === "own" ? { kind: "client", ...spanOptions({ acquisition }) } : { kind: "client" },
         { captureStackTrace: false },
       ),
     );
@@ -617,7 +612,7 @@ export const make = ({
    */
   const reconnectEachDrop = (
     schedule: Schedule.Schedule<unknown, ReactorError>,
-    acquisition: Tracer.AnySpan | undefined,
+    acquisition: Tracer.ExternalSpan | undefined,
   ) =>
     Effect.gen(function* () {
       const dropped = yield* SubscriptionRef.changes(state).pipe(
@@ -694,8 +689,7 @@ export const make = ({
       reconnects: true,
       reconnecting: session.status === "disconnected",
     }));
-    const acquisition = Option.getOrUndefined(yield* Effect.option(Effect.currentParentSpan));
-    yield* Effect.forkIn(reconnectEachDrop(settings.reconnect, acquisition), root);
+    yield* Effect.forkIn(reconnectEachDrop(settings.reconnect, yield* currentParent), root);
   });
 
   return { allocate, connect: attempt("connect"), reconnect: attempt("reconnect"), arm };

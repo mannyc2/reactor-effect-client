@@ -9,7 +9,6 @@
  */
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
-import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -32,6 +31,7 @@ import { metadataMaxChars, requestSeconds } from "../h3/profile.js";
 import { validateAudioReference, validateReference } from "../h3/references.js";
 import { Request } from "../h3/request.js";
 import { take } from "../queue.js";
+import { currentParent, spanOptions } from "../trace.js";
 import { AcquisitionFailure, CommandFailure, ReactorError } from "../../ReactorError.js";
 import type { ReactorFailure } from "../../ReactorError.js";
 import { mayStillBill } from "../../Session.js";
@@ -62,17 +62,6 @@ type QueuedCommand = {
   readonly action: Command;
   readonly parent: Tracer.ExternalSpan | undefined;
 };
-
-// Queued work keeps only trace identity, rather than the caller's mutable span and services.
-const currentParent = Effect.map(Effect.serviceOption(Tracer.ParentSpan), (parent) => {
-  let span = Option.getOrUndefined(parent);
-  // Match Effect's parent selection: disabled spans are skipped, never exported as "noop" IDs.
-  while (span !== undefined && Context.get(span.annotations, Tracer.DisablePropagation))
-    span = span._tag === "Span" ? Option.getOrUndefined(span.parent) : undefined;
-  return span === undefined
-    ? undefined
-    : Tracer.externalSpan({ traceId: span.traceId, spanId: span.spanId, sampled: span.sampled });
-});
 
 /** Close reports kept beyond the unconfirmed ones. */
 const retainedReports = 8;
@@ -246,11 +235,6 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   const nextId = Ref.modify(ids, (id) => [id + 1, id + 1] as const);
   const offer = (input: Policy.Input, parent?: Tracer.ExternalSpan) =>
     Queue.offer(inbox, { input, parent });
-  const links = (parent?: Tracer.ExternalSpan): ReadonlyArray<Tracer.SpanLink> =>
-    acquisition === undefined ||
-    (parent?.traceId === acquisition.traceId && parent.spanId === acquisition.spanId)
-      ? []
-      : [{ span: acquisition, attributes: {} }];
 
   const handle = (key: ItemKey): Effect.Effect<Handle> =>
     Effect.gen(function* () {
@@ -364,9 +348,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         Effect.withSpan(
           "Playout.command",
           {
-            parent,
-            root: parent === undefined,
-            links: links(parent),
+            ...spanOptions({ acquisition, parent }),
             attributes: {
               "reactor.playout.command": command._tag,
               "reactor.playout.command.id": action.id,
@@ -401,7 +383,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         orElse: () =>
           Effect.fail(ReactorError.fromCode("Timeout", "opening a session took too long")),
       }),
-      Effect.withSpan("Playout.open", { root: true, links: links() }, { captureStackTrace: false }),
+      Effect.withSpan("Playout.open", spanOptions({ acquisition }), { captureStackTrace: false }),
       Scope.provide(child),
       Effect.provide(context),
       Effect.exit,

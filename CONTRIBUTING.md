@@ -116,8 +116,9 @@ Read `packages/client/node_modules/effect/AGENTS.md` completely before writing E
 `ai-docs`, declarations and source for the APIs you use. Bun's isolated linker leaves no copy at
 the root. Use the installed version's APIs; snippets from elsewhere may target another prerelease.
 
-- **Services.** A service is a `Context.Service` with a static `layer` built with `Service.of`, one
-  concern each. Its key is the one the `deterministicKeys` rule computes from the package, module
+- **Services.** A service is a `Context.Service` with a `layer` built with `Service.of` beside it:
+  a module export in a library module, a static on an application's service class. One concern
+  each. Its key is the one the `deterministicKeys` rule computes from the package, module
   and class. Constructors are `make`, `layer` and `layerConfig`; a test double is `layerTest`. A
   service with one implementation, one caller and no seam folds into its caller.
 - **Functions.** Service methods and reusable operations that are a tracing boundary are

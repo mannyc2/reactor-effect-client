@@ -100,7 +100,6 @@ describe("LocalSource", () => {
     }),
   );
 
-  // e3a1bf96 queued clips without their submitting context, so both hooks inherited acquisition.
   it.effect("keeps each queued clip's trace and sampling through build and presentation", () => {
     const spans: Array<Tracer.Span> = [];
     const tracer = Tracer.make({

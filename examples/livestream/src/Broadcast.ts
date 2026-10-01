@@ -207,9 +207,11 @@ export class Broadcast extends Context.Service<
           const failed = yield* Deferred.make<never, BroadcastError>();
           const fail = (message: string) =>
             Deferred.fail(failed, BroadcastError.make({ message })).pipe(Effect.asVoid);
-          // End the inputs before closing the encoder. The scoped writers stop
-          // with this run, and the process adapter keeps its pipe error listeners
-          // through teardown even after a writer has finished.
+          // End the inputs before closing the encoder, so the writers usually
+          // finish first. The scoped writers stop with this run. Only this
+          // repository's patched process adapter keeps a pipe's error listener
+          // after its writer finishes; the published one can still crash on a
+          // reset at that moment.
           const write = (queue: Queue.Queue<Uint8Array, Cause.Done>, pipe: typeof encoder.stdin) =>
             Stream.fromQueue(queue).pipe(
               Stream.run(pipe),

@@ -48,7 +48,6 @@ scenario("a correlated reply accepts the clip, and the caller then finds it queu
   }),
 );
 
-// 7505e742 left H3 refusals outside the successful Session.command span.
 scenario("records an H3 refusal after the transport successfully delivered its reply", () =>
   Effect.gen(function* () {
     yield* Effect.forkScoped(ReactorTest.flow());

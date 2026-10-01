@@ -25,7 +25,6 @@
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
-import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -46,6 +45,7 @@ import * as Tracer from "effect/Tracer";
 import type { Request } from "./H3.js";
 import * as Deadline from "./internal/deadline.js";
 import { requestSeconds } from "./internal/h3/profile.js";
+import { currentParent, spanOptions } from "./internal/trace.js";
 import type { AudioFrame, VideoFrame } from "./Media.js";
 import type { ClipTag, Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
 import { noAcquisition } from "./Reactor.js";
@@ -189,16 +189,6 @@ const played = (clip: LocalClip): Effect.Effect<void> =>
 const release = (scope: Scope.Closeable, exit: Exit.Exit<unknown, unknown>) =>
   Effect.uninterruptible(Scope.close(scope, exit));
 
-// Retain causal identity without retaining the caller's services or mutable span.
-const currentParent = Effect.map(Effect.serviceOption(Tracer.ParentSpan), (parent) => {
-  let span = Option.getOrUndefined(parent);
-  while (span !== undefined && Context.get(span.annotations, Tracer.DisablePropagation))
-    span = span._tag === "Span" ? Option.getOrUndefined(span.parent) : undefined;
-  return span === undefined
-    ? undefined
-    : Tracer.externalSpan({ traceId: span.traceId, spanId: span.spanId, sampled: span.sampled });
-});
-
 const make = Effect.fnUntraced(function* <A, E, R, E2, R2>(
   build: Build<A, E, R>,
   present: Present<A, E2, R2>,
@@ -212,14 +202,8 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2>(
   const hex = (yield* Random.nextIntBetween(0, Number.MAX_SAFE_INTEGER)).toString(16);
   const sessionId = `local-${hex.padStart(14, "0")}`;
   const acquisition = yield* currentParent;
-  const spanOptions = (clip: QueuedClip): Tracer.SpanOptionsNoTrace => ({
-    parent: clip.parent,
-    root: clip.parent === undefined,
-    links:
-      acquisition === undefined ||
-      (clip.parent?.traceId === acquisition.traceId && clip.parent.spanId === acquisition.spanId)
-        ? []
-        : [{ span: acquisition, attributes: {} }],
+  const hookOptions = (clip: QueuedClip): Tracer.SpanOptionsNoTrace => ({
+    ...spanOptions({ acquisition, parent: clip.parent }),
     attributes: {
       "reactor.session.id": sessionId,
       "reactor.clip.id": clip.clipId,
@@ -231,7 +215,7 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2>(
     clip: QueuedClip,
     effect: Effect.Effect<X, Y, Z>,
   ) =>
-    Effect.useSpan(`LocalSource.${name}`, spanOptions(clip), (span) =>
+    Effect.useSpan(`LocalSource.${name}`, hookOptions(clip), (span) =>
       effect.pipe(
         Effect.withParentSpan(span, { captureStackTrace: false }),
         Effect.onExit((exit) => {

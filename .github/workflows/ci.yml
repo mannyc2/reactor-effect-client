@@ -221,7 +221,14 @@ jobs:
           key: ${{ steps.identity.outputs.key }}
 
       # A pull request's cache is private to its merge ref. Main can instead
-      # reuse exact-input artifacts from a successful CI run in this repository.
+      # reuse exact-input artifacts from a successful CI run in this repository
+      # whose pull request head is already on main: the key binds the native
+      # inputs, not the install and build scripts the run executed first.
+      # The artifact also holds that pull request's tracked platform files,
+      # which the key doesn't hash either, so only the addon is taken:
+      # restaging writes its identity, license and notices from main's
+      # checkout. Main's cache keeps a reused addon, so the step summary names
+      # the run that built it.
       - name: Reuse an addon qualified by a pull request
         id: reused
         if: github.ref == 'refs/heads/main' && steps.staged.outputs.cache-hit != 'true'
@@ -245,6 +252,12 @@ jobs:
             if [ -z "$source" ]; then
               continue
             fi
+            if ! comparison=$(gh api "repos/$GITHUB_REPOSITORY/compare/$source...$GITHUB_SHA" --jq .status); then
+              continue
+            fi
+            if [ "$comparison" != ahead ] && [ "$comparison" != identical ]; then
+              continue
+            fi
             if ! previous_workflow=$(gh api --method GET "repos/$GITHUB_REPOSITORY/contents/.github/workflows/ci.yml" -f "ref=$source" --jq '.sha'); then
               continue
             fi
@@ -258,13 +271,14 @@ jobs:
               continue
             fi
             rm -rf "$scratch"
-            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$addon" --dir "$scratch/addon" && gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$far_peer" --dir "$scratch/far-peer" && [ -f "$scratch/far-peer/far_peer" ] && [ -f "$scratch/addon/reactor-effect-native.$PLATFORM.node" ] && [ -f "$scratch/addon/native-identity.json" ]; then
-              cp -a "$scratch/addon/." "packages/native/npm/$PLATFORM/"
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$addon" --dir "$scratch/addon" && gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$far_peer" --dir "$scratch/far-peer" && [ -f "$scratch/far-peer/far_peer" ] && [ -f "$scratch/addon/reactor-effect-native.$PLATFORM.node" ]; then
+              cp "$scratch/addon/reactor-effect-native.$PLATFORM.node" "packages/native/npm/$PLATFORM/"
               mkdir -p packages/native/rust/target/release/examples
               cp "$scratch/far-peer/far_peer" packages/native/rust/target/release/examples/far_peer
               chmod +x packages/native/rust/target/release/examples/far_peer
               echo "cache-hit=true" >> "$GITHUB_OUTPUT"
-              echo "Reusing native artifacts from successful pull request CI run $run"
+              echo "Reusing native artifacts from successful pull request CI run $run at $source"
+              printf 'Reused the %s addon and far peer built by pull request CI run [%s](%s) at head %s.\n' "$PLATFORM" "$run" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run" "$source" >> "$GITHUB_STEP_SUMMARY"
               rm -rf "$scratch"
               exit 0
             fi
