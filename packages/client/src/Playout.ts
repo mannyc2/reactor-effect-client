@@ -72,7 +72,10 @@ export type Start =
       readonly _tag: "At";
       /** Epoch milliseconds: a wall-clock instant, so a clock correction moves it. */
       readonly time: number;
-      /** What to do when the boundary after `time` comes late. */
+      /**
+       * What to do when the boundary after `time` comes late. A start already under way when it
+       * goes late, as a firm `startBy`'s, may still land.
+       */
       readonly late:
         | { readonly _tag: "nextBoundary" }
         | { readonly _tag: "skipIfLaterThan"; readonly by: Duration.Input }
@@ -89,7 +92,11 @@ export interface Cue {
 export interface Window {
   readonly notBefore?: Duration.Input | undefined;
   readonly startBy?: Duration.Input | undefined;
-  /** A firm item is dropped at `startBy`; a soft one may still air, recorded as late. */
+  /**
+   * A firm item is dropped at `startBy`; a soft one may still air, recorded as late. A start
+   * already under way at that instant, a clip the provider holds armed for its seam or a `play` of
+   * it in flight, may still land, up to a command's round trip past it.
+   */
   readonly firm: boolean;
 }
 
@@ -132,8 +139,9 @@ export interface PlaceProbe {
  * A clip not built yet counts at the length the last clip that asked for as
  * much aired at, else at the median ratio of aired to requested length, so
  * `startsAt` may be off by up to a step of the provider's grid (0.7 s on H3)
- * for each clip ahead at a length not asked for before. A guarded start can
- * also wait for a provider command, whose latency is not projected.
+ * for each clip ahead at a length not asked for before. While a `follows`
+ * item waits on a session, that session starts its clips with a provider
+ * command, whose latency is not projected.
  */
 export interface Placement {
   /** The clip it would follow: pass it as `follows`. */
@@ -163,9 +171,11 @@ export interface Placement {
    */
   readonly basis: "ready" | "projected" | "unmeasured";
   /**
-   * Whether the playout would ask for it to be built continuing from `after`,
-   * which it never does across a switch of sessions. The provider falls back
-   * to an independent clip without saying so.
+   * Whether, as projected, the playout would ask for it to be built continuing
+   * from `after`, which it never does across a switch of sessions. It decides
+   * again as it sends the build, and builds independent if a continued build
+   * would then end after `after` does. The provider falls back to an
+   * independent clip without saying so.
    */
   readonly continues: boolean;
 }
@@ -182,15 +192,21 @@ export interface ItemSpec extends ClipSpec {
    * before that clip. It waits, not airing, until that clip has aired, and is
    * built only while the air ahead of it outlasts its build, or before builds
    * are measured once that clip is Ready ahead of it. Autoplay is fenced
-   * before its build, so an early end cannot air it before that clip. If it
-   * is not Ready when that clip ends, it is dropped as `displaced`. A guarded
-   * start can wait for one provider command. It gets no filler cover; with
-   * `continuity`, it builds independent rather than miss; a replacement keeps
-   * it. A firm window on it is checked against a projection that puts it
-   * behind everything queued, so it is likely refused. It is refused with
-   * `InvalidItem` in a cutting lane, naming the item's own key or a group
-   * key, or naming filler on a playout without filler or by an index that is
-   * not a whole number.
+   * before its build, once a clip the provider reported starting plays on
+   * that session, so an early end cannot air it before that clip. If it is
+   * not Ready, on a session still open, when that clip ends, fails on air or
+   * is lost on air with its session, it is dropped as `displaced`; a planned
+   * switch keeps it. While it waits on a session, that session starts its
+   * clips with a provider command, a round trip after each boundary, so a
+   * command whose outcome is unknown can hold the air there dark until the
+   * provider's reply deadline. Following an item in a pending batch, it may be
+   * built and then dropped before the batch commits. It gets no filler cover;
+   * with `continuity`, it builds independent rather than miss; a replacement
+   * keeps it. A firm window on it is checked against a projection that puts
+   * it behind everything queued, so it is likely refused. It is refused with
+   * `InvalidItem` in a cutting lane, naming the item's own key or a group key,
+   * or naming filler on a playout without filler or by an index that is not a
+   * whole number.
    */
   readonly follows?: ClipTag | undefined;
 }
@@ -225,15 +241,21 @@ export interface InsertSpec extends ClipSpec {
    * before that clip. It waits, not airing, until that clip has aired, and is
    * built only while the air ahead of it outlasts its build, or before builds
    * are measured once that clip is Ready ahead of it. Autoplay is fenced
-   * before its build, so an early end cannot air it before that clip. If it
-   * is not Ready when that clip ends, it is dropped as `displaced`. A guarded
-   * start can wait for one provider command. It gets no filler cover; with
-   * `continuity`, it builds independent rather than miss; a replacement keeps
-   * it. A firm window on it is checked against a projection that puts it
-   * behind everything queued, so it is likely refused. It is refused with
-   * `InvalidItem` in a cutting lane, naming the item's own key or a group
-   * key, or naming filler on a playout without filler or by an index that is
-   * not a whole number.
+   * before its build, once a clip the provider reported starting plays on
+   * that session, so an early end cannot air it before that clip. If it is
+   * not Ready, on a session still open, when that clip ends, fails on air or
+   * is lost on air with its session, it is dropped as `displaced`; a planned
+   * switch keeps it. While it waits on a session, that session starts its
+   * clips with a provider command, a round trip after each boundary, so a
+   * command whose outcome is unknown can hold the air there dark until the
+   * provider's reply deadline. Following an item in a pending batch, it may be
+   * built and then dropped before the batch commits. It gets no filler cover;
+   * with `continuity`, it builds independent rather than miss; a replacement
+   * keeps it. A firm window on it is checked against a projection that puts
+   * it behind everything queued, so it is likely refused. It is refused with
+   * `InvalidItem` in a cutting lane, naming the item's own key or a group key,
+   * or naming filler on a playout without filler or by an index that is not a
+   * whole number.
    */
   readonly follows?: ClipTag | undefined;
 }
@@ -295,7 +317,7 @@ export type AsRunStatus =
       readonly at: number;
       readonly sessionId: string;
       readonly seconds: number;
-      /** How late a soft window let it start. */
+      /** How late it started, as observed here: past its window's `startBy`, else its `At` time. */
       readonly lateByMillis?: number | undefined;
     }
   | {
@@ -506,7 +528,11 @@ export interface SourceState {
   readonly available: boolean;
   /** Waiting to build, the build in flight first, in the provider's order. */
   readonly building: ReadonlyArray<SourceClip>;
-  /** Built and waiting to play, in playout order. */
+  /**
+   * Built and waiting to play, in playout order; a `move` position counts from its head. It may
+   * still list the clip named `playing`, as H3 does for a clip armed through its seam, and the
+   * playout counts that clip's length once.
+   */
   readonly ready: ReadonlyArray<SourceClip>;
   readonly playing: PlayingClip | undefined;
   /** Clips a new build can continue from. */
@@ -577,6 +603,11 @@ export type SourceEvent =
  *   a session is sent nothing else but, as it retires, the removal of its
  *   filler once its replacement has an item Ready. A `stop` or `play` ends its
  *   cut, and the cutter airs at the next boundary.
+ * - `play` also starts clips outside a cut: while a `follows` item fences a
+ *   session's autoplay, the playout starts that session's Ready head itself.
+ *   One that fails or dies is asked again once the session's queues change or
+ *   a second later, and one that succeeded is not sent again before its start
+ *   shows in them, or a second passes.
  */
 export interface Source {
   readonly sessionId: string;
@@ -621,7 +652,9 @@ export interface FillContext {
    * equal clips that tile the uncovered gap, none asking for less than its
    * share; ahead of an item whose build it covers (`filler.protect`), as long
    * as that takes; otherwise the shortest, which keeps boundaries, and so
-   * reactions, frequent.
+   * reactions, frequent. The playout plans with this length: the tiling
+   * before an `At` anchor and `place`'s `startsAt` count a filler clip not yet
+   * sent at it, so a request for another length moves them by the difference.
    */
   readonly seconds: number;
 }
@@ -755,11 +788,14 @@ export class Playout extends Context.Service<
      * Where a clip like `probe` would land: at the first boundary of the
      * projected air order it could make, submitted `submitIn` from now to
      * follow the clip before that boundary, as a submission its lane would
-     * take, without dropping or displacing anything submitted already. A clip that cannot air before the cap of the
-     * session on air is placed on its replacement. It never answers after a
-     * clip this playout did not enqueue, nor after a cut not yet on air, which
-     * it does not project. Null once the playout has stopped, with no session
-     * on air, or when no boundary is makeable, as before anything has aired.
+     * take, without dropping or displacing anything submitted already, and
+     * with its clip projected Ready a readiness margin and one provider
+     * command's round trip before the boundary. A clip that cannot air before
+     * the cap of the session on air is placed on its replacement, if it can
+     * air there before that one's cap. It never answers after a clip this
+     * playout did not enqueue, nor after a cut not yet on air, which it does
+     * not project. Null once the playout has stopped, with no session on air,
+     * or when no boundary is makeable, as before anything has aired.
      */
     readonly place: (probe: PlaceProbe) => Effect.Effect<Placement | null, InvalidItem>;
     /**
