@@ -211,14 +211,26 @@ layer(hosted)("tracing queued items", (it) => {
         const { playout, starts, events } = yield* start({
           lifetime: "18 seconds",
           renewal: { lead: "6 seconds" },
-        }).pipe(Effect.withSpan("acquisition", { root: true }, { captureStackTrace: false }));
+        }).pipe(
+          Effect.withSpan(
+            "acquisition",
+            { root: true, sampled: false },
+            { captureStackTrace: false },
+          ),
+        );
         const first = yield* playout
           .submit({ key: key("first"), lane: "line", request: clip("first") })
           .pipe(Effect.withSpan("caller.first", { root: true }, { captureStackTrace: false }));
         const spec = { key: key("second"), lane: "line", request: clip("second", 10) };
         const second = yield* playout
           .submit(spec)
-          .pipe(Effect.withSpan("caller.second", { root: true }, { captureStackTrace: false }));
+          .pipe(
+            Effect.withSpan(
+              "caller.second",
+              { root: true, sampled: false },
+              { captureStackTrace: false },
+            ),
+          );
         const duplicate = yield* playout
           .submit(spec)
           .pipe(Effect.withSpan("caller.duplicate", { root: true }, { captureStackTrace: false }));
@@ -243,6 +255,10 @@ layer(hosted)("tracing queued items", (it) => {
           callers.map((span) => span?.traceId),
         );
         assert.deepStrictEqual(
+          enqueues.map((span) => span.sampled),
+          [true, false],
+        );
+        assert.deepStrictEqual(
           spans
             .filter(
               (span) =>
@@ -251,6 +267,19 @@ layer(hosted)("tracing queued items", (it) => {
             )
             .map((span) => span.traceId),
           callers.map((span) => span?.traceId),
+        );
+        // The playout's own work, its opens and autonomous commands, keeps the acquisition's
+        // decision not to sample: only the traces of sampled callers are exported.
+        const exported = new Set(
+          spans
+            .filter((span) => span.name.startsWith("caller.") && span.sampled)
+            .map((span) => span.traceId),
+        );
+        assert.deepStrictEqual(
+          spans
+            .filter((span) => span.sampled && !exported.has(span.traceId))
+            .map((span) => span.name),
+          [],
         );
       }).pipe(Effect.withTracer(tracer));
     },

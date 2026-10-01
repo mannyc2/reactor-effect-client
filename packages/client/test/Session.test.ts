@@ -192,7 +192,9 @@ layer(environment({ timing }))("tracing a session's own reconnect", (it) => {
       assert.deepStrictEqual(
         [
           Option.isNone(reconnect?.parent ?? Option.none()),
-          reconnect?.links.map((link) => link.span === created),
+          reconnect?.links.map(
+            (link) => link.span.traceId === created?.traceId && link.span.spanId === created.spanId,
+          ),
         ],
         [true, [true]],
       );
