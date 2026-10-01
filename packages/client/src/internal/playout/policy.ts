@@ -2859,9 +2859,13 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const drainingNeeds = state.drains.length === 0 || fillerNeeded;
     for (const item of eligible(floorSeconds)) {
       const fenced = item.spec.follows === undefined || value.autoplay === false;
-      // A follower's fence goes up once a clip plays here with time to spare. Until the next clip
-      // starts, a seam away, nothing builds ahead of it.
-      if (!fenced && !fenceable && readyOf(value).length > 0) return;
+      // A follower's fence goes up once a clip plays here with time to spare. While the next clip
+      // is about to start, nothing playing or the clip on air ending within the margin, nothing
+      // builds ahead of it. A clip of unknown length may play for a while: what else can air goes.
+      const starting =
+        playing === undefined ||
+        (playing.seconds !== undefined && playingRestMs(value) <= readinessMarginMs);
+      if (!fenced && !fenceable && starting && readyOf(value).length > 0) return;
       // What cannot air before this session's cap waits for its replacement, and so does what
       // follows it, which would otherwise air ahead of it.
       if (!fits(target, item.spec.seconds)) break;

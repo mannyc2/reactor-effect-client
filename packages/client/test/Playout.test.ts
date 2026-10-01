@@ -706,6 +706,57 @@ layer(hosted)("resume", (it) => {
       yield* Scope.close(owned, Exit.void);
     }),
   );
+
+  // Adopted, the clip on air has no known length, so no follower's fence can go up before it ends.
+  it.effect("builds on while a follower waits out a clip of unknown length", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const sessionTokens = yield* tokens("10 minutes");
+      const recorded = yield* Deferred.make<H3Source.Allocation>();
+      const owned = yield* Scope.make();
+      const owner = yield* H3Source.open({
+        tokens: sessionTokens,
+        onAllocated: ({ allocation }) => Deferred.succeed(recorded, allocation),
+      }).pipe(Scope.provide(owned));
+      yield* owner.setAutoplay(true);
+      const playing = yield* owner.enqueue(clip("playing", 15), {
+        _tag: "Item",
+        key: key("playing"),
+      });
+      yield* owner.events.pipe(
+        Stream.filter((event) => event._tag === "State" && event.state.playing?.clipId === playing),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      const allocation = yield* Deferred.await(recorded);
+      const playout = yield* Playout.make({
+        open: H3Source.resume({ allocation, tokens: sessionTokens }),
+        lanes: [{ name: "line" }],
+      });
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      yield* playout.events.pipe(
+        Stream.runForEach((event) =>
+          event._tag === "AsRun"
+            ? Ref.update(events, (all) => [...all, `${event.event.key} ${event.event.status._tag}`])
+            : Effect.void,
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      yield* playout.submit({ key: key("x"), lane: "line", request: clip("x") });
+      const u = yield* playout.insert({
+        key: key("u"),
+        request: clip("u"),
+        after: key("x"),
+        follows: { _tag: "Item", key: key("x") },
+      });
+      const y = yield* playout.submit({ key: key("y"), lane: "line", request: clip("y") });
+      assert.strictEqual((yield* y.outcome)._tag, "Ended");
+      assert.strictEqual((yield* u.outcome)._tag, "Ended");
+      const all = yield* Ref.get(events);
+      assert.isBelow(all.indexOf("y Ready"), all.indexOf("x Started"));
+      yield* Scope.close(owned, Exit.void);
+    }),
+  );
 });
 
 layer(hosted)("time", (it) => {
