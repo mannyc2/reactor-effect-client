@@ -12,11 +12,12 @@ import { Api, TokenUnavailable } from "./Api.ts";
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 
 /**
- * A token that creates a session caps it at five minutes, so a page closed
- * without cleanup leaves it running no longer than that: Reactor bills a
- * session per second from ready until it ends.
+ * A token that creates a session caps it at two minutes, enough for a demo.
+ * Reactor bills a session per second from ready until it ends, so a session
+ * its page could not close, after a crash or a lost connection, bills no
+ * longer than that.
  */
-const sessionCap = Duration.minutes(5);
+const sessionCap = Duration.minutes(2);
 
 /**
  * Mints one token per request. A bound token lets a session go on past its

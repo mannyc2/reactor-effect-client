@@ -16,6 +16,7 @@ import {
   SubscriptionRef,
 } from "effect";
 import type { ManagedRuntime } from "effect";
+import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
 import * as H3 from "reactor-effect-client/H3";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { isReactorFailure, ReactorError, summarize } from "reactor-effect-client/ReactorError";
@@ -351,8 +352,18 @@ const setting = Effect.fn("setting")(
     if (which === "autoplay") yield* live.provider.setAutoplay(on);
     else yield* live.provider.setFlushOnClipEnd(!on);
   },
-  (effect, _live, which) =>
-    effect.pipe(Effect.catch((error) => log("failure", `${which} failed`, error))),
+  // A refused setting leaves the toggle showing H3's state, not the click.
+  (effect, live, which) =>
+    effect.pipe(
+      Effect.catch((error) =>
+        log("failure", `${which} failed`, error).pipe(
+          Effect.andThen(live.provider.snapshot),
+          Effect.flatMap((snapshot) =>
+            Effect.sync(() => Page.provider({ snapshot, contract: live.provider.contract })),
+          ),
+        ),
+      ),
+    ),
 );
 
 /** Reads a dropped or picked file and validates it once, so every clip reuses it as it is. */
@@ -409,6 +420,25 @@ const sampleImage = Effect.tryPromise({
       detail: cause,
     }),
 });
+
+/**
+ * Requests that outlive the page. A page that goes away mid-close drops its
+ * ordinary requests, so the session's DELETE would never reach Reactor and the
+ * session would run on to its cap. The close starts its DELETE before the
+ * `pagehide` handler returns, and a keepalive request is delivered after the
+ * page is gone. The close sends no body, within keepalive's 64 KiB.
+ * `CoordinatorClient` sets its own `RequestInit`, so the flag goes through the
+ * `fetch` it calls; requests that do not use `fetch`, such as the simulator's,
+ * are unaffected.
+ */
+const outliving = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.updateService(
+    effect,
+    FetchHttpClient.Fetch,
+    (fetch): typeof globalThis.fetch =>
+      (input, init) =>
+        fetch(input, { ...init, keepalive: true }),
+  );
 
 /** The page's state: at most one session, which takes seconds to start. */
 type State =
@@ -500,7 +530,7 @@ export const mount = <E>(runtime: ManagedRuntime.ManagedRuntime<Services, E>): v
       (live) => {
         state = { _tag: "Live", live, sound: false };
         controls();
-        if (starting.stopRequested) void stop();
+        if (starting.stopRequested) void stop(false);
       },
       (error: unknown) => {
         state = { _tag: "Idle" };
@@ -515,7 +545,7 @@ export const mount = <E>(runtime: ManagedRuntime.ManagedRuntime<Services, E>): v
    * the scope, which releases the picture, the observers and every clip's
    * follower and reuses that report.
    */
-  const stop = (): Promise<void> => {
+  const stop = (leaving: boolean): Promise<void> => {
     if (state._tag === "Starting") {
       state.stopRequested = true;
       note("page", "stopping once the session has connected");
@@ -529,7 +559,8 @@ export const mount = <E>(runtime: ManagedRuntime.ManagedRuntime<Services, E>): v
     return runtime
       .runPromise(
         Effect.gen(function* () {
-          const report = yield* live.session.close;
+          const close = live.session.close;
+          const report = yield* leaving ? outliving(close) : close;
           yield* Scope.close(live.scope, Exit.void);
           return {
             report,
@@ -558,7 +589,7 @@ export const mount = <E>(runtime: ManagedRuntime.ManagedRuntime<Services, E>): v
         controls();
       });
   };
-  stopButton.addEventListener("click", () => void stop());
+  stopButton.addEventListener("click", () => void stop(false));
 
   reconnectButton.addEventListener("click", () => {
     if (state._tag !== "Live") return;
@@ -674,10 +705,15 @@ export const mount = <E>(runtime: ManagedRuntime.ManagedRuntime<Services, E>): v
     for (const file of event.dataTransfer?.files ?? []) add(file.name, file);
   });
 
-  // Leaving the page closes what it can; the session's cap bounds anything a
-  // closing tab cannot finish.
-  window.addEventListener("pagehide", () => {
-    void stop().then(
+  // Leaving the page ends its session. A page the browser keeps in its
+  // back/forward cache comes back to this same runtime, so only a page that is
+  // going away for good disposes it.
+  window.addEventListener("pagehide", (event) => {
+    if (event.persisted) {
+      void stop(true);
+      return;
+    }
+    void stop(true).then(
       () => runtime.dispose(),
       () => runtime.dispose(),
     );

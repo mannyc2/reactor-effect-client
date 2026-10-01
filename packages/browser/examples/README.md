@@ -23,7 +23,9 @@ bun run start                         # http://127.0.0.1:3000
 REACTOR_API_KEY=rk_… bun run start    # http://127.0.0.1:3000
 ```
 
-`start` bundles the page and starts the token server. With `REACTOR_API_KEY` the server mints a token for each session, capped at five minutes, and the page never sees the key. Reactor's pricing API states H3's rate per second, $0.035 a second or $2.10 a minute (`GET https://api.reactor.inc/pricing`, 2026-09-30; its billing page still says per session-minute), and the meter runs from ready until the session ends, so a capped session costs at most $10.50. Add `?offline` to the address to rehearse on the simulator with the key set. Without the key the server mints nothing and the page runs offline.
+`start` bundles the page and starts the token server. With `REACTOR_API_KEY` the server mints a token for each session, capped at two minutes, and the page never sees the key. Reactor's pricing API states H3's rate per second, $0.035 a second or $2.10 a minute (`GET https://api.reactor.inc/pricing`, 2026-09-30; its billing page still says per session-minute), and the meter runs from ready until the session ends, so a capped session costs at most $4.20. Add `?offline` to the address to rehearse on the simulator with the key set. Without the key the server mints nothing and the page runs offline.
+
+Closing the tab or leaving the page closes its session. The page sends the session's DELETE as a keepalive request, which the browser delivers after the page is gone: in Chrome 151, against a local stand-in for Reactor's API, it arrived after its CORS preflight once the tab had closed. A session whose page could not send it, after a crash or a lost connection, ends at the two-minute cap.
 
 The page needs a browser with WebRTC and Web Crypto, on `localhost` or HTTPS. `HOST` and `PORT` change where the server listens. `REACTOR_API_URL` changes which coordinator the server mints tokens from; the page talks to `CoordinatorClient.defaultApiUrl`, so change both together.
 

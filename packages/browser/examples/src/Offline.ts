@@ -25,7 +25,7 @@ const apiKey = "h3-studio-offline";
  */
 const frameSize = { width: 336, height: 192 };
 
-/** The same cap the live server's tokens set. */
+/** Nothing bills offline, so a simulated session keeps longer than a live one. */
 const sessionCap = "5 minutes";
 
 /**

@@ -477,19 +477,29 @@ export const queue = ({
     closed: false,
     controls,
   });
-  /** Reordering and removal, the same for both queues. */
-  const edits = (clip: H3.Clip, index: number, length: number): Row["controls"] => [
+  /**
+   * Reordering and removal, in H3's own positions. `first` is the earliest
+   * position a clip can move to: H3 keeps the clip it builds at the head of
+   * generation, and the clip armed for its seam starts whatever moves ahead of
+   * it, so a move there would do nothing. A clip ahead of `first` stays put.
+   */
+  const edits = (
+    clip: H3.Clip,
+    position: number,
+    length: number,
+    first: number,
+  ): Row["controls"] => [
     {
       label: "↑",
       title: "Move up",
-      action: { _tag: "move", clipId: clip.clip_id, position: index - 1 },
-      enabled: index > 0 && can("move"),
+      action: { _tag: "move", clipId: clip.clip_id, position: position - 1 },
+      enabled: position - 1 >= first && can("move"),
     },
     {
       label: "↓",
-      title: "Move down",
-      action: { _tag: "move", clipId: clip.clip_id, position: index + 1 },
-      enabled: index < length - 1 && can("move"),
+      title: position < first ? "H3 keeps the clip it is building first" : "Move down",
+      action: { _tag: "move", clipId: clip.clip_id, position: position + 1 },
+      enabled: position >= first && position + 1 < length && can("move"),
     },
     {
       label: "✕",
@@ -524,8 +534,11 @@ export const queue = ({
   );
   onAir(playingClip);
 
-  // H3 reports a clip armed for its seam as playing while it may still head playout.
-  const playout = (facts?.queue.playout ?? []).filter((clip) => clip.clip_id !== playingId);
+  // H3 reports a clip armed for its seam as playing while it still heads playout,
+  // and counts it in playout's positions.
+  const queued = facts?.queue.playout ?? [];
+  const armed = playingId !== null && queued[0]?.clip_id === playingId ? 1 : 0;
+  const playout = queued.slice(armed);
   reconcile(
     element("playout", HTMLElement),
     playout.map((clip, index) =>
@@ -536,17 +549,26 @@ export const queue = ({
           action: { _tag: "play", clipId: clip.clip_id },
           enabled: can("play"),
         },
-        ...edits(clip, index, playout.length),
+        ...edits(clip, index + armed, queued.length, armed),
       ]),
     ),
   );
 
+  // H3 builds generation's head whenever playout has room for it.
   const generation = facts?.queue.generation ?? [];
+  const building =
+    facts !== null &&
+    generation.length > 0 &&
+    facts.state.playout_queued < facts.state.playout_capacity
+      ? 1
+      : 0;
   const listed = new Set([...generation, ...playout].map((clip) => clip.clip_id));
   if (playingId !== null) listed.add(playingId);
   const sending = cards.filter((card) => card.clipId === undefined && card.failure === undefined);
   reconcile(element("generation", HTMLElement), [
-    ...generation.map((clip, index) => row(clip, false, edits(clip, index, generation.length))),
+    ...generation.map((clip, index) =>
+      row(clip, false, edits(clip, index, generation.length, building)),
+    ),
     ...sending.map((card): Row => ({
       key: card.key,
       clipId: undefined,
