@@ -181,8 +181,10 @@ const CreditsRate = Schema.Union([
 ]);
 
 /**
- * A model's price. Reactor's billing page says it bills by the session-minute,
- * while its pricing states some models' rates per second; `per` is the unit
+ * A model's price. Reactor's billing page says it bills by the session-minute
+ * and gives rates per minute, while its pricing API states some models' rates,
+ * H3's among them, per second, and its dashboard listed paid sessions to the
+ * second (a 10 s session as 10 s on September 29, 2026). `per` is the unit
  * the pricing states, and callers decide how time rounds.
  */
 export interface Rate {

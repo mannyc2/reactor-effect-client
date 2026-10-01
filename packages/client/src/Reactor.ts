@@ -20,6 +20,11 @@ import { PeerFactory } from "./Peer.js";
 import { AcquisitionFailure, isReactorFailure, ReactorError } from "./ReactorError.js";
 import type { CloseReport, Session } from "./Session.js";
 
+/**
+ * Each deadline is a `Duration.Input`, a bare number being milliseconds, that is positive and at
+ * most 10 minutes; `heartbeatInterval` may also be `"Infinity"`. Any other value fails `make`, and
+ * so the layer, with `InvalidInput`, not submitted.
+ */
 export interface Options {
   /** How long a command or control request waits for its reply; 10 seconds by default. */
   readonly replyTimeout?: Duration.Input | undefined;
