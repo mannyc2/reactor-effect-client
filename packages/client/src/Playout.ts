@@ -661,11 +661,13 @@ export interface FillContext {
   /**
    * A requested length within `filler.lengths`: before an `At` anchor, one of
    * equal clips that tile the uncovered gap, none asking for less than its
-   * share; ahead of an item whose build it covers (`filler.protect`), as long
-   * as that takes; otherwise the shortest, which keeps boundaries, and so
-   * reactions, frequent. The playout plans with this length: the tiling
-   * before an `At` anchor and `place`'s `startsAt` count a filler clip not yet
-   * sent at it, so a request for another length moves them by the difference.
+   * share, or, where such a clip would air past a capped session's cap, the
+   * longest that airs before it; ahead of an item whose build it covers
+   * (`filler.protect`), as long as that takes; otherwise the shortest, which
+   * keeps boundaries, and so reactions, frequent. The playout plans with this
+   * length: the tiling before an `At` anchor and `place`'s `startsAt` count a
+   * filler clip not yet sent at it, so a request for another length moves them
+   * by the difference.
    */
   readonly seconds: number;
 }
