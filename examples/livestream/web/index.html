@@ -986,6 +986,12 @@
       };
       video.addEventListener("playing", () => setPicture("live"));
       video.addEventListener("waiting", () => setPicture("buffering"));
+      // A jump to the live edge can wait without a later `playing`; time
+      // moving on with data ahead is playing all the same.
+      video.addEventListener("timeupdate", () => {
+        if (!video.paused && video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA)
+          if (picture !== "live") setPicture("live");
+      });
       for (const name of ["error", "ended"])
         video.addEventListener(name, () => {
           setPicture("connecting");
