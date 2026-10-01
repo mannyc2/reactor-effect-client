@@ -31,6 +31,7 @@ import type { CommandReply, Session, SessionEvent, UploadReference } from "../..
 import * as Submission from "./submission.js";
 import * as Deadline from "../deadline.js";
 import * as Hub from "../hub.js";
+import { ends } from "../session/model.js";
 import { Commands, deploymentContract } from "./commands.js";
 import type {
   CommandArgs,
@@ -254,31 +255,40 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     return [current, effects];
   };
 
+  /** Held evidence decides every pending acceptance it can. */
+  const decideAll = (internal: Internal): Transition =>
+    sequence(
+      internal,
+      [...internal.pending.keys()].map((id) => (current: Internal) => decideHeld(current, id)),
+    );
+
   /**
-   * The provider fails for good. Held evidence is recorded first, so a waiter
-   * it resumes already finds the provider refusing new work.
+   * The provider fails for good and applies no more evidence. Held evidence is
+   * recorded first, so a waiter it resumes already finds the provider refusing
+   * new work; what evidence did not decide then fails with `error`.
    */
   const failProvider =
     (error: ReactorError) =>
     (internal: Internal): Transition => {
       if (internal.fatal !== undefined) return [internal, []];
-      const failed: Internal = {
+      const [decided, recorded] = decideAll({
         ...internal,
         fatal: error,
         model: State.unavailable({ model: internal.model, cause: error }),
-      };
-      const [decided, recorded] = sequence(
-        failed,
-        [...failed.pending.keys()].map((id) => (current: Internal) => decideHeld(current, id)),
-      );
+      });
+      const [operations, stranded] = Operations.failUndecided({
+        table: decided.operations,
+        error,
+      });
       return [
-        decided,
+        { ...decided, operations },
         [
           ...recorded,
           Effect.asVoid(Deferred.succeed(fatal, error)),
           ...[...decided.pending.values()].map((entry) =>
             Effect.asVoid(Deferred.fail(entry.deferred, error)),
           ),
+          ...stranded,
           hub.publish({ _tag: "Diagnostic", error }),
         ],
       ];
@@ -349,8 +359,16 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
             effects.push(...recorded, Effect.asVoid(Deferred.fail(entry.deferred, disconnected)));
           }
       }
-      if (source._tag !== "Model")
-        return [current, [...effects, hub.publish({ _tag: "Session", source })]];
+      if (source._tag !== "Model") {
+        effects.push(hub.publish({ _tag: "Session", source }));
+        // A dropped session says so when no attempt can connect it again: Reactor or its content
+        // moderation ended it, or it refuses this client. No evidence comes after that.
+        if (source._tag === "Diagnostic" && admitted.cause !== undefined && ends(source.error)) {
+          const [failed, failure] = failProvider(source.error)(current);
+          return [failed, [...effects, ...failure]];
+        }
+        return [current, effects];
+      }
       if (source.kind === "ack")
         return [current, [...effects, hub.publish({ _tag: "Acknowledged", source })]];
       const decoded = decodeMessage(source);
@@ -389,17 +407,20 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       ];
     };
 
+  // A closing provider retires what evidence did not decide as `Indeterminate`, before its own
+  // failure could fail it.
   yield* Effect.addFinalizer(() =>
     step((internal) => {
+      const [decided, recorded] = decideAll(internal);
+      const [operations, retired] = Operations.retire(decided.operations);
       const [failed, failure] = failProvider(
         ReactorError.fromCode("Closed", "H3 provider scope closed", {
           operation: "H3 observation",
         }),
-      )(internal);
-      const [operations, retired] = Operations.retire(failed.operations);
+      )({ ...decided, operations });
       return [
-        { ...failed, closed: true, pending: new Map(), operations },
-        [...failure, ...retired, hub.end],
+        { ...failed, closed: true, pending: new Map() },
+        [...recorded, ...retired, ...failure, hub.end],
       ];
     }),
   );

@@ -6,11 +6,12 @@
 import { assert, describe, it, layer } from "@effect/vitest";
 import {
   Clock,
-  type Duration,
+  Duration,
   Effect,
   Exit,
   Inspectable,
   type Layer,
+  Option,
   Result,
   Schema,
   Scope,
@@ -195,6 +196,27 @@ scenario("closing the provider leaves undecided facts Indeterminate and the sess
     yield* Scope.close(scope, Exit.void);
     assert.strictEqual((yield* Effect.flip(operation.ended)).reason._tag, "Indeterminate");
     assert.strictEqual((yield* session.snapshot).status, "ready");
+  }),
+);
+
+scenario("a clip awaited when Reactor ends the session fails with why the session ended", () =>
+  Effect.gen(function* () {
+    yield* Effect.forkScoped(ReactorTest.flow());
+    const test = yield* ReactorTest.ReactorTest;
+    // Reactor ends the session 20 s after it is ready, as its cap would.
+    yield* test.inject({ _tag: "Expire", after: Duration.seconds(20) });
+    const provider = yield* H3.make(yield* connect);
+    yield* test.inject({ _tag: "StallBuild" });
+    const submission = yield* provider.prepare({ prompt: "never built", seconds: 5 });
+    yield* submission.submit;
+    const operation = yield* provider.operation(submission);
+    // The provider stays open, so only the session's end can settle the wait.
+    const ended = yield* operation.ended.pipe(Effect.flip, Effect.timeoutOption("1 minute"));
+    assert.isTrue(Option.isSome(ended), "the clip was still awaited a minute after the end");
+    if (Option.isSome(ended)) assert.strictEqual(ended.value.reason._tag, "TerminalSession");
+    const started = yield* Effect.flip(operation.reached("started"));
+    assert.strictEqual(started.reason._tag, "TerminalSession");
+    assert.isTrue((yield* operation.facts).indeterminate);
   }),
 );
 
