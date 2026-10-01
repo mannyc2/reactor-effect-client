@@ -271,7 +271,7 @@ export const adopt = Effect.fn("adopt")(function* (sessionId: string) {
 An acquisition resumes the session's receive-only tracks as each connection becomes ready
 (`resumeTracks`, true by default), since Reactor sends a connection no media until it does.
 
-On hosted Reactor, an owner was killed 12.7 s into its session. A plain attach was ready 3.06 s
+On hosted Reactor, an owner was killed 12.7 s into the run. A plain attach was ready 3.06 s
 after the kill, with fresh frames and nothing enqueued. `H3Source.resume` started 0.57 s after
 the creating token had expired and adopted the session 2.71 s later
 ([0.8.0-api `adoption`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
@@ -376,7 +376,7 @@ minutes, or the layer fails with `InvalidInput`.
 | `maxPending`        | 128, at most 4,096                | Requests awaiting a reply, per channel                  |
 | `maxUploadBytes`    | 16 MiB, at most 64 MiB            | The largest upload                                      |
 
-Waiting for a GPU is not billed.
+Reactor's billing page says waiting for a GPU is not billed.
 
 ## Closing, and what may still bill
 
@@ -441,17 +441,19 @@ ends it 30 seconds later, unless a connection returns.
 
 ## Limits
 
-- Reactor's account quotas apply: by default five sessions at once and ten created a minute,
-  refused with `429` beyond that.
+- Reactor's account quotas apply: by default five sessions at once and ten created a minute, at
+  most three back to back, refused with `429` beyond that.
 - A token lives at most six hours, and a capped session at most a day. A channel that runs past
   its session's cap renews the session, which [Playout](/reactor-effect-client/concepts/playout/)
   does for you.
 - The library keeps no pool of sessions. Effect's `Pool.makeWithTTL` over `reactor.create`, with
   `min: 0` and a short `timeToLive`, closes a session left idle.
-- Reactor bills a session from `ready` until it ends. On 2026-09-30 Reactor's pricing listed H3
-  at 350 credits a second (10,000 credits to the dollar): $0.035 a second, or $2.10 a minute.
-- On hosted Reactor, a session read `ACTIVE`, not `INACTIVE`, for about 2 seconds after its last
-  connection closed ([0.8.0-api](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
+- Reactor's billing page says a session bills from `ready` until it ends. On 2026-09-30 Reactor's
+  pricing API listed H3 at 350 credits a second (10,000 credits to the dollar): $0.035 a second, or
+  $2.10 a minute. The billing page still says per session-minute.
+- On hosted Reactor, a session read `ACTIVE`, not `INACTIVE`, for at least the first 2.1 seconds
+  after its last connection closed, when the reads stopped
+  ([0.8.0-api](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
   2026-09-28).
 
 ## Next

@@ -135,7 +135,7 @@ export const takeOver = Effect.fn("takeOver")(function* (
   const allocation = yield* decodeOwner(record);
   return yield* H3Source.resume({
     allocation,
-    // H3 takes no other token for a session not created here.
+    // Reactor takes no other token for a session this process did not create.
     tokens: {
       bind: (id) =>
         coordinator.mintToken({ modelName: H3.modelName, bind: [id] }),
@@ -147,7 +147,7 @@ export const takeOver = Effect.fn("takeOver")(function* (
 `resume` refuses, as `InvalidInput`, a record of another model or one whose `endsAt` has passed.
 A resume that fails ends the session it adopted.
 
-On hosted Reactor, an owner was killed 12.7 s into its session. `H3Source.resume` started 0.57 s
+On hosted Reactor, an owner was killed 12.7 s into the run. `H3Source.resume` started 0.57 s
 after the creating token had expired, was ready 2.71 s later on the owner's playing clip, and
 enqueued a clip with an image and an audio reference on a refreshed 12 s bound token
 ([0.8.0-api `adoption`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),

@@ -60,8 +60,9 @@ negotiated.
 Every reader of a track receives the same frames, so treat their bytes as read-only and copy
 before changing them. Holding a frame holds its bytes: about 4 MB for a 1344×768 frame.
 
-On hosted H3, the native host received all 124 frames of a 5 s clip, 1344×768 BGRA at
-24.1–24.2 fps, and its 48 kHz mono audio, with nothing lost, over a direct path at 7.2–8.3 Mbps
+On hosted H3, the native host in process under Bun received all 124 frames of a 5 s clip,
+1344×768 BGRA at 23.7–24.2 fps, and its 48 kHz mono audio, with nothing lost, over a direct path at
+7.2–8.3 Mbps
 ([0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md),
 2026-09-24). A playout's reader took 2,372 frames over three sessions without falling behind
 ([0.8.0-api `show`](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
@@ -193,7 +194,7 @@ Reactor sends a connection no media until its receive-only tracks are resumed. `
 | `NativePeer.layer()`          | Decoded BGRA frames and 16-bit PCM, in process               | Node and Bun on linux-x64 (glibc) and darwin-arm64 |
 | `NativePeer.layerIsolated()`  | The same, from a child process per connection                | Node on the same platforms                 |
 | `BrowserPeer.layer`           | The browser's own tracks                                     | Browsers with WebRTC                       |
-| `ReactorTest.layer`           | Decoded synthetic frames (16×16 by default) and a tone       | Anywhere                                   |
+| `ReactorTest.layer(options)`  | Decoded synthetic frames (16×16 by default) and a tone       | Anywhere                                   |
 
 The isolated host keeps a crash inside libwebrtc to one connection. Each child takes about half a
 second to start, which overlaps allocation, and every frame is copied across the process boundary.

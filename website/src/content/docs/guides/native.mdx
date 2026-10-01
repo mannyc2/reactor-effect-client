@@ -10,9 +10,9 @@ something with them: here, write a clip to an MP4 file.
 
 ## The pieces
 
-`reactor-effect-native` binds the session's peer to a libwebrtc addon through Node-API. Session
-allocation, commands and tokens stay in `reactor-effect-client`; the addon carries the connection
-and the media.
+`reactor-effect-native` binds the session's peer through Node-API to an addon over Reactor's own
+`reactor-webrtc` crate (libwebrtc). Session allocation, commands and tokens stay in
+`reactor-effect-client`; the addon carries the connection and the media.
 
 **`NativePeer.layer(options)`** runs the peer in your process. Building the layer loads the addon,
 so a host that cannot run it fails there, before any session is allocated: `UnsupportedHost` with

@@ -1,6 +1,6 @@
 ---
 title: Playout
-description: "A keyed schedule that keeps H3 on air across renewing sessions: lanes, filler, windows, placement and as-run evidence."
+description: "A keyed schedule that carries H3 across renewing sessions, switching at a clip boundary: lanes, filler, windows, placement and as-run evidence."
 ---
 
 import { Aside, CardGrid, LinkCard } from "@astrojs/starlight/components";
@@ -114,8 +114,8 @@ export const lanes: ReadonlyArray<Playout.LaneSpec> = [
 
 On hosted H3, `stop` names no clip and lands after its reply, so a cut goes a step at a time: the
 playout turns autoplay off, stops the clip if it still plays, waits for H3 to report it ended,
-plays the cutter and turns autoplay back on. In the hosted runs of 2026-09-28 and 2026-09-29,
-the cut took one `stop` and paused 168 ms, then 165 ms, with no dark frame.
+plays the cutter and turns autoplay back on. In the two `show` runs on hosted H3 (2026-09-28 and
+2026-09-29), the cut took one `stop` and paused 168 ms, then 165 ms, with no dark frame.
 
 `Playout.lineup(filler)` is the simplest shape: one lane, `line`, above filler.
 
@@ -144,12 +144,12 @@ and the Ready clips that will air after it, on the session on air and then on it
 
 An item's `start` says when it may air. Only `Follow` keeps its lane's order.
 
-| `start`                | Airs                                                                      |
-| ---------------------- | ------------------------------------------------------------------------- |
-| `Follow`               | At its lane's next boundary, in order: the default                        |
-| `Asap`                 | At the next boundary, ahead of everything waiting in every lane           |
-| `Manual`               | Built ahead and held until `release(key)`, then as `Asap`                 |
-| `At { time, late }`    | At the first boundary after `time` (epoch milliseconds, wall clock)       |
+| `start`             | Airs                                                                                                                       |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `Follow`            | At its lane's next boundary, in order: the default                                                                         |
+| `Asap`              | At the next boundary, ahead of everything waiting in every lane                                                            |
+| `Manual`            | Held until `release(key)`, then as `Asap`; built ahead only while filler holds the runway at its floor, else once released |
+| `At { time, late }` | At the first boundary after `time` (epoch milliseconds, wall clock)                                                        |
 
 `late` says what to do when that boundary comes late: `nextBoundary`, `skipIfLaterThan` a
 duration, or `drop`. A `window` adds `notBefore` and `startBy`, measured from submission on the
@@ -179,7 +179,7 @@ export const schedule = Effect.fn("schedule")(function* (
       late: { _tag: "skipIfLaterThan", by: "2 seconds" },
     },
   });
-  // Built now, aired when released.
+  // Built ahead while filler covers the air; aired when released.
   yield* playout.submit({
     key: Playout.ItemKey.make("reveal"),
     lane: "show",
@@ -238,27 +238,27 @@ export const segment = Effect.fn("segment")(function* (
 ```
 
 A continued build takes longer: on hosted H3 a continued 5 s clip built in 5.45 s, against about
-2.2 s for an independent one (2026-09-28). When a continued build would be late, the playout
-continues from the clip that will be playing by then instead. It never asks for continuity
-across a switch of sessions, and H3 may build an independent clip without saying so, so as-run
-never claims continuity. Measured on hosted H3 on 2026-09-28 and 2026-09-29, a continued seam
-changed the picture 2.3 to 5.8 times as much as the clip's own motion, against 11 to 20 times at
-independent seams.
+2.2 s for an independent one (published 0.7.0, 2026-09-28). When a continued build would be late,
+the playout continues from the clip that will be playing by then instead. It never asks for
+continuity across a switch of sessions, and H3 may build an independent clip without saying so, so
+as-run never claims continuity. In the passing `edits` and `show` runs on hosted H3 (2026-09-28 and
+2026-09-29), a continued seam changed the picture 2.3 to 5.8 times as much as the clip's own motion,
+against 11 to 20 times at their independent seams; one cut seam measured 6.5 times.
 
 ## Edits, make-before-break
 
 Every edit is make-before-break: what it replaces stays on air, or ready to air, until what
 replaces it is Ready.
 
-| Method                  | What it does                                                             |
-| ----------------------- | ------------------------------------------------------------------------ |
-| `submitGroup(group)`    | Parts built in order and aired back to back; a higher lane may go between |
-| `insert(spec)`          | A clip right `before` or `after` an item, taking its lane, place, group and start |
-| `replace(key, next)`    | A new clip for a queued item's place; if the item starts first, `next` is dropped as `withdrawn` |
-| `edit(edits)`           | Several of these, checked together and applied as one change             |
-| `withdraw(key)`         | Answers `withdrawn`, `already-started` or `not-found`                    |
-| `release(key)`          | Airs a held `Manual` item at the next boundary                           |
-| `drain({ finish })`     | Admits nothing more. `playing`, the default, withdraws what has not started; `accepted` airs everything accepted first |
+| Method               | What it does                                                                                                                                       |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `submitGroup(group)` | Parts built in order and aired back to back; a higher lane may go between                                                                          |
+| `insert(spec)`       | A clip right `before` or `after` an item, taking its lane, place, group and start                                                                  |
+| `replace(key, next)` | A new clip for a queued item's place; if the item starts first, `next` is dropped as `withdrawn`                                                   |
+| `edit(edits)`        | Several of these, checked together and applied as one change                                                                                       |
+| `withdraw(key)`      | Answers `withdrawn`, `already-started` or `not-found`                                                                                              |
+| `release(key)`       | Airs a held `Manual` item at the next boundary                                                                                                     |
+| `drain({ finish })`  | Admits nothing more. `playing`, the default, withdraws what has not started; `accepted` airs everything accepted first, except held `Manual` items |
 
 ```ts
 import { Effect } from "effect";
@@ -290,8 +290,8 @@ A batch holds everything it adds until all of it is Ready, and a replacement bui
 every other item waiting in its lane except an `Asap` one. Send an urgent insert alone, and a
 replacement meant to air after it as a second edit once the insert is `Building`.
 
-On hosted H3, an edit batch took effect 0.91 s before its boundary on 2026-09-28 and 1.05 s
-before it on 2026-09-29, and the clip it withdrew never aired.
+In the two `show` runs on hosted H3, an edit batch took effect 0.91 s before its boundary
+(2026-09-28) and 1.05 s before it (2026-09-29), and the clip it withdrew never aired.
 
 ## Placement
 
@@ -401,7 +401,7 @@ ended, the replacement takes the air at that boundary, and the retiring session 
 </div>
 </div>
 <figcaption id="renewal-caption" style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "var(--sl-color-gray-2)" }}>
-A renewal. B opens <code>lead</code> before A's cap and builds clip 3, which cannot air on A in time, holding it Ready with autoplay off. A airs what it has, here a filler clip. When that clip ends and <code>grace</code> has passed, B takes the air at the boundary and A is closed, so the two sessions bill together only from B's ready to A's close.
+A renewal. B opens <code>lead</code> before A's cap and builds clip 3, which cannot air on A in time, holding it Ready with autoplay off. A airs what it has, here a filler clip. When that clip ends and <code>grace</code> has passed, B takes the air at the boundary and A is closed, so the two sessions bill together only from B's start (its <code>ready</code>, by Reactor's billing page) to A's close.
 </figcaption>
 </figure>
 
@@ -425,8 +425,9 @@ last, since the verdict names no clip, and fails it as `Moderated`. It stops aft
 `maxModerations` (2) moderated sessions rather than keep opening paid ones.
 
 On hosted H3, the planned switch left a gap of 420 ms on air on 2026-09-28, and 432 ms on
-2026-09-29. When moderation ended a session in the first of those runs, its Ready clip aired on a
-new session opened 3.17 s after the verdict.
+2026-09-29. When moderation ended a session in the first of those runs, the clip it had Ready was
+rebuilt on a new session opened 3.17 s after the verdict, and aired 5.3 s after the lost session's
+clip left the air.
 
 ## As-run evidence
 
@@ -514,9 +515,11 @@ An enqueue whose outcome stays unknown holds no build slot meanwhile, since H3 b
 
 ## Limits
 
-- The hosted numbers on this page were measured in September 2026 on the 0.8.0 playout, with
-  three 75 s sessions per run. `place` and `follows` came later and have run only on the
-  simulated Reactor. No multi-hour run on hosted H3 has been made.
+- The hosted numbers on this page come from 2026-09-28 and 2026-09-29: the two `show` runs of the
+  0.8.0 playout, each over three 75 s sessions, and one-session `edits` and `cut` runs of 0.7.0 and
+  of 0.8.0 in development. 0.9.0 has not run on hosted Reactor: its `place` and `follows`, and its
+  changes to how the air ahead is counted, have run only on the simulated Reactor. No multi-hour run
+  on hosted H3 has been made.
 - A `Started` status is H3's report that a clip started, not proof that a frame was presented or
   encoded.
 - On a host with only platform tracks, such as a browser, `playout.video` and `playout.audio` fail
@@ -525,8 +528,8 @@ An enqueue whose outcome stays unknown holds no build slot meanwhile, since H3 b
   application.
 
 <Aside type="tip">
-Run a whole programme offline first: on `ReactorTest` under `TestClock`, minutes of playout,
-renewals included, run in milliseconds. See
+Run a whole programme offline first: on `ReactorTest` under `TestClock`, ten minutes of playout
+with a renewal run in about 4 seconds, and an hour with six renewals in about 20. See
 [Test offline](/reactor-effect-client/guides/testing-offline/).
 </Aside>
 

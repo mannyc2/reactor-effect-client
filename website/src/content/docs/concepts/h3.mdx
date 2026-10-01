@@ -58,8 +58,9 @@ The provider targets H3's documented `0.5.5` schema (`H3.documentedVersion`).
 
 ## Requests
 
-A clip is an `H3.Request`. A request H3 would refuse is refused locally as `InvalidInput`, with
-outcome `not-submitted`, before anything is uploaded.
+A clip is an `H3.Request`. A request outside H3's documented bounds, or the SDK's own safety bounds
+(a prompt of at most 1 MiB; images of at most 25 MiB and 25 megapixels, between 1:4 and 4:1), is
+refused locally as `InvalidInput`, with outcome `not-submitted`, before anything is uploaded.
 
 | Field          | Bounds                                                                                     |
 | -------------- | ------------------------------------------------------------------------------------------ |
@@ -125,8 +126,8 @@ checks, for tests.
 ## The queue and its commands
 
 H3 keeps two queues. The generation queue holds clips waiting to build, the build in flight
-first. The playout queue holds built clips, Ready, in the order they play. H3 documents room for
-20 and 10.
+first. The playout queue holds built clips, Ready, in the order they play. H3's state reports each
+queue's room, and hosted H3 reported 20 and 10 (2026-09-24 and 09-25).
 
 | Method                                 | What it does                                                                |
 | -------------------------------------- | --------------------------------------------------------------------------- |
@@ -195,11 +196,11 @@ export const nowPlaying = (h3: H3.Provider) =>
   );
 ```
 
-H3 replies to a command before it broadcasts the state and queue the command changed. So a
-command that needs current facts waits for them, within its `replyTimeout`, and resolves only
-once the broadcasts its reply implies have arrived: the caller reads its own effects. `getState`
-and `getQueue` never wait. An acknowledgement (`play` and `stop` return one) proves that H3
-received the command, never that anything changed.
+H3 replies to a command before it broadcasts the state and queue the command changed, except that
+hosted H3 broadcasts an enqueue's queue first. So a command that needs current facts waits for them,
+within its `replyTimeout`, and resolves only once the broadcasts its reply implies have arrived: the
+caller reads its own effects. `getState` and `getQueue` never wait. An acknowledgement (`play` and
+`stop` return one) proves that H3 received the command, never that anything changed.
 
 ## A clip's operation facts
 

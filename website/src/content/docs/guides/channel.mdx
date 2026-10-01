@@ -6,7 +6,7 @@ description: "Keep a channel on air across session caps and broadcast it to many
 import { Aside, Steps, Tabs, TabItem } from "@astrojs/starlight/components";
 
 Keep one H3 channel on air around the clock, across sessions that each end at their cap, and show
-it to any number of viewers from one server that holds the key.
+it to many viewers from one server that holds the key.
 
 ## The pieces
 
@@ -30,11 +30,11 @@ has the whole model; these are the parts a channel uses.
 - **Filler** is the bottom lane. It keeps a runway of Ready air between `runway.floor` and
   `runway.target`, built from `filler.clip(context)`, which the playout calls once per clip.
 - **Admission windows.** An item's `window` (`notBefore`, `startBy`, `firm`) counts from its
-  submission. The playout refuses at once, with `WouldMissDeadline`, an item it cannot start by
+  submission. The playout refuses at once, with `WouldMissDeadline`, a firm item it cannot start by
   `startBy`. If the plan slips later, a firm item is dropped `late` and a soft one airs late.
 - **Starts.** `Follow` (the default) keeps its lane's order, `Asap` goes at the next boundary ahead
-  of everything waiting, `Manual` is built ahead and held until `release(key)`, and `At` airs at
-  the first boundary after a wall-clock time.
+  of everything waiting, `Manual` is held until `release(key)` (built ahead while filler holds the
+  runway), and `At` airs at the first boundary after a wall-clock time.
 - **What aired.** `playout.events` reports each item's as-run status, sessions opening and
   switching, cues, filler, and `Starved` when nothing was Ready. `playout.state` gives the clip on
   air, the lanes and the runway in seconds. `playout.failure` completes with why the playout
@@ -209,8 +209,9 @@ channel's whole life. Encode once and fan the result out:
 
 The [live channel](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/livestream)
 example does all of this: one playout on the native host, renewed before each cap, encoded once to
-fragmented MP4 and shared with any number of `<video>` elements, with prompts and an event feed over
-an `HttpApi`. It runs offline by default and live with a key.
+fragmented MP4 and shared with many `<video>` elements, with prompts and an event feed over an
+`HttpApi`. It runs offline by default and is written to run live with a key; its live mode has not
+run on hosted Reactor yet.
 
 **Restreaming.** The same encoder output can go to an RTMP ingest, such as YouTube's or Twitch's,
 with ffmpeg's FLV output. That is application code over the decoded media, and no restream of
@@ -244,7 +245,8 @@ seconds of filler runway. It passed every criterion twice, on 2026-09-28 and 202
 - cues 0–1 ms from due, and an `At` item 545–559 ms late, never early;
 - a dropped connection back on the same session in 1.64 and 1.84 s, with no replacement opened;
 - a session ended under a playing clip (by moderation, then by the API key) replaced, its Ready clip
-  carried and aired on a session opened 3.17 s after the moderation verdict;
+  rebuilt on a session opened 3.17 s after the moderation verdict, and 5.2–5.3 s with no clip on
+  air;
 - a cut lane that stopped a playing clip with one `stop` and a 165–168 ms pause.
 
 The second run's checkout matches the 0.8.0 release's library source except for its version string;
@@ -255,8 +257,8 @@ minutes: no multi-hour session has run yet.
 
 - **Lead and cap.** The replacement takes new work from the moment it opens, so a session airs
   roughly its cap less the lead. Keep the cap long against the lead.
-- **Five sessions per account.** Each renewal holds two sessions for a few seconds, and every other
-  session the account runs counts too.
+- **Five sessions per account by default.** Each renewal holds two sessions for a few seconds, and
+  every other session the account runs counts too. Reactor raises the quota on request.
 - **Moderation.** Reactor ends a session given flagged content, and the verdict names no clip. The
   playout blames the item whose enqueue went there last, fails it `Moderated`, never builds it
   again, and stops after `maxModerations` (2) moderated sessions rather than keep opening paid
@@ -270,6 +272,8 @@ minutes: no multi-hour session has run yet.
   only platform tracks, such as a browser. Run the channel on the native host.
 
 <Aside type="note">
-  `Playout.place` and `follows`, which hold a clip right after the one it was written to follow, are
-  new in 0.9.0 and have run only on `ReactorTest`.
+  0.9.0 has not run on hosted Reactor. The runs above are of the 0.8.0 library. 0.9.0 adds
+  `Playout.place` and `follows`, which hold a clip right after the one it was written to follow, and
+  changes how the playout counts the air ahead for firm windows, the runway and cuts; all of it has
+  run only on `ReactorTest` so far.
 </Aside>

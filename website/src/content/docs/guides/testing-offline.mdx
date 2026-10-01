@@ -23,7 +23,8 @@ It simulates, at the network edge:
   recordings (off by default) and pricing.
 - **Sessions.** Several connections per session, a session that reads `INACTIVE` for 30 seconds
   after its last connection drops and then ends, caps, and billing per second.
-- **The account's limits.** Five sessions at once and ten a minute, refused with `429`.
+- **The account's limits.** Five sessions at once, and ten created a minute with at most three back
+  to back, refused with `429`.
 - **H3 over the real wire protocol.** Its request, reference and metadata limits; autoplay off at
   the start; the queue broadcast before an enqueue's reply, and a `stop` that lands after its
   acknowledgement, as hosted H3 does; moderation verdicts that name nothing, as paid runs saw them.
@@ -228,7 +229,7 @@ run it on the simulated Reactor and assert its as-run outcomes.
 ## How long a long programme takes
 
 The simulation's cost follows its media, not the clock's steps. Measured on one Linux workstation
-on 2026-09-30, a playout with filler on 10-minute sessions:
+on 2026-09-30: the scenario tests above, and a playout with filler on 10-minute sessions:
 
 | Virtual time                                        | Wall time |
 | --------------------------------------------------- | --------- |
@@ -252,10 +253,12 @@ A test that never reads media can arm `{ _tag: "Video", video: "absent" }` and
   depends on a delay names it in `Timing.fixed`.
 - **Today's rate.** `creditsPerSecond` defaults to 125, the rate Reactor's pricing stated during the
   paid runs. Pass 350 for the rate published on 2026-09-30.
-- **The account's limits apply.** A test that opens more than five sessions at once, or ten within
-  a minute of virtual time, gets `429`, as it would on Reactor.
-- **A rehearsal is not a hosted run.** `ReactorTest` models what H3 does, not hosted latency,
-  billing as Reactor charges it, TURN relays or interop. Those claims rest on
+- **The account's limits apply.** A test that opens more than five sessions at once, or creates
+  them faster than ten a minute of virtual time (three back to back), gets `429`, as it would on
+  Reactor.
+- **A rehearsal is not a hosted run.** `ReactorTest` models what H3 does, with delays drawn from
+  paid runs, not hosted latency as a real network varies it, billing as Reactor charges it, TURN
+  relays or interop. Those claims rest on
   [hosted evidence](/reactor-effect-client/reference/hosted-evidence/).
 
 <Aside type="tip">

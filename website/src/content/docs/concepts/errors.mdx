@@ -5,10 +5,11 @@ description: "Tagged failures with reasons, and whether a failed command may sti
 
 import { Aside, CardGrid, LinkCard } from "@astrojs/starlight/components";
 
-Every failure the client raises is one of three tagged classes: `ReactorError`, `CommandFailure`
-and `AcquisitionFailure`. Each carries a tagged `reason` to route on, and a `context` that says,
-among other things, whether the request may have reached Reactor. Every operation's type names
-its exact failure, so the compiler shows you what can go wrong.
+Every failure of a session, the H3 provider or a source is one of three tagged classes:
+`ReactorError`, `CommandFailure` and `AcquisitionFailure`; `Playout` adds its own refusals,
+[below](#the-playouts-own-errors). Each class carries a tagged `reason` to route on, and a `context`
+that says, among other things, whether the request may have reached Reactor. Every operation's type
+names its exact failure, so the compiler shows you what can go wrong.
 
 ```ts
 import { Effect } from "effect";
@@ -92,8 +93,8 @@ export const session = Effect.gen(function* () {
     }),
   });
   return yield* create.pipe(
-    // Reactor's quotas refuse a sixth session at once, or an
-    // eleventh in a minute, with 429.
+    // Reactor's quotas refuse a sixth session at once, or creates
+    // faster than ten a minute (three back to back), with 429.
     Effect.catchReason(
       "AcquisitionFailure",
       "Http",
@@ -193,11 +194,11 @@ an `Aborted` failure that keeps the error in `context.detail`.
 
 ## Provider text stays `Redacted`
 
-A failure's `message` is written by the library and never holds provider or payload text, so
-logs and spans that record it stay free of prompts, refusals and SDP. Text from outside lives
-only in `Redacted` fields: `body` and `remoteCode` on `Http` and `Remote`, `backendMessage` on
-`Native`, and `context.detail`. They print as `<redacted>` in logs, spans and `toJSON`, and stay
-out of the cause chain that exporters such as `OtlpTracer` render. Read one only on purpose:
+A failure's `message` is written by the library and never holds provider or payload text, so logs
+and spans that record it stay free of prompts, refusals and SDP. Text from outside lives only in
+`Redacted` fields: `body` on `Http` and `Remote`, `remoteCode` on `Remote`, `backendMessage` on
+`Native`, and `context.detail`. They print as `<redacted>` in logs, spans and `toJSON`, and stay out
+of the cause chain that exporters such as `OtlpTracer` render. Read one only on purpose:
 
 ```ts
 import { Effect, Redacted } from "effect";
@@ -262,7 +263,8 @@ export const ask = Effect.fn("ask")(function* (
 
 What happens to an item after it is admitted is not an error: it is the item's as-run status,
 `Failed` with a reason (`Clip`, `Command`, `Lost`, `Moderated` or `Closed`) or `Dropped`. The
-playout itself fails, through `playout.failure`, only when it cannot go on.
+playout itself fails, through `playout.failure`, only when it cannot go on: with one of the three
+classes above, or `InvalidFiller` when its filler asks for a clip outside H3's limits.
 
 ## Defects
 

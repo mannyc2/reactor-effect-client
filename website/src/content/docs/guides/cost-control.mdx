@@ -8,22 +8,24 @@ import { Aside, Steps } from "@astrojs/starlight/components";
 Know the most a session can cost before you allocate it, and know when it has stopped billing, even
 after the process that owned it crashed.
 
-At H3's rate on 2026-09-30, $0.035 a second, a session bills $2.10 a minute and $126 an hour from
-`ready` until it is terminated, idle or not. See [Going live](/reactor-effect-client/start/going-live/)
-for the rate and Reactor's account limits.
+At the rate Reactor's pricing API stated for H3 on 2026-09-30, $0.035 a second, a session bills
+$2.10 a minute and $126 an hour from `ready` until it is terminated, idle or not. See
+[Going live](/reactor-effect-client/start/going-live/) for the rate and Reactor's account limits.
 
 ## What the SDK does for you
 
-- **A creating token caps its session.** `coordinator.tokens` and `mintToken` refuse a token that
-  may create sessions unless it names `maxSessionDuration`: one second to a day, or `"unlimited"`
-  written out. Reactor terminates a capped session at its cap, after its token expires too. A grant
-  Reactor echoes wider than asked is refused (`Protocol`), and a narrower one caps the session at
-  what it grants.
+- **A creating token states its session's cap.** `coordinator.tokens` and `mintToken` refuse a token
+  that may create sessions unless it names `maxSessionDuration`: one second to a day, or
+  `"unlimited"` written out. Reactor terminates a capped session at its cap, after its token expires
+  too. A grant Reactor echoes wider than asked is refused (`Protocol`), and a narrower one caps the
+  session at what it grants.
 - **Termination is confirmed, not assumed.** `session.close` sends the `DELETE`, then reads the
-  session independently until it is gone or `CLOSED`, since a `DELETE` response alone proves nothing.
-  The `CloseReport`'s `remote` says what happened: `attempted`, `responseReceived`, `confirmed`, the
-  `evidence` (`"absent"` or `"terminal"`), the `DELETE` status and the state read. Only `CLOSED` is
-  terminal: a session that reads `INACTIVE` is still live and billed.
+  session once, independently, since a `DELETE` response alone proves nothing: only a read that
+  finds it gone or `CLOSED` confirms it, and any other answer leaves `confirmed` false and
+  `Session.mayStillBill` true. The `CloseReport`'s `remote` says what happened: `attempted`,
+  `responseReceived`, `confirmed`, the `evidence` (`"absent"` or `"terminal"`), the `DELETE` status
+  and the state read. Only `CLOSED` is terminal: a session that reads `INACTIVE` is still live and
+  billed.
 - **`Session.mayStillBill(report)`** is true when this process owned the session and no read
   confirmed its end, or when it asked for an allocation whose answer, and so whose id, never came.
   An `AcquisitionFailure` carries the same report in `cleanup`, and a playout's `cleanup` keeps every
@@ -167,8 +169,8 @@ termination confirmed. Where the runs timed it, `CLOSED` read 0.63–0.86 s afte
 
 </Steps>
 
-On the simulated Reactor this ran as described: the price came to $4.20, the budget refused a third
-session, the records round-tripped, and every recorded session read `CLOSED` after
+On the simulated Reactor this ran as described: the price came to $4.20, a budget of two refused a
+third session, the records round-tripped, and every recorded session read `CLOSED` after
 `endRecorded`.
 
 ## Practice
@@ -187,9 +189,10 @@ session, the records round-tripped, and every recorded session read `CLOSED` aft
 - **A spent token creates nothing more.** In the same probe, a second create on a single-session
   token whose session already existed was refused with `403`. The tokens `coordinator.tokens` mints
   each create one session, so a retried create cannot allocate a second.
-- **Only the owner stops the meter.** In a shared session, only the creator's termination stops
-  billing. `reactor.attach` without `adopt` never terminates the session it joined, and closing it
-  leaves the session running.
+- **Only a termination stops the meter.** A viewer leaving a shared session does not stop it. In
+  the paid runs, the API key and an adopting process each ended a session they had not created.
+  `reactor.attach` without `adopt` never terminates the session it joined, and closing it leaves the
+  session running.
 - **Renewals overlap.** A playout opens each replacement before the retiring session ends, so two
   sessions bill together for a few seconds at each renewal: 6 to 9 seconds in the paid `show` runs.
   Very short caps multiply that.
