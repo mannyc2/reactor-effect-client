@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- A documentation site, [mannyc2.github.io/reactor-effect-client](https://mannyc2.github.io/reactor-effect-client/), with concept pages, guides, the hosted evidence, `llms.txt` and `llms-full.txt` for coding agents, and a playground that runs H3 Studio on `ReactorTest` in the browser.
+- An Agent Skill, `skills/reactor-effect`, installable with `npx skills add mannyc2/reactor-effect-client`.
+
+### Changed
+
+- The package READMEs open with what each package is for and link the documentation, which now carries the contracts the client README spelled out; the npm descriptions, keywords, homepage and issue tracker say the same.
+
 ### Fixed
 
 - A playout's queued work is traced under the caller that caused it. In 0.9.0 every item's commands ran in the playout's acquisition trace, whoever submitted the item, and the application's spans inside `LocalSource` hooks ran in the source's acquisition trace. Now each command the playout sends for an item is a `Playout.command` span under the span that first submitted the item, through waiting, retries, a duplicate submission and a renewal, with the source's spans, such as `H3.enqueue` and `Session.command`, beneath it; it ends with the command's outcome and carries `reactor.playout.item.key`. `LocalSource.build` and `LocalSource.present` are spans under the span that enqueued the clip. `Playout.open`, around each session the playout opens, and the `Playout.command` of an autonomous command, such as filler or autoplay, each start a trace of their own, linked to the acquisition's span.
