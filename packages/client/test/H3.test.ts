@@ -15,6 +15,7 @@ import {
   Result,
   Schema,
   Scope,
+  Stream,
   Tracer,
 } from "effect";
 import * as H3 from "../src/H3.js";
@@ -217,6 +218,39 @@ scenario("a clip awaited when Reactor ends the session fails with why the sessio
     const started = yield* Effect.flip(operation.reached("started"));
     assert.strictEqual(started.reason._tag, "TerminalSession");
     assert.isTrue((yield* operation.facts).indeterminate);
+  }),
+);
+
+// A coordinator may answer one read with 404 for a session that still runs. The session's own
+// reconnect stops there, and the application's reconnect then brings it back.
+scenario("a provider outlasts a 404 the application's reconnect gets past", () =>
+  Effect.gen(function* () {
+    yield* Effect.forkScoped(ReactorTest.flow());
+    const test = yield* ReactorTest.ReactorTest;
+    yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(3) });
+    const session = yield* connect;
+    yield* test.inject({ _tag: "MissingSession", nth: 1 });
+    const provider = yield* H3.make(session);
+    const submission = yield* provider.prepare({ prompt: "aired after the reconnect", seconds: 5 });
+    yield* submission.submit;
+    const operation = yield* provider.operation(submission);
+    const stopped = yield* session.changes.pipe(
+      Stream.filter((snapshot) => snapshot.status === "disconnected" && !snapshot.reconnecting),
+      Stream.runHead,
+    );
+    assert.strictEqual(
+      Option.getOrUndefined(stopped)?.lastError?.reason._tag,
+      "Http",
+      "the session's own reconnect stopped at the 404",
+    );
+    yield* session.reconnect;
+    const refreshed = yield* Effect.exit(provider.refresh);
+    assert.isTrue(Exit.isSuccess(refreshed), "refresh after the reconnect");
+    const enqueued = yield* Effect.exit(provider.enqueue({ prompt: "after it", seconds: 5 }));
+    assert.isTrue(Exit.isSuccess(enqueued), "enqueue after the reconnect");
+    yield* provider.setAutoplay(true);
+    const ended = yield* operation.ended.pipe(Effect.timeoutOption("1 minute"));
+    assert.strictEqual(Option.getOrUndefined(ended)?.message, "clip_finished");
   }),
 );
 

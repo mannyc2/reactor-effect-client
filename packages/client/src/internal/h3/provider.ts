@@ -31,7 +31,6 @@ import type { CommandReply, Session, SessionEvent, UploadReference } from "../..
 import * as Submission from "./submission.js";
 import * as Deadline from "../deadline.js";
 import * as Hub from "../hub.js";
-import { ends } from "../session/model.js";
 import { Commands, deploymentContract } from "./commands.js";
 import type {
   CommandArgs,
@@ -144,6 +143,14 @@ const outcomeOf = (exit: Exit.Exit<unknown, CommandFailure>) => {
       }
     : {};
 };
+
+/**
+ * Reactor's word that a session is over: it ended the session, or its content moderation did. A
+ * 404 or a refused protocol stops the session's own reconnect too, but the application's
+ * `session.reconnect` may still bring that session back.
+ */
+const endedByReactor = (error: ReactorError): boolean =>
+  error.reason._tag === "TerminalSession" || error.reason._tag === "Moderated";
 
 /** Whether a snapshot at `revision` already reflects `event`. */
 const covered = (event: ProviderEvent, revision: bigint): boolean => {
@@ -361,9 +368,13 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       }
       if (source._tag !== "Model") {
         effects.push(hub.publish({ _tag: "Session", source }));
-        // A dropped session says so when no attempt can connect it again: Reactor or its content
-        // moderation ended it, or it refuses this client. No evidence comes after that.
-        if (source._tag === "Diagnostic" && admitted.cause !== undefined && ends(source.error)) {
+        // A dropped session says so once Reactor or its content moderation has ended it, and no
+        // evidence comes after that.
+        if (
+          source._tag === "Diagnostic" &&
+          admitted.cause !== undefined &&
+          endedByReactor(source.error)
+        ) {
           const [failed, failure] = failProvider(source.error)(current);
           return [failed, [...effects, ...failure]];
         }
