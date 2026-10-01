@@ -2565,6 +2565,11 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       (selected?.phase !== "Accepted" || selected.spec.follows === undefined)
     )
       updateSession(value.id, { guardItem: undefined });
+    // The clip on air here, or with none, the one that left it last: a follower Ready right behind
+    // it is next by every rule, and autoplay starts it.
+    const lastHere =
+      value.source?.playing?.tag ??
+      (state.lastOnAir?.sessionId === value.id ? state.lastOnAir.tag : undefined);
     const guarding =
       live(selected) && selected.phase === "Accepted" && selected.spec.follows !== undefined
         ? selected
@@ -2581,13 +2586,21 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
                 // Fence before moving another clip ahead: it may start and end while the Move
                 // reply is pending, leaving this clip after a different predecessor.
                 desired[0]?.clipId === item.clipId &&
-                sameClip(item.spec.follows, value.source?.playing?.tag)
+                sameClip(item.spec.follows, lastHere)
               ),
           );
     const guarded = guarding !== undefined;
     if (!guarded && value.playRetry !== undefined)
       updateSession(value.id, { playRetry: undefined });
-    const autoplay = value.wantAutoplay && state.cutting?.sessionId !== value.id && !guarded;
+    // Inside a boundary H3 holds the next clip armed, and turning autoplay off then leaves it
+    // unstarted: on air the fence goes up only while a clip plays with time to spare, as a cut's
+    // does, or stays as it is.
+    const fenceable =
+      value.id !== state.air ||
+      value.autoplay === false ||
+      (value.source?.playing !== undefined && playingRestMs(value) > cutMarginMs);
+    const autoplay =
+      value.wantAutoplay && state.cutting?.sessionId !== value.id && !(guarded && fenceable);
     if (value.source?.available === true && value.autoplay !== autoplay) {
       // Nothing else goes before it, even while a failed one waits to be asked again.
       const retry = value.autoplayRetry;
@@ -2741,6 +2754,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const head = actual[0];
     const headItem = itemOf(head);
     const retry = value.playRetry;
+    // A clip reported playing while it waited out its seam, then held there as autoplay went off,
+    // still heads the queue though it never started: it is played as a Ready one is.
+    const stranded =
+      headItem?.phase === "Started" &&
+      headItem.sessionId === value.id &&
+      headItem.clipId === head?.clipId;
     if (
       guarded &&
       value.id === state.air &&
@@ -2749,7 +2768,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       state.cutting === undefined &&
       head !== undefined &&
       airs(head) &&
-      (headItem === undefined || (headItem.phase === "Ready" && headItem.withdraw === undefined)) &&
+      (headItem === undefined ||
+        stranded ||
+        (headItem.phase === "Ready" && headItem.withdraw === undefined)) &&
       (retry === undefined || retry.signature !== signature(value) || now.mono >= retry.at)
     )
       return queueCommand(value.id, { _tag: "Play", clipId: head.clipId }, headItem?.spec.key);
@@ -2782,6 +2803,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       if (from._tag === "wait") continue;
       if (drainingNeeds && coverFirst(target, item, from.clipId !== undefined, room)) return;
       if (item.spec.follows !== undefined && value.autoplay !== false) {
+        // It goes once a clip plays here with time to spare.
+        if (!fenceable) continue;
         updateSession(value.id, { guardItem: item.spec.key });
         return queueCommand(value.id, { _tag: "Autoplay", enabled: false }, item.spec.key);
       }

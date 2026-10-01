@@ -918,6 +918,61 @@ layer(seamed)("follows", (it) => {
   );
 });
 
+// H3 holds the next clip armed through its seam and reports it playing; autoplay turned off then
+// would leave it unstarted.
+layer(hosted)("follows inside a boundary", (it) => {
+  it.effect("raises its fence only while a clip plays, so the armed clip still starts", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const a = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a", 10) });
+      yield* a.started;
+      yield* playout.submit({ key: key("b"), lane: "line", request: clip("b") });
+      const c = yield* playout.submit({ key: key("c"), lane: "line", request: clip("c") });
+      yield* a.outcome;
+      // Its build is picked as a's end is seen, while b waits out its seam.
+      yield* playout.insert({
+        key: key("v"),
+        request: clip("v"),
+        after: key("b"),
+        follows: { _tag: "Item", key: key("b") },
+      });
+      const ended = yield* c.outcome.pipe(Effect.timeoutOption("30 seconds"));
+      assert.strictEqual(Option.getOrUndefined(ended)?._tag, "Ended");
+      assert.deepStrictEqual(yield* starts, ["a", "b", "v", "c"]);
+    }),
+  );
+});
+
+// Its own block: the scene's timing within a seam would move with the clock a block's tests share.
+layer(hosted)("follows inside a boundary, read mid-seam", (it) => {
+  it.effect("starts an armed clip itself once autoplay went off before its start", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start({}, "10 millis");
+      const a = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a", 10) });
+      const started = yield* a.started;
+      if (started._tag !== "Started") return yield* Effect.die("a never started");
+      yield* playout.submit({ key: key("b"), lane: "line", request: clip("b") });
+      const c = yield* playout.submit({ key: key("c"), lane: "line", request: clip("c") });
+      yield* playout.submit({ key: key("z"), lane: "line", request: clip("z") });
+      // z's removal lands in b's seam, and the state read after it names b playing with all of
+      // its length left, so the fence goes up while H3 still holds b armed.
+      const end = started.at + started.seconds * 1000;
+      yield* Effect.sleep(Duration.millis(end - 40 - (yield* Clock.currentTimeMillis)));
+      yield* Effect.forkScoped(playout.withdraw(key("z")));
+      yield* a.outcome;
+      yield* playout.insert({
+        key: key("v"),
+        request: clip("v"),
+        after: key("b"),
+        follows: { _tag: "Item", key: key("b") },
+      });
+      const ended = yield* c.outcome.pipe(Effect.timeoutOption("30 seconds"));
+      assert.strictEqual(Option.getOrUndefined(ended)?._tag, "Ended");
+      assert.deepStrictEqual(yield* starts, ["a", "b", "v", "c"]);
+    }),
+  );
+});
+
 /** A length on H3's grid: 124 frames at 24 fps, then steps of 17 frames. */
 const grid = (steps: number) => (124 + 17 * steps) / 24;
 
