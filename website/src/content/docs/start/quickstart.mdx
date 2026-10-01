@@ -34,7 +34,9 @@ hosted H3.
    </Tabs>
 
    Effect 4 is still in release candidates, and a later candidate can move modules, so every
-   package pins it exactly. [Installation](/reactor-effect-client/start/installation/) covers
+   package pins it exactly. Under Bun or pnpm, first add an override to `package.json` that pins
+   `@effect/platform-node-shared` to `4.0.0-rc.117` (`"overrides"` for Bun, `"pnpm": { "overrides" }`
+   for pnpm); npm needs none here, since `reactor-effect-native` pins it. [Installation](/reactor-effect-client/start/installation/) covers
    other hosts.
 
 2. Save this as `main.ts`. It is `examples/quickstart/src/main.ts` in the repository, which CI

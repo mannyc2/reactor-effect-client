@@ -23,8 +23,10 @@ H3 on air across sessions; `ReactorTest` is Reactor simulated in memory for offl
 ## Before writing code
 
 1. Effect is pinned **exactly** to `4.0.0-rc.117`, as a peer. Install every Effect package with
-   `--save-exact` at that version. An npm project with `@effect/platform-node` but without
-   `reactor-effect-native` also needs `"overrides": { "@effect/platform-node-shared": "4.0.0-rc.117" }`.
+   `--save-exact` at that version. With `@effect/platform-node`, also pin
+   `@effect/platform-node-shared` to `4.0.0-rc.117` with an override (`"overrides"` for npm and Bun,
+   `"pnpm": { "overrides" }` for pnpm): always under Bun and pnpm, and under npm unless
+   `reactor-effect-native` is installed. Set it before the first install.
 2. Read Effect's own guide in the installed package: `node_modules/effect/AGENTS.md` (with Bun's
    isolated linker it sits under the package that depends on Effect). Effect 4 APIs differ from
    Effect 3: `Context.Service`, `Schema.TaggedError`, `Effect.fn`, `effect/unstable/*` modules.

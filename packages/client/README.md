@@ -24,8 +24,9 @@ npm install --save-exact reactor-effect-client effect@4.0.0-rc.117
 
 Effect is a peer dependency at exactly `4.0.0-rc.117`: its release candidates can move modules, so a
 later one needs a new SDK release. Install any `@effect/*` package at the same version with
-`--save-exact`. An npm project with `@effect/platform-node` but without `reactor-effect-native` also
-needs `"overrides": { "@effect/platform-node-shared": "4.0.0-rc.117" }`.
+`--save-exact`. A project with `@effect/platform-node` also pins `@effect/platform-node-shared` to
+`4.0.0-rc.117` with an override, since the platform's caret range otherwise installs a later
+candidate: always under Bun and pnpm, and under npm unless `reactor-effect-native` is installed.
 [Installation](https://mannyc2.github.io/reactor-effect-client/start/installation/) covers each
 host.
 
@@ -109,7 +110,7 @@ Each module's doc comments state its options' defaults and bounds.
   boundary, with lanes, filler, windows, cues, edits and placement. On hosted H3, seams measured
   46–169 ms with no dark frame and a planned switch 420–432 ms.
 - **`ReactorTest` runs the same application offline**, at hosted timing, or on `TestClock` where
-  minutes of programme take milliseconds, with faults to inject.
+  an hour of programme with six renewals takes about 20 seconds, with faults to inject.
 - **A provider `Started` fact is not proof** that a frame was presented or encoded.
 
 ## Example

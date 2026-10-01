@@ -74,7 +74,8 @@ const firstClip = Effect.gen(function* () {
   media; this does not. On hosted H3: 1344×768 at about 24 fps, no frame lost.
 - **Build and test offline.** `ReactorTest` speaks the real wire protocol in memory, with H3's
   timing measured on paid runs and 23 faults to inject, from a failed build to a lost reply or a
-  moderation verdict. On `TestClock`, hours of programme run in milliseconds. CI never pays.
+  moderation verdict. On `TestClock`, an hour of programme with six renewals runs in about 20
+  seconds, or 3 with simulated media off. CI never pays.
 - **Know what reached Reactor.** Every failed command says whether it was never sent, answered, or
   unknown. An enqueue whose reply was lost is never sent again, so a lost reply never plays a clip
   twice.
@@ -110,8 +111,9 @@ npm install --save-exact reactor-effect-native @effect/platform-node@4.0.0-rc.11
 npm install --save-exact reactor-effect-browser                                     # browsers
 ```
 
-Effect 4 is in release candidates, so every package pins it exactly.
-[Installation](https://mannyc2.github.io/reactor-effect-client/start/installation/) covers the
+Effect 4 is in release candidates, so every package pins it exactly. Under Bun and pnpm, and under npm
+without `reactor-effect-native`, also pin `@effect/platform-node-shared` to `4.0.0-rc.117` with an
+override. [Installation](https://mannyc2.github.io/reactor-effect-client/start/installation/) covers the
 details, and the [documentation](https://mannyc2.github.io/reactor-effect-client/) covers sessions,
 H3, the playout, media, errors, testing and cost control.
 
