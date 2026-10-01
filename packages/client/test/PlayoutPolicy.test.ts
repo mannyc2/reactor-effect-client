@@ -2153,6 +2153,30 @@ describe("PlayoutPolicy, wakes", () => {
     // Its clip is gone, though no read has shown it yet; its time comes and cuts nothing.
     assert.deepStrictEqual(commands(policy.tick(5_000).actions), []);
   });
+
+  // s1 airs a clip of its own to 55 s, and s2, its replacement, must have aired what it builds by
+  // 64 s, its cap less the margin; a is due at 40 s. The 9.98 s that tile the gap to a would end
+  // past that, and the tile shrinks to the 9 s that fit at 31 s, with nothing to wake the plan
+  // then: it asks for those 9 s at once.
+  it("asks a replacement at once for the filler that airs before its cap", () => {
+    const policy = drive({ config: protecting("air") });
+    policy.tick(0);
+    policy.send({ _tag: "Opened", sessionId: "s1", lifetimeMs: 60_000 }, 10);
+    const x = clip("x", undefined, 55);
+    policy.event({ _tag: "Started", clip: x }, "s1", 20);
+    policy.observe({ playing: x });
+    policy.reply({ _tag: "Done" });
+    policy.submit({ ...spec("a"), start: { _tag: "At", time: 40_000, late: "nextBoundary" } }, 30);
+    assert.isTrue(policy.tick(30_010).actions.some((action) => action._tag === "Open"));
+    policy.send({ _tag: "Opened", sessionId: "s2", lifetimeMs: 35_000 }, 30_020);
+    policy.observe({}, "s2");
+    policy.reply({ _tag: "Done" }, undefined, "s2");
+    assert.deepStrictEqual(policy.busy("s2"), {
+      _tag: "Enqueue",
+      request: { prompt: "filler 0", seconds: 9 },
+      tag: { _tag: "Filler", index: 0 },
+    });
+  });
 });
 
 describe("PlayoutPolicy, any script", () => {

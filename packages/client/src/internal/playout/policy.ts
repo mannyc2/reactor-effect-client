@@ -2901,8 +2901,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     state = { ...state, filler: { ...state.filler, refilling } };
     if (!refilling || (!below(targetSeconds) && room >= anchorGap) || !drainingNeeds) return;
     const seconds = fillLength(anchorGap - room, filler.lengths, estimates().length);
-    if (!fits(target, fillerLength(seconds))) return;
-    sendFiller(filler, target, seconds, room);
+    if (fits(target, fillerLength(seconds))) return sendFiller(filler, target, seconds, room);
+    // The gap a clip tiles shrinks with the time, while what airs ahead of it may not: a tile too
+    // long to air before the cap would come to fit with nothing to wake the plan. A new clip asks
+    // instead for what airs before the cap, if the shortest the filler takes does.
+    if (state.filler.retries.length > 0 || !fits(target, filler.lengths.min)) return;
+    sendFiller(filler, target, Math.max(filler.lengths.min, longestFit(target)), room);
   }
   /**
    * `item`'s p95 build in seconds, at the continued rate if it continues a
@@ -3171,10 +3175,21 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    */
   function fits(target: Session, seconds: number): boolean {
     if (target.lifetimeMs === Infinity) return true;
+    const lengthMs = seconds * estimates().length * 1000;
+    if (lengthMs > target.lifetimeMs - lookaheadMarginSeconds * 1000) return true;
+    return airedAheadAt(target) + lengthMs <= capOf(target);
+  }
+  /** The most seconds a clip built on `target` now may ask for and still air before its cap. */
+  function longestFit(target: Session): number {
+    return (capOf(target) - airedAheadAt(target)) / (estimates().length * 1000);
+  }
+  /** When a clip built on `target` must have aired by: its cap, less the margin. */
+  function capOf(target: Session): number {
+    return target.openedAt + target.lifetimeMs - lookaheadMarginSeconds * 1000;
+  }
+  /** When all that airs ahead of a clip built on `target` now has aired. */
+  function airedAheadAt(target: Session): number {
     const ratio = estimates().length;
-    const lengthMs = seconds * ratio * 1000;
-    const marginMs = lookaheadMarginSeconds * 1000;
-    if (lengthMs > target.lifetimeMs - marginMs) return true;
     const queuedMs = (value: Session): number =>
       waitingOf(value)
         .filter(airs)
@@ -3194,10 +3209,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       (target.source?.building ?? [])
         .filter((clip) => clip.tag?._tag === "Filler")
         .reduce((total, clip) => total + clip.seconds * 1000, 0);
-    return (
-      startsAt + queuedMs(target) + buildingMs + lengthMs <=
-      target.openedAt + target.lifetimeMs - marginMs
-    );
+    return startsAt + queuedMs(target) + buildingMs;
   }
   /** The runway filler refills below; protecting the air, it covers the next item's build too. */
   function fillerFloor(): number {
