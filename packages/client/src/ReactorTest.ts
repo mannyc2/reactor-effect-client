@@ -1,7 +1,7 @@
 /**
- * Reactor in a box: Reactor's coordinator and an H3 model simulated in memory
- * at the network edge, so an application and every SDK layer above it run
- * unchanged without a paid session. Provide `layer({ timing })` beneath
+ * Reactor in a box: Reactor's coordinator and its H3 and Vidu S2-Avatar models
+ * simulated in memory at the network edge, so an application and every SDK
+ * layer above it run unchanged without a paid session. Provide `layer({ timing })` beneath
  * `Reactor.layer()` in place of an HTTP client and a host; `layerCoordinator`
  * is the coordinator's HTTP API alone, with no host.
  *
@@ -117,9 +117,9 @@ export const Fault = Schema.Union([
    * Reactor ever does is unobserved.
    */
   Schema.TaggedStruct("MissingSession", nth),
-  /** While a clip plays, video is absent, black or one repeated frame. */
+  /** While a clip plays, or a call is live, video is absent, black or one repeated frame. */
   Schema.TaggedStruct("Video", { video: Schema.Literals(["absent", "black", "frozen"]) }),
-  /** The session offers audio and sends none. */
+  /** The session offers audio and sends none: no clip's sound, and no character's speech. */
   Schema.TaggedStruct("NoAudio", {}),
   /** An enqueue with reference images is refused because one of them is invalid. */
   Schema.TaggedStruct("InvalidImage", nth),
@@ -184,6 +184,16 @@ export interface Timing {
   readonly stop: Range;
   /** From a flagged enqueue until content moderation's verdict, and the session's end on `terminate`. */
   readonly moderation: Range;
+  /** Vidu S2-Avatar: from `create_avatar` until the avatar is ready. */
+  readonly avatar: Range;
+  /** Vidu S2-Avatar: from `start_call` until the call is live; it warms up halfway. */
+  readonly call: Range;
+  /** Vidu S2-Avatar: from what the caller says until the character starts to answer. */
+  readonly answer: Range;
+  /** Vidu S2-Avatar: how long the character speaks one answer. */
+  readonly speech: Range;
+  /** Vidu S2-Avatar: from `end_call` until the call is released and `call_ended` answers. */
+  readonly hangup: Range;
   /** Seconds of video built per second of build time; below 1 the queue starves. */
   readonly buildSpeed: { readonly min: number; readonly max: number };
   /** The same for a clip built continuing from another, which hosted H3 built slower. */
@@ -216,6 +226,11 @@ export const Timing = {
     readonly seam?: Duration.Input;
     readonly stop?: Duration.Input;
     readonly moderation?: Duration.Input;
+    readonly avatar?: Duration.Input;
+    readonly call?: Duration.Input;
+    readonly answer?: Duration.Input;
+    readonly speech?: Duration.Input;
+    readonly hangup?: Duration.Input;
   }): Timing => ({
     label: "fixed",
     seed: 1,
@@ -227,6 +242,11 @@ export const Timing = {
     seam: point(input.seam),
     stop: point(input.stop),
     moderation: point(input.moderation),
+    avatar: point(input.avatar),
+    call: point(input.call),
+    answer: point(input.answer),
+    speech: point(input.speech),
+    hangup: point(input.hangup),
     buildSpeed: { min: input.buildSpeed, max: input.buildSpeed },
     continuedBuildSpeed: {
       min: input.continuedBuildSpeed ?? input.buildSpeed,
@@ -237,7 +257,9 @@ export const Timing = {
    * Every delay drawn from a range, deliberately wider than anything measured
    * so that code tuned to one provider speed fails: builds from a quarter of
    * real time to ten times it, requests and messages up to 2 s, seams up to
-   * half a second, stops landing up to a second after their acknowledgement.
+   * half a second, stops landing up to a second after their acknowledgement;
+   * for Vidu S2-Avatar, avatars and calls ready within 10 s, answers starting
+   * within 3 s and lasting half a second to 10, and calls released within 5 s.
    * Name a narrower range to explore one.
    */
   random: (input: {
@@ -250,6 +272,11 @@ export const Timing = {
     readonly seam?: readonly [Duration.Input, Duration.Input];
     readonly stop?: readonly [Duration.Input, Duration.Input];
     readonly moderation?: readonly [Duration.Input, Duration.Input];
+    readonly avatar?: readonly [Duration.Input, Duration.Input];
+    readonly call?: readonly [Duration.Input, Duration.Input];
+    readonly answer?: readonly [Duration.Input, Duration.Input];
+    readonly speech?: readonly [Duration.Input, Duration.Input];
+    readonly hangup?: readonly [Duration.Input, Duration.Input];
     readonly buildSpeed?: readonly [number, number];
     readonly continuedBuildSpeed?: readonly [number, number];
   }): Timing => ({
@@ -263,6 +290,11 @@ export const Timing = {
     seam: range(input.seam ?? [0, "500 millis"]),
     stop: range(input.stop ?? [0, "1 second"]),
     moderation: range(input.moderation ?? [0, "2 seconds"]),
+    avatar: range(input.avatar ?? [0, "10 seconds"]),
+    call: range(input.call ?? [0, "10 seconds"]),
+    answer: range(input.answer ?? [0, "3 seconds"]),
+    speech: range(input.speech ?? ["500 millis", "10 seconds"]),
+    hangup: range(input.hangup ?? [0, "5 seconds"]),
     buildSpeed: {
       min: input.buildSpeed?.[0] ?? 0.25,
       max: input.buildSpeed?.[1] ?? 10,
@@ -280,7 +312,9 @@ export const Timing = {
    * after its acknowledgement and one continued 5 s clip built in 5.45 s; and
    * from 0.8.0's cut run, a moderation verdict 1.01 s after its enqueue. These
    * are small samples, drawn as ranges and not replayed as a trace: use them
-   * for demos and realism checks, not as what a test depends on.
+   * for demos and realism checks, not as what a test depends on. No paid run
+   * has timed Vidu S2-Avatar yet: its ranges are what Reactor documents, an
+   * avatar ready "within a few seconds" and a call live "usually within 5 s".
    */
   hosted: {
     label: "hosted H3, paid runs of 2026-09-27 and 2026-09-28",
@@ -293,6 +327,11 @@ export const Timing = {
     seam: range(["30 millis", "110 millis"]),
     stop: point("20 millis"),
     moderation: point("1 second"),
+    avatar: range(["2 seconds", "5 seconds"]),
+    call: range(["3 seconds", "5 seconds"]),
+    answer: range(["500 millis", "1500 millis"]),
+    speech: range(["2 seconds", "4 seconds"]),
+    hangup: range(["1 second", "3 seconds"]),
     buildSpeed: { min: 2.3, max: 2.6 },
     continuedBuildSpeed: { min: 0.92, max: 0.92 },
   } satisfies Timing,
@@ -308,8 +347,10 @@ export const Options = Schema.Struct({
   generationCapacity: count(20),
   playoutCapacity: count(10),
   /**
-   * The rate the pricing API publishes, in credits a second, as it stated
-   * H3's on September 30, 2026: 350 at 10,000 a dollar is $0.035 a second.
+   * The rate the pricing API publishes for H3, in credits a second, as it
+   * stated it on September 30, 2026: 350 at 10,000 a dollar is $0.035 a
+   * second. Vidu S2-Avatar is published at the 70 its pricing stated on
+   * October 1, 2026.
    */
   creditsPerSecond: count(350),
   creditsPerDollar: count(10_000),
@@ -357,7 +398,7 @@ export interface SessionInfo {
   readonly client: { readonly sdkVersion: string; readonly sdkType: string } | undefined;
 }
 
-/** What the sessions cost, billed per second as the pricing API states H3's rate. */
+/** What the sessions cost, each billed per second at its model's published rate. */
 export interface Billing {
   /** From ACTIVE until each session ended, or now. */
   readonly seconds: number;

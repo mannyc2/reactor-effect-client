@@ -13,12 +13,15 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import type { Billing, Entry, Options, SessionInfo } from "../../ReactorTest.js";
-import * as Wire from "../wire.js";
+import * as Call from "./call.js";
 import * as Faults from "./faults.js";
-import { deployment, documented } from "./h3.js";
+import * as H3 from "./h3.js";
 import type { Link } from "./peer.js";
 import * as Playout from "./playout.js";
+import * as Runner from "./runner.js";
+import { monotonic } from "./runner.js";
 import type { Sampler } from "./timing.js";
+import * as Vidu from "./vidu.js";
 
 const Id = Schema.String.check(Schema.isNonEmpty());
 /**
@@ -127,9 +130,26 @@ const withSlot = (state: State, cid: number, slot: Slot): State => ({
 const anyOpen = (state: State): boolean =>
   [...state.connections.values()].some((slot) => slot.open);
 
+/** A model the simulated Reactor serves: the tracks it declares and how it is simulated. */
+interface Served {
+  readonly tracks: ReadonlyArray<{
+    readonly name: string;
+    readonly kind: "audio" | "video";
+    readonly direction: "recvonly" | "sendonly";
+  }>;
+  readonly fps: number;
+  /** Credits a second, as Reactor's pricing states the model's rate. */
+  readonly creditsPerSecond: number;
+  readonly start: (
+    sessionId: string,
+    environment: Runner.Environment,
+  ) => Effect.Effect<Runner.Session, never, Scope.Scope>;
+}
+
 interface Session {
   readonly id: string;
-  readonly model: string;
+  readonly modelName: string;
+  readonly model: Served;
   /** The SDK that created it, as it named itself. */
   readonly client: SessionInfo["client"];
   /** The token that created it, which acts on it without a bind. */
@@ -138,10 +158,10 @@ interface Session {
   readonly expiresAt: number;
   readonly state: Ref.Ref<State>;
   readonly scope: Scope.Closeable;
-  readonly playout: Playout.Playout;
+  readonly runner: Runner.Session;
 }
 
-const descriptor = (id: string, phase: Phase) => ({
+const descriptor = (id: string, phase: Phase, model: Served) => ({
   session_id: id,
   state: phase,
   // Whether hosted Reactor still describes an INACTIVE session's capabilities and
@@ -151,11 +171,8 @@ const descriptor = (id: string, phase: Phase) => ({
     ? {
         capabilities: {
           protocol_version: "1.0",
-          tracks: [
-            { name: documented.tracks.video, kind: "video", direction: "recvonly" },
-            { name: documented.tracks.audio, kind: "audio", direction: "recvonly" },
-          ],
-          emission_fps: documented.fps,
+          tracks: model.tracks,
+          emission_fps: model.fps,
         },
         selected_transport: { protocol: "webrtc", version: "1.0" },
       }
@@ -187,14 +204,54 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
   const slots = yield* Ref.make<ReadonlyMap<string, string>>(new Map());
   const uploads = yield* Ref.make(0);
   const recordings = yield* Ref.make<ReadonlyMap<string, Recording>>(new Map());
-  const openapi = yield* Schema.decodeUnknownEffect(Wire.StructJson)(
-    deployment(options.referenceAudio),
-  ).pipe(Effect.orDie);
+  /** The avatars Vidu S2-Avatar sessions made, which later sessions can attach. */
+  const avatars = yield* Ref.make<ReadonlyMap<string, Vidu.Avatar>>(new Map());
+  const avatarCount = yield* Ref.make(0);
+  const served: ReadonlyMap<string, Served> = new Map([
+    [
+      H3.documented.modelName,
+      {
+        tracks: [
+          { name: H3.documented.tracks.video, kind: "video", direction: "recvonly" },
+          { name: H3.documented.tracks.audio, kind: "audio", direction: "recvonly" },
+        ],
+        fps: H3.documented.fps,
+        creditsPerSecond: options.creditsPerSecond,
+        start: (sessionId, environment) => Runner.make(sessionId, environment, Playout.simulation),
+      },
+    ],
+    [
+      Vidu.documented.modelName,
+      {
+        tracks: [
+          { name: Vidu.documented.tracks.mic, kind: "audio", direction: "sendonly" },
+          { name: Vidu.documented.tracks.webcam, kind: "video", direction: "sendonly" },
+          { name: Vidu.documented.tracks.video, kind: "video", direction: "recvonly" },
+          { name: Vidu.documented.tracks.audio, kind: "audio", direction: "recvonly" },
+        ],
+        fps: Vidu.documented.fps,
+        creditsPerSecond: Vidu.documented.creditsPerSecond,
+        start: (sessionId, environment) =>
+          Runner.make(
+            sessionId,
+            environment,
+            Call.simulation({
+              find: (id) => Effect.map(Ref.get(avatars), (all) => all.get(id)),
+              save: (avatar) => Ref.update(avatars, (all) => new Map(all).set(avatar.id, avatar)),
+              nextId: Effect.map(
+                Ref.updateAndGet(avatarCount, (n) => n + 1),
+                (n) => `avatar_reactor_test_${n}`,
+              ),
+            }),
+          ),
+      },
+    ],
+  ]);
 
   const count = (key: "grants" | "sessions" | "connections" | "peers" | "recordings") =>
     Ref.modify(counts, (all) => [all[key] + 1, { ...all, [key]: all[key] + 1 }] as const);
   const log = (entry: Omit<Entry, "at">) =>
-    Effect.flatMap(Playout.monotonic, (at) =>
+    Effect.flatMap(monotonic, (at) =>
       Ref.update(entries, (all) => [...all.slice(-9_999), { at, ...entry }]),
     );
   const later = (ms: number, effect: Effect.Effect<void>) =>
@@ -276,7 +333,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       });
       if (!unbound) return;
       yield* setBinding(link.id, undefined);
-      yield* session.playout.disconnect(cid);
+      yield* session.runner.disconnect(cid);
       yield* log({ sessionId: session.id, kind: "session", name: reason });
       yield* link.drop(reason);
       if (reason !== "disconnected") return;
@@ -301,7 +358,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
     });
   const end = (session: Session, reason: string): Effect.Effect<void> =>
     Effect.gen(function* () {
-      const now = yield* Playout.monotonic;
+      const now = yield* monotonic;
       const previous = yield* Ref.getAndUpdate(session.state, (state) =>
         state.phase === "CLOSED" ? state : { ...state, phase: "CLOSED" as const, endedAt: now },
       );
@@ -317,7 +374,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
    */
   const record = (session: Session, kind: "snap" | "recording", seconds: number) =>
     Effect.gen(function* () {
-      const now = yield* Playout.monotonic;
+      const now = yield* monotonic;
       const { activeAt } = yield* Ref.get(session.state);
       const elapsed = activeAt === undefined ? 0 : (now - activeAt) / 1000;
       const start = kind === "snap" ? Math.max(0, elapsed - Math.min(seconds, maxClipSeconds)) : 0;
@@ -345,7 +402,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
 
   const activate = (session: Session) =>
     Effect.gen(function* () {
-      const now = yield* Playout.monotonic;
+      const now = yield* monotonic;
       const previous = yield* Ref.getAndUpdate(session.state, (state) =>
         state.phase === "PENDING" ? { ...state, phase: "ACTIVE" as const, activeAt: now } : state,
       );
@@ -372,7 +429,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         withSlot(current, cid, { ...slot, open: true }),
       );
       yield* log({ sessionId: session.id, kind: "session", name: "connected" });
-      yield* session.playout.connect(cid, link);
+      yield* session.runner.connect(cid, link);
       const fault = yield* faults.trip((candidate) => candidate._tag === "Disconnect");
       if (fault?._tag === "Disconnect")
         yield* later(Duration.toMillis(fault.after), unlink(session, cid, link, "disconnected"));
@@ -404,22 +461,20 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const link = (yield* Ref.get(peers)).get(peerId);
         const bound = (yield* Ref.get(bindings)).get(peerId);
         if (link !== undefined && bound !== undefined)
-          yield* bound.session.playout.receive(bound.cid, link, channel, bytes);
+          yield* bound.session.runner.receive(bound.cid, link, channel, bytes);
       }),
 
     // Coordinator
     pricing: {
       settings: { currency_code: "USD", credits_per_dollar: options.creditsPerDollar },
-      models: [
-        {
-          name: documented.modelName.slice(documented.modelName.lastIndexOf("/") + 1),
-          rate: {
-            amount_per_sec: options.creditsPerSecond,
-            unit: "credits",
-            denomination: "second",
-          },
+      models: [...served].map(([name, model]) => ({
+        name: name.slice(name.lastIndexOf("/") + 1),
+        rate: {
+          amount_per_sec: model.creditsPerSecond,
+          unit: "credits",
+          denomination: "second",
         },
-      ],
+      })),
     },
     mint: (
       key: string | undefined,
@@ -436,7 +491,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           const session = all.get(id);
           const open = session !== undefined && (yield* Ref.get(session.state)).phase !== "CLOSED";
           // A closed, foreign or unknown id is refused alike, so bind cannot find sessions.
-          if (!open || !models.includes(session.model))
+          if (!open || !models.includes(session.modelName))
             return yield* refuse(403, "forbidden", "a bound session is not open for this token");
         }
         const n = yield* count("grants");
@@ -503,8 +558,13 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const grant = yield* authorize(jwt, "token");
         if (grant === "key")
           return yield* refuse(401, "unauthorized", "a session token is required");
-        if (model !== documented.modelName)
-          return yield* refuse(404, "unknown_model", "ReactorTest serves H3 only");
+        const simulated = served.get(model);
+        if (simulated === undefined)
+          return yield* refuse(
+            404,
+            "unknown_model",
+            "ReactorTest serves H3 and Vidu S2-Avatar only",
+          );
         if (!grant.models.includes(model))
           return yield* refuse(403, "forbidden", "the token does not grant this model");
         if (!webrtc) return yield* refuse(400, "unsupported_transport", "WebRTC 1.0 only");
@@ -518,7 +578,8 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           const last = [...(yield* Ref.get(sessions)).values()].findLast(
             (session) => session.creator === grant.jwt,
           );
-          if (last !== undefined) return descriptor(last.id, (yield* Ref.get(last.state)).phase);
+          if (last !== undefined)
+            return descriptor(last.id, (yield* Ref.get(last.state)).phase, last.model);
         }
         if (
           spent &&
@@ -536,7 +597,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         if (running.length >= options.concurrentSessions)
           return yield* refuse(429, "concurrent_limit", "too many concurrent sessions");
         // A token bucket: `burst` back to back, then one every minute / sessionsPerMinute.
-        const now = yield* Playout.monotonic;
+        const now = yield* monotonic;
         const refillMs = 60_000 / options.sessionsPerMinute;
         const wait = yield* Ref.modify(bucket, (current) => {
           const tokens = Math.min(burst, current.tokens + (now - current.at) / refillMs);
@@ -558,7 +619,8 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const sessionScope = yield* Scope.fork(scope);
         const session: Session = {
           id,
-          model,
+          modelName: model,
+          model: simulated,
           client,
           creator: grant.jwt,
           maxSessionSeconds: grant.maxSessionSeconds,
@@ -572,24 +634,25 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
             deletes: 0,
             connections: new Map(),
           }),
-          playout: yield* Playout.make(id, {
-            options,
-            faults,
-            timing,
-            openapi,
-            log,
-            // The session a moderation verdict ends is this one, built just below. It ends
-            // outside its own scope, which the ending closes.
-            terminate: Effect.suspend(() => Effect.asVoid(later(0, end(session, "moderated")))),
-            record: (kind, seconds) => record(session, kind, seconds),
-          }).pipe(Scope.provide(sessionScope)),
+          runner: yield* simulated
+            .start(id, {
+              options,
+              faults,
+              timing,
+              log,
+              // The session a moderation verdict ends is this one, built just below. It ends
+              // outside its own scope, which the ending closes.
+              terminate: Effect.suspend(() => Effect.asVoid(later(0, end(session, "moderated")))),
+              record: (kind, seconds) => record(session, kind, seconds),
+            })
+            .pipe(Scope.provide(sessionScope)),
         };
         yield* Ref.update(sessions, (all) => new Map(all).set(id, session));
         yield* log({ sessionId: id, kind: "session", name: "created" });
         yield* later(yield* timing.delay("allocation"), activate(session));
         if ((yield* faults.trip((fault) => fault._tag === "UnnamedAllocation")) === undefined)
-          return descriptor(id, "PENDING");
-        const { session_id: _, ...unnamed } = descriptor(id, "PENDING");
+          return descriptor(id, "PENDING", simulated);
+        const { session_id: _, ...unnamed } = descriptor(id, "PENDING", simulated);
         return unnamed;
       }),
     read: (jwt: string | undefined, id: string) =>
@@ -597,7 +660,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const session = yield* owned(jwt, id, undefined, "key");
         if ((yield* faults.trip((fault) => fault._tag === "MissingSession")) !== undefined)
           return yield* refuse(404, "not_found", "no such session");
-        return descriptor(id, (yield* Ref.get(session.state)).phase);
+        return descriptor(id, (yield* Ref.get(session.state)).phase, session.model);
       }),
     upload: (jwt: string | undefined, id: string, name: string, size: number) =>
       Effect.gen(function* () {
@@ -668,7 +731,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         if (previous !== undefined && previous !== link)
           yield* unlink(session, cid, previous, "replaced");
         yield* setBinding(peerId, { session, cid });
-        const at = (yield* Playout.monotonic) + (yield* timing.delay("negotiation"));
+        const at = (yield* monotonic) + (yield* timing.delay("negotiation"));
         const answer = `v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=reactor-test\r\na=ice-ufrag:${peerId}\r\n`;
         // A connection returning to an INACTIVE session makes it ACTIVE again.
         yield* Ref.update(session.state, (state) =>
@@ -685,7 +748,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
     answer: (jwt: string | undefined, id: string, cid: number) =>
       Effect.gen(function* () {
         const { answer } = yield* connection(yield* owned(jwt, id), cid);
-        const now = yield* Playout.monotonic;
+        const now = yield* monotonic;
         return answer !== undefined && answer.at <= now
           ? Option.some({ sdp_answer: answer.sdp, connection_id: cid })
           : Option.none();
@@ -699,7 +762,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const recording = (yield* Ref.get(recordings)).get(id);
         if (recording === undefined) return yield* refuse(404, "not_found", "no such clip");
         yield* owned(jwt, recording.sessionId);
-        if ((yield* Playout.monotonic) < recording.readyAt) return Option.none();
+        if ((yield* monotonic) < recording.readyAt) return Option.none();
         const media = Array.from(
           { length: recording.segments },
           (_, index) => `#EXTINF:${segmentSeconds.toFixed(3)},\n${clips}/${id}/${index}.m4s`,
@@ -724,7 +787,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         const index = file === "init.mp4" ? -1 : Number.parseInt(file, 10);
         if (
           recording === undefined ||
-          (yield* Playout.monotonic) < recording.readyAt ||
+          (yield* monotonic) < recording.readyAt ||
           !(file === "init.mp4" || (file === `${index}.m4s` && index < recording.segments))
         )
           return yield* refuse(404, "not_found", "no such segment");
@@ -750,16 +813,17 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       ),
     ),
     billing: Effect.gen(function* () {
-      const now = yield* Playout.monotonic;
+      const now = yield* monotonic;
       const billed = yield* Effect.forEach([...(yield* Ref.get(sessions)).values()], (session) =>
-        Effect.map(Ref.get(session.state), (state) =>
-          state.activeAt === undefined ? 0 : ((state.endedAt ?? now) - state.activeAt) / 1000,
-        ),
+        Effect.map(Ref.get(session.state), (state) => {
+          const seconds =
+            state.activeAt === undefined ? 0 : ((state.endedAt ?? now) - state.activeAt) / 1000;
+          return { seconds, credits: seconds * session.model.creditsPerSecond };
+        }),
       );
-      const seconds = billed.reduce((sum, each) => sum + each, 0);
       return {
-        seconds,
-        usd: (seconds * options.creditsPerSecond) / options.creditsPerDollar,
+        seconds: billed.reduce((sum, each) => sum + each.seconds, 0),
+        usd: billed.reduce((sum, each) => sum + each.credits, 0) / options.creditsPerDollar,
       } satisfies Billing;
     }),
     log: Ref.get(entries),
