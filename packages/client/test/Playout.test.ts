@@ -1183,7 +1183,8 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
     () =>
       Effect.gen(function* () {
         const problems: Array<string> = [];
-        for (let seed = 1; seed <= 8; seed++)
+        // Seed 49 places a clip after one whose guarded start is under way as its deadline passes.
+        for (const seed of [1, 2, 3, 4, 5, 6, 7, 8, 49])
           problems.push(...(yield* forecast(seed, "75 seconds", 150, "15 seconds", "20 millis")));
         assert.deepStrictEqual(problems, []);
       }),

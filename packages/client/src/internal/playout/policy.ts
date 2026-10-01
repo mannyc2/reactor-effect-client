@@ -329,6 +329,11 @@ interface Session {
    * failed, or one that succeeded while its start is not seen yet.
    */
   readonly playRetry?: { readonly signature: string; readonly at: number } | undefined;
+  /**
+   * The clip of the last play that succeeded, and its queues then: until they change, its start is
+   * on its way, and the clip is not withdrawn as late.
+   */
+  readonly played?: { readonly clipId: string; readonly signature: string } | undefined;
   readonly retiring: boolean;
   /**
    * The clip that last left the air here, and when on the monotonic clock. Its source may go on
@@ -2092,6 +2097,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         // played again.
         updateSession(sessionId, {
           playRetry: { signature: signature(session(sessionId)), at: now.mono + retryDelayMs },
+          played: { clipId: command.clipId, signature: signature(session(sessionId)) },
         });
         if (state.cutting?.sessionId === sessionId && state.cutting.next === command.clipId)
           state = { ...state, cutting: { ...state.cutting, stage: "played" } };
@@ -2298,6 +2304,17 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   };
   for (const item of [...items.values()]) {
     if (item.phase !== "Accepted" && item.phase !== "Building" && item.phase !== "Ready") continue;
+    // A play of its clip in flight starts it or is refused within the round trip, and the start of
+    // one that succeeded comes before its queues change: the next look decides then.
+    const lane = session(item.sessionId);
+    const busy = lane?.busy?.command;
+    const played = lane?.played;
+    if (
+      item.clipId !== undefined &&
+      ((busy?._tag === "Play" && busy.clipId === item.clipId) ||
+        (played?.clipId === item.clipId && played.signature === signature(lane)))
+    )
+      continue;
     if (
       (item.spec.window?.firm === true && item.startBy !== undefined && now.mono >= item.startBy) ||
       boundaryLate(item)
