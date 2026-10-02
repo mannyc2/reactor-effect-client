@@ -116,14 +116,15 @@ The hosted figures come from paid runs between 2026-09-24 and 2026-10-01, on the
 | [`reactor-effect-native`](./packages/native)   | `NativePeer` on a Node-API addon over Reactor's `reactor-webrtc` crate, prebuilt for Linux x64 (glibc) and macOS on Apple silicon | Node and Bun           |
 
 ```sh
-npm install --save-exact reactor-effect-client effect@4.0.0-rc.117
-npm install --save-exact reactor-effect-native @effect/platform-node@4.0.0-rc.117   # Node and Bun
-npm install --save-exact reactor-effect-browser                                     # browsers
+npm install --save-exact reactor-effect-client effect@4.0.0
+npm install --save-exact reactor-effect-native @effect/platform-node@4.0.0   # Node and Bun
+npm install --save-exact reactor-effect-browser                              # browsers
 ```
 
-Effect 4 is in release candidates, so every package pins it exactly. With `@effect/platform-node`,
-also pin `@effect/platform-node-shared` to `4.0.0-rc.117` with an override: always under Bun and
-pnpm, and under npm unless `reactor-effect-native` is installed.
+Every package peers on Effect `~4.0.0`, any 4.0.x patch but not 4.1: the Effect modules the SDK
+builds on, such as `effect/http` and `effect/rpc`, are marked unstable, and Effect may change those
+in a minor release. Keep `effect` and every `@effect/*` package at one version. With
+`@effect/platform-node`, also pin `@effect/platform-node-shared` to that version with an override.
 [Installation](https://mannyc2.github.io/reactor-effect-client/start/installation/) covers the
 details, and the [documentation](https://mannyc2.github.io/reactor-effect-client/) covers sessions,
 H3, the playout, media, errors, testing and cost control.

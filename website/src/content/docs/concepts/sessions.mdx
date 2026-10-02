@@ -85,7 +85,7 @@ where the code runs.
 
 ```ts
 import { Layer } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import { CoordinatorClient, Reactor } from "reactor-effect-client";
 import { NativePeer } from "reactor-effect-native";
 
@@ -103,7 +103,7 @@ export const Hosted = Reactor.layer().pipe(
 
 ```ts
 import { Layer } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import { CoordinatorClient, Reactor } from "reactor-effect-client";
 import { BrowserPeer } from "reactor-effect-browser";
 

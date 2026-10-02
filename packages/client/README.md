@@ -19,14 +19,15 @@ This is an independent project, not an official Reactor SDK. Protocol material i
 ## Install
 
 ```sh
-npm install --save-exact reactor-effect-client effect@4.0.0-rc.117
+npm install --save-exact reactor-effect-client effect@4.0.0
 ```
 
-Effect is a peer dependency at exactly `4.0.0-rc.117`: its release candidates can move modules, so a
-later one needs a new SDK release. Install any `@effect/*` package at the same version with
-`--save-exact`. A project with `@effect/platform-node` also pins `@effect/platform-node-shared` to
-`4.0.0-rc.117` with an override, since the platform's caret range otherwise installs a later
-candidate: always under Bun and pnpm, and under npm unless `reactor-effect-native` is installed.
+Effect is a peer dependency at `~4.0.0`, any 4.0.x patch: the Effect modules the SDK builds on,
+such as `effect/http` and `effect/rpc`, are marked unstable, and Effect may change those in a minor
+release, so Effect 4.1 needs a new SDK release. Install any `@effect/*` package at the same version
+as `effect`, with `--save-exact`. A project with `@effect/platform-node` also pins
+`@effect/platform-node-shared` to that version with an override, since the platform's caret range
+otherwise installs a later release.
 [Installation](https://mannyc2.github.io/reactor-effect-client/start/installation/) covers each
 host.
 

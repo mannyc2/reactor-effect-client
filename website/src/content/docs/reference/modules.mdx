@@ -136,11 +136,11 @@ Importing `NativePeer` loads no addon: building its layer does.
 
 ## Versions and platforms
 
-| Package                      | Peer dependencies, all exact                                              | Runs on |
+| Package                      | Peer dependencies                                                         | Runs on |
 | ---------------------------- | ------------------------------------------------------------------------- | ------- |
-| `reactor-effect-client`      | `effect` 4.0.0-rc.117                                                      | Node 22 or newer, Bun, browsers |
-| `reactor-effect-browser`     | `effect` 4.0.0-rc.117, `reactor-effect-client` at the same version         | Browsers with WebRTC |
-| `reactor-effect-native`      | `effect`, `@effect/platform-node` and `@effect/platform-node-shared` 4.0.0-rc.117, `reactor-effect-client` at the same version | Node 22 or newer and Bun |
+| `reactor-effect-client`      | `effect` ~4.0.0                                                     | Node 22 or newer, Bun, browsers |
+| `reactor-effect-browser`     | `effect` ~4.0.0, `reactor-effect-client` at exactly the same version | Browsers with WebRTC |
+| `reactor-effect-native`      | `effect`, `@effect/platform-node` and `@effect/platform-node-shared` ~4.0.0, `reactor-effect-client` at exactly the same version | Node 22 or newer and Bun |
 
 | Addon package                         | Platform                                              |
 | ------------------------------------- | ----------------------------------------------------- |
@@ -154,6 +154,7 @@ Importing `NativePeer` loads no addon: building its layer does.
 | `BrowserPeer.layer`           | The browser's own tracks           | Any browser with WebRTC         |
 | `ReactorTest.layer`           | Decoded synthetic frames           | Anywhere the client runs        |
 
-Effect is pinned exactly because its release candidates can move modules: a later `4.0.0-rc`
-needs a new release of these packages. See
+The Effect peers admit 4.0.x patches and stop before 4.1, because the Effect modules these packages
+build on are marked unstable, and Effect may change those in a minor release: Effect 4.1 needs a
+new release of these packages. See
 [Installation](/reactor-effect-client/start/installation/) for the install lines.

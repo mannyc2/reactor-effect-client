@@ -52,7 +52,7 @@ Paste this into a coding agent to set it up for a new project:
 Build this with reactor-effect, the Effect SDK for Reactor's real-time video models.
 First read https://mannyc2.github.io/reactor-effect-client/llms-full.txt, then Effect's guide
 at node_modules/effect/AGENTS.md for the installed release. Install Effect and every @effect
-package at exactly 4.0.0-rc.117 with --save-exact. Write the application against the
+package at one 4.0.x release, such as 4.0.0, with --save-exact. Write the application against the
 Reactor, CoordinatorClient and H3 (or Playout) services, run it on ReactorTest.layer until it
 works, and only then provide the hosted layer. Cap every session with maxSessionDuration,
 close it in a scope, and never resend a command whose failure outcome is "unknown".

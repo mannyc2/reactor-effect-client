@@ -14,4 +14,4 @@ H3 control and read spans cover validation, reply interpretation and state synch
 Work that an acquisition sets going and no caller causes starts a trace of its own, linked to the acquisition's span: a session's own `Session.reconnect`, `Playout.open`, an autonomous `Playout.command`, `H3Source.recover`, and the hooks of a `LocalSource` clip enqueued outside any span. Such a trace is unsampled when the acquisition's span was, so a session, source or playout acquired under an unsampled span exports none of its own work; under a sampled one, `MinimumTraceLevel` decides, as for any root.
 
 To export the spans, provide a tracer at your application's entry point, such as Effect's `OtlpTracer`
-from `effect/unstable/observability`, or Effect DevTools.
+from `effect/observability`, or Effect DevTools.
