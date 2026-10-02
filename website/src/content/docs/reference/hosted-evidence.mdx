@@ -204,6 +204,9 @@ use:
   deadline on the first run (0.9.2-avatar).
 - Vidu S2-Avatar declares `clone_voice` and refused it with `CLONING_DISABLED`; `list_voices` listed
   56 voices, and `call_max_seconds` read 7200 (0.9.2-avatar).
+- A connection that replaced a Vidu S2-Avatar call's own during the call carried the session's
+  messages, the state each second and the transcripts, but none of the call's picture or voice, with
+  both tracks resumed while the call was live (the first 0.9.2-avatar run).
 
 ## Not yet run on hosted Reactor
 
@@ -220,7 +223,8 @@ use:
 - **Long sessions.** The longest paid run lasted under two minutes; no multi-hour renewal soak has
   run.
 - **The `ViduS2Avatar` provider and the avatar example.** The `avatar` probe drove the model through
-  the raw `Session`. A caller's microphone or webcam, reference images and a reconnect during a call
-  have not run, nor whether Reactor ends a Vidu S2-Avatar session at its cap.
+  the raw `Session`. A caller's microphone or webcam and reference images have not run. Whether
+  Reactor ends a Vidu S2-Avatar session at its cap is open: on the first run nothing read the
+  session between its last message, at 81 s, and the key's end at 164 s.
 - **Restreaming and native publication.** No run has sent native media on to a browser, to RTMP or
   to LiveKit.

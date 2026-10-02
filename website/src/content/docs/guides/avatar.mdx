@@ -162,6 +162,10 @@ criterion:
 - **One command at a time.** A command waiting for its answer holds the next one, so `interrupt`
   sent during an `endCall` waits for it.
 - **No microphone from Node.** On Node and Bun the caller speaks through `say` only.
+- **A reconnect during a call has lost its media on hosted Reactor.** On the first paid run the
+  replacing connection carried the call's state and transcripts but none of its picture or voice,
+  though both tracks were resumed while the call was live. Don't count on a reconnect to bring a
+  live call's media back.
 - **Not yet qualified on hosted Reactor:** a caller's microphone or webcam, `callMode: "video"`,
-  reference images, `persona` and `vad` updates, `personaEnhance`, a reconnect during a call, and
-  whether Reactor ends a Vidu session at its cap.
+  reference images, `persona` and `vad` updates, `personaEnhance`, and whether Reactor ends a Vidu
+  session at its cap.
