@@ -33,6 +33,7 @@ A capability added after 0.3.0 gets one check of its own, run once against the p
 | `show`        | —                                             | `Playout` over three 75 s sessions, run as a show runs ([below](#show)), with filler keeping the air covered: a cut connection recovered on the same session, the `edits` sequence, one planned switch, `Asap`, cues and an `At` item, a session ended under a playing clip (by moderation with `--moderation-prompt-file`, else with the API key), a cut lane, `replace` and `skip` conflicts, and a drain.                                                                                                                                              |
 | `unconnected` | —                                             | A question for Reactor, not a qualification ([below](#unconnected)): a 60 s session allocated on a token of its own and never connected, and beside it a second create on another token, spent by the session it made. The API key reads the first session every 2 s until it ends, or until 120 s after the request, past the cap and 30 s counted from allocation, `ACTIVE` or ready, and then ends it. It holds each of the other token's sessions 10 s past its ready and ends it. What Reactor charged for each session is read from the dashboard.  |
 | `avatar`      | —                                             | A question for Reactor, not a qualification ([below](#avatar)): one 180 s Vidu S2-Avatar session through the raw `Session`, an avatar made from the operator's photo and two calls. It records what each refused command answers on the wire and whether its `command_error` comes first, what an explicit null does, how long each command takes to answer, and what a connection must do for a call's picture.                                                                                                                                          |
+| `character`   | —                                             | The `ViduS2Avatar` provider in one call ([below](#character)): one 75 s Vidu S2-Avatar session, an avatar made from the operator's photo, a call with a greeting, a `say` and its end, each sent by the provider. It passes on the avatar ready, the call returned live, the character's lit and changing picture within 5 s of live and its speech after live, sound or a character transcript within 8 s of the `say`, `endCall`'s end, and a confirmed end.                                                                                            |
 | `showreel`    | —                                             | Footage, not a qualification ([below](#showreel)): one 70 s session on which a playout airs five 8 s scenes back to back, its decoded picture and sound recorded to an MP4 as they air, seams included; once the session has closed, a poster and a README loop are made from it. It passes on every scene built, started and ended in order, every seam measured with no gap over 1.5 s, readers that keep up, the reel recorded, and its poster and loop made.                                                                                          |
 
 Every check also requires each session it allocated to be confirmed ended. Playout sessions hold the last frame at boundaries, as a show does; by default H3 flushes to black there, as its schema documents.
@@ -141,6 +142,15 @@ What one run cannot tell apart:
 - An order that holds from one that happened once: each refusal's `command_error` comes before or after its answer once.
 - A null the runtime dropped from one the model ignored: neither changes the session or sends a `command_error`, and the docs say only that it is dropped.
 - A picture that needed the resume from one that was only late: a frame more than 5 s after live is taken for none, and the reconnect that follows resumes the outputs on a new connection.
+
+### Character
+
+`character` qualifies the SDK's `ViduS2Avatar` provider on hosted Vidu S2-Avatar, through the published API alone: `ViduS2Avatar.make` over a session the check creates, `createAvatar` from the operator's photo, `startCall` with a short persona, a greeting and `llm.maxTokens` of 30, one `say`, and `endCall`. Its one session is capped at 75 s and reserves $0.525 at Vidu's 70 credits a second, and $0.84 by the started minute, so its `--budget-usd` is at least the first and at most the second; Reactor bills it from `ready` to its end. At the second paid `avatar` run's timing (an avatar in 2.1 s, `end_call` answered in 6.9 s) its plan ends about 28 s in, about $0.20; at the first's (26.7 s and 13.2 s) about 59 s in, inside its 65 s work deadline. A paid run needs `--avatar-image <file>`, as `avatar` does.
+
+- **The provider sends every command.** The check reads the session's decoded `main_video` and `main_audio` from its connection, and the provider's snapshots and events: each phase, each transcript's speaker, finality and length, each `command_error`'s codes and each diagnostic's reason. Each operation runs under its own time limit and the work deadline, and keeps when it started and settled and how; a later one runs only once the one before it gave what it needs.
+- **Judged:** the provider made the avatar from the photo; it returned the call live; the character's picture came within 5 s of live, lit and changing, until `endCall`; its speech came within 8 s of live; the character answered the `say`, by speech or a character transcript within 8 s; `endCall` returned the call's end; and the session was confirmed ended.
+- **The picture after live.** `startCall` returns once the provider has resumed the character's tracks, which the second `avatar` run found brings the call's picture. The check does nothing more for it, so a frame within 5 s of live is the provider's own doing.
+- **Rehearsed.** ReactorTest sends a call's picture only once `main_video` is resumed during the call, so with the provider's resume removed the picture's criterion fails; with the picture absent, it fails while the rest pass.
 
 ## What we gather, and why
 
@@ -301,6 +311,32 @@ bun --no-env-file integration/hosted/main.ts summarize $L > $L/summary.md
 ```
 
 The run takes about two minutes. Its summary ends with a table of the refused commands and what the run answers of the questions the docs leave open; compare its estimate with the dashboard's charge.
+
+### The character check
+
+`character` runs from a built checkout, with the linux-x64 addon staged as above, in a ledger of its own, `evidence/0.9.2-character/`, whose total is its worst case at Vidu's per-second rate: one session of at most 75 s, $0.525.
+
+```sh
+node packages/native/scripts/stage.mjs <reactor-effect-native.linux-x64-gnu.node> linux-x64-gnu
+bun run build
+export REACTOR_API_KEY=...   # never echoed, never in the evidence
+L=integration/hosted/evidence/0.9.2-character
+N="<where, without addresses>"
+P=<a photo of one person, outside the repository>
+
+# Free: the photo on ReactorTest; then Vidu S2-Avatar's rate, the ledger and a token for it, the
+# addon, and the token probes.
+bun --no-env-file integration/hosted/main.ts rehearse character --avatar-image "$P"
+bun --no-env-file integration/hosted/main.ts preflight --check character --total-budget-usd 0.525 --ledger $L
+
+# Paid: one session, $0.525 at most.
+bun --no-env-file integration/hosted/main.ts run character --avatar-image "$P" --budget-usd 0.525 \
+  --total-budget-usd 0.525 --ledger $L --network "$N" --i-authorize-paid-sessions
+
+bun --no-env-file integration/hosted/main.ts summarize $L > $L/summary.md
+```
+
+The run takes under a minute.
 
 ### Moderation
 
