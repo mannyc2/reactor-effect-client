@@ -112,6 +112,7 @@ export type Message =
       readonly type: "voices";
       readonly data: {
         readonly system: ReadonlyArray<(typeof documented.voices)[number]>;
+        readonly cloned: ReadonlyArray<(typeof documented.voices)[number]>;
         readonly default_voice: string;
       };
     }
@@ -150,6 +151,13 @@ export const Arguments = {
   }),
   attach_avatar: Schema.Struct({ avatar_id: Text(128) }),
   list_voices: Empty,
+  // Hosted Vidu acknowledged a name outside the package's documented pattern, so the
+  // deployment's parameters don't constrain it.
+  clone_voice: Schema.Struct({
+    name: Schema.String,
+    audio_url: Schema.String,
+    language: nullable(Schema.String),
+  }),
   start_call: Schema.Struct({
     persona: Text(documented.persona),
     voice: nullable(Schema.String),
@@ -415,7 +423,7 @@ export const step = ({
   /**
    * The model refuses: `command_error` goes to every client, the snapshot
    * keeps it as `last_error`, and the command is acknowledged with nothing
-   * done. Which of these hosted Vidu sends to the sender is unobserved.
+   * done, as hosted Vidu answered its refusals: the `command_error` first.
    */
   const refuse = (
     requestId: string,
@@ -423,6 +431,7 @@ export const step = ({
     origin: CommandError["origin"],
     code: string,
     reason: string,
+    retryable = false,
   ): void => {
     set({ errors: s.errors + 1 });
     const error: CommandError = {
@@ -430,7 +439,7 @@ export const step = ({
       origin,
       code,
       reason,
-      retryable: false,
+      retryable,
       upstream_status: null,
       upstream_code: null,
       trace_id: `trace_reactor_test_${s.errors}`,
@@ -736,8 +745,18 @@ export const step = ({
       case "list_voices":
         return reply(id, {
           type: "voices",
-          data: { system: documented.voices, default_voice: documented.defaultVoice },
+          data: { system: documented.voices, cloned: [], default_voice: documented.defaultVoice },
         });
+      case "clone_voice":
+        // Hosted Vidu refused it so on 2026-10-01 and 2026-10-02: cloning was off there.
+        return refuse(
+          id,
+          "clone_voice",
+          "state",
+          "CLONING_DISABLED",
+          "voice cloning is disabled",
+          true,
+        );
       case "start_call":
         return startCall(id, args);
       case "say":
@@ -865,6 +884,7 @@ export const deployment = () => ({
 
 const replies: Partial<Record<Command, string>> = {
   list_voices: "voices",
+  clone_voice: "voice_cloned",
   update_call: "call_updated",
   set_reference_images: "reference_images_applied",
   clear_reference_images: "reference_images_applied",

@@ -945,7 +945,7 @@ rehearse("avatar judges both calls and keeps what each refused command met, and 
         refusal.commandError?.beforeAnswer,
       ]),
       [
-        ["clone_voice", "error", "invalid_command", undefined],
+        ["clone_voice", "ack", "CLONING_DISABLED", true],
         ["say", "ack", "NOT_LIVE", true],
         ["update_call", "ack", "INVALID_INPUT", true],
         ["say", "error", "invalid_command", undefined],
