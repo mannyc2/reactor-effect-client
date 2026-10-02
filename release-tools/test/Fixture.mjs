@@ -149,6 +149,7 @@ const workspace = {
           "ReactorError",
           "ReactorTest",
           "Session",
+          "ViduS2Avatar",
         ].map((module) => [`./${module}`, entry(module)]),
       ),
     },
