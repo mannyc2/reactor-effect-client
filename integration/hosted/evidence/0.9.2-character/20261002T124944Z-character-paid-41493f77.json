@@ -1,0 +1,302 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "41493f77",
+  "check": "character",
+  "mode": "paid",
+  "startedAt": "2026-10-02T12:49:44.675Z",
+  "finishedAt": "2026-10-02T12:49:48.329Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "819d45b3a8b805ddae4f6da7eb895e305e02ec1f",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.9.2",
+      "reactor-effect-native": "0.9.2",
+      "effect": "4.0.0",
+      "@effect/platform-node": "4.0.0"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "9390d1775d66cd0307c90b1db89c969d7adfd2592086ec1b07a5f7acdd614da4",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "maintainer's Linux workstation, network not described",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 0.525,
+    "totalUsd": 0.525,
+    "reservedBeforeUsd": 0,
+    "rate": {
+      "creditsPerSecond": 70,
+      "creditsPerDollar": 10000,
+      "per": "second"
+    },
+    "worstCaseUsd": 0.525,
+    "estimatedUsd": 0.028
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 75,
+      "expiresAt": 1790945519
+    }
+  ],
+  "sessions": [
+    {
+      "id": "e9972f0c-601e-4377-81f8-3b1554719399",
+      "allocatedMs": 450,
+      "capEndsAt": "2026-10-02T12:51:00.135Z",
+      "close": {
+        "requestedMs": 3019,
+        "reportedMs": 3503,
+        "confirmed": true,
+        "report": {
+          "localClosed": true,
+          "allocation": "known",
+          "ownership": "owned",
+          "sessionId": "e9972f0c-601e-4377-81f8-3b1554719399",
+          "remote": {
+            "attempted": true,
+            "responseReceived": true,
+            "confirmed": true,
+            "evidence": "terminal",
+            "deleteStatus": 200,
+            "state": "CLOSED"
+          },
+          "unpublishSubmitted": [],
+          "unresolvedPublications": [],
+          "localErrors": []
+        }
+      },
+      "trail": [
+        {
+          "atMs": 3643,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 3643
+    }
+  ],
+  "milestones": [
+    {
+      "atMs": 2,
+      "step": "admitted",
+      "detail": "worst case $0.5250"
+    },
+    {
+      "atMs": 150,
+      "step": "minted"
+    },
+    {
+      "atMs": 450,
+      "step": "allocated",
+      "detail": "e9972f0c-601e-4377-81f8-3b1554719399"
+    },
+    {
+      "atMs": 2991,
+      "step": "session",
+      "detail": "ok"
+    },
+    {
+      "atMs": 3018,
+      "step": "make",
+      "detail": "Protocol: native peer failed (Protocol) (outcome unknown)"
+    },
+    {
+      "atMs": 3503,
+      "step": "closed",
+      "detail": "e9972f0c-601e-4377-81f8-3b1554719399 confirmed"
+    },
+    {
+      "atMs": 3504,
+      "step": "character observed"
+    },
+    {
+      "atMs": 3644,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [
+    "unknown"
+  ],
+  "criteria": [
+    {
+      "name": "the provider made the avatar from the photo",
+      "passed": false,
+      "detail": "createAvatar never ran"
+    },
+    {
+      "name": "the provider returned the call live",
+      "passed": false,
+      "detail": "startCall never ran"
+    },
+    {
+      "name": "the character's picture came after live",
+      "passed": false,
+      "detail": "startCall never ran"
+    },
+    {
+      "name": "the character's sound came after live",
+      "passed": false,
+      "detail": "startCall never ran"
+    },
+    {
+      "name": "the character answered a say",
+      "passed": false,
+      "detail": "say never ran"
+    },
+    {
+      "name": "endCall returned the call's end",
+      "passed": false,
+      "detail": "endCall never ran"
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "spans": [
+    {
+      "name": "CoordinatorClient.mintToken",
+      "startMs": 2.7,
+      "durationMs": 146.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 151.4,
+      "durationMs": 2839.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.model.name": "reactor/vidu-s2-avatar",
+        "reactor.session.id": "e9972f0c-601e-4377-81f8-3b1554719399"
+      }
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 451.1,
+      "durationMs": 2539.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "e9972f0c-601e-4377-81f8-3b1554719399"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 2996,
+      "durationMs": 21.3,
+      "status": "error",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_314117d7a961446c620e767dea373bfc_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "e9972f0c-601e-4377-81f8-3b1554719399",
+        "reactor.command.outcome": "unknown",
+        "error.type": "Protocol"
+      }
+    },
+    {
+      "name": "Session.close",
+      "startMs": 3019.2,
+      "durationMs": 483.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "e9972f0c-601e-4377-81f8-3b1554719399",
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "CoordinatorClient.terminate",
+      "startMs": 3029.3,
+      "durationMs": 473.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "e9972f0c-601e-4377-81f8-3b1554719399",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "CoordinatorClient.inspect",
+      "startMs": 3505.7,
+      "durationMs": 137.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "e9972f0c-601e-4377-81f8-3b1554719399"
+      }
+    }
+  ],
+  "network": {
+    "samples": [
+      {
+        "atMs": 2998,
+        "local": "prflx",
+        "rttMs": 30
+      }
+    ]
+  },
+  "character": {
+    "photo": {
+      "bytes": 321196,
+      "type": "jpeg"
+    },
+    "allocatedMs": 450,
+    "steps": [
+      {
+        "name": "session",
+        "startedMs": -299,
+        "endedMs": 2541,
+        "outcome": "ok"
+      },
+      {
+        "name": "make",
+        "startedMs": 2544,
+        "endedMs": 2568,
+        "outcome": "Protocol: native peer failed (Protocol) (outcome unknown)"
+      }
+    ],
+    "phases": [],
+    "transcripts": [],
+    "commandErrors": [],
+    "diagnostics": [],
+    "video": {
+      "frames": 0,
+      "formats": [],
+      "sizes": [],
+      "lit": 0,
+      "distinct": 0,
+      "lost": 0,
+      "gaps": 0
+    },
+    "audio": {
+      "blocks": 0,
+      "sampleRates": [],
+      "channels": [],
+      "peakRms": 0,
+      "lost": 0
+    }
+  },
+  "verdict": "fail",
+  "reasons": [
+    "an outcome is unknown, so the run fails and is not repeated",
+    "the provider made the avatar from the photo: createAvatar never ran",
+    "the provider returned the call live: startCall never ran",
+    "the character's picture came after live: startCall never ran",
+    "the character's sound came after live: startCall never ran",
+    "the character answered a say: say never ran",
+    "endCall returned the call's end: endCall never ran"
+  ],
+  "missing": []
+}

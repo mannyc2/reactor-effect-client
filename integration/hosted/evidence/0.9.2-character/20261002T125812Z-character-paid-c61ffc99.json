@@ -1,0 +1,741 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "c61ffc99",
+  "check": "character",
+  "mode": "paid",
+  "startedAt": "2026-10-02T12:58:12.436Z",
+  "finishedAt": "2026-10-02T12:58:40.063Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "323946815a3445598b173561833b86b785ed44a2",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.9.2",
+      "reactor-effect-native": "0.9.2",
+      "effect": "4.0.0",
+      "@effect/platform-node": "4.0.0"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "9390d1775d66cd0307c90b1db89c969d7adfd2592086ec1b07a5f7acdd614da4",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "maintainer's Linux workstation, network not described",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 0.525,
+    "totalUsd": 1.05,
+    "reservedBeforeUsd": 0.525,
+    "rate": {
+      "creditsPerSecond": 70,
+      "creditsPerDollar": 10000,
+      "per": "second"
+    },
+    "worstCaseUsd": 0.525,
+    "estimatedUsd": 0.196
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 75,
+      "expiresAt": 1790946027
+    }
+  ],
+  "sessions": [
+    {
+      "id": "2cd989d8-9c74-41a6-a790-dac163d7e983",
+      "allocatedMs": 385,
+      "capEndsAt": "2026-10-02T12:59:27.832Z",
+      "close": {
+        "requestedMs": 27060,
+        "reportedMs": 27470,
+        "confirmed": true,
+        "report": {
+          "localClosed": true,
+          "allocation": "known",
+          "ownership": "owned",
+          "sessionId": "2cd989d8-9c74-41a6-a790-dac163d7e983",
+          "remote": {
+            "attempted": true,
+            "responseReceived": true,
+            "confirmed": true,
+            "evidence": "terminal",
+            "deleteStatus": 200,
+            "state": "CLOSED"
+          },
+          "unpublishSubmitted": [],
+          "unresolvedPublications": [],
+          "localErrors": []
+        }
+      },
+      "trail": [
+        {
+          "atMs": 27615,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 27615
+    }
+  ],
+  "milestones": [
+    {
+      "atMs": 0,
+      "step": "admitted",
+      "detail": "worst case $0.5250"
+    },
+    {
+      "atMs": 98,
+      "step": "minted"
+    },
+    {
+      "atMs": 385,
+      "step": "allocated",
+      "detail": "2cd989d8-9c74-41a6-a790-dac163d7e983"
+    },
+    {
+      "atMs": 2631,
+      "step": "session",
+      "detail": "ok"
+    },
+    {
+      "atMs": 2667,
+      "step": "make",
+      "detail": "ok"
+    },
+    {
+      "atMs": 5962,
+      "step": "createAvatar",
+      "detail": "ok"
+    },
+    {
+      "atMs": 9120,
+      "step": "startCall",
+      "detail": "ok"
+    },
+    {
+      "atMs": 15155,
+      "step": "say",
+      "detail": "ok"
+    },
+    {
+      "atMs": 27058,
+      "step": "endCall",
+      "detail": "ok"
+    },
+    {
+      "atMs": 27470,
+      "step": "closed",
+      "detail": "2cd989d8-9c74-41a6-a790-dac163d7e983 confirmed"
+    },
+    {
+      "atMs": 27471,
+      "step": "events unread",
+      "detail": "Closed"
+    },
+    {
+      "atMs": 27471,
+      "step": "character observed"
+    },
+    {
+      "atMs": 27615,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [],
+  "criteria": [
+    {
+      "name": "the provider made the avatar from the photo",
+      "passed": true
+    },
+    {
+      "name": "the provider returned the call live",
+      "passed": true
+    },
+    {
+      "name": "the character's picture came after live",
+      "passed": true
+    },
+    {
+      "name": "the character's sound came after live",
+      "passed": true
+    },
+    {
+      "name": "the character answered a say",
+      "passed": true
+    },
+    {
+      "name": "endCall returned the call's end",
+      "passed": true
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "spans": [
+    {
+      "name": "CoordinatorClient.mintToken",
+      "startMs": 1.3,
+      "durationMs": 97,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 100.2,
+      "durationMs": 2530,
+      "status": "ok",
+      "attributes": {
+        "reactor.model.name": "reactor/vidu-s2-avatar",
+        "reactor.session.id": "2cd989d8-9c74-41a6-a790-dac163d7e983"
+      }
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 385.5,
+      "durationMs": 2244.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "2cd989d8-9c74-41a6-a790-dac163d7e983"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 2634.8,
+      "durationMs": 31.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_88273cf4ff2218e9fe849aa0914899bd_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "2cd989d8-9c74-41a6-a790-dac163d7e983",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "ViduS2Avatar.createAvatar",
+      "startMs": 2667.6,
+      "durationMs": 3294.4,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.upload",
+      "startMs": 2667.8,
+      "durationMs": 581.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.upload.mime_type": "image/jpeg",
+        "reactor.upload.size": 321196,
+        "reactor.session.id": "2cd989d8-9c74-41a6-a790-dac163d7e983"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3249.4,
+      "durationMs": 2711.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "create_avatar",
+        "reactor.request.id": "data_88273cf4ff2218e9fe849aa0914899bd_2",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "2cd989d8-9c74-41a6-a790-dac163d7e983",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "ViduS2Avatar.startCall",
+      "startMs": 5962.5,
+      "durationMs": 3156.9,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 5963.2,
+      "durationMs": 25.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "start_call",
+        "reactor.request.id": "data_88273cf4ff2218e9fe849aa0914899bd_3",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "2cd989d8-9c74-41a6-a790-dac163d7e983",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "ViduS2Avatar.say",
+      "startMs": 15123.2,
+      "durationMs": 32,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Session.command",
+      "startMs": 15123.7,
+      "durationMs": 31.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "say",
+        "reactor.request.id": "data_88273cf4ff2218e9fe849aa0914899bd_4",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "2cd989d8-9c74-41a6-a790-dac163d7e983",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 18408.1,
+      "durationMs": 8649.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "end_call",
+        "reactor.request.id": "data_88273cf4ff2218e9fe849aa0914899bd_5",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "2cd989d8-9c74-41a6-a790-dac163d7e983",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.close",
+      "startMs": 27059.9,
+      "durationMs": 409.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "2cd989d8-9c74-41a6-a790-dac163d7e983",
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "CoordinatorClient.terminate",
+      "startMs": 27072,
+      "durationMs": 397.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "2cd989d8-9c74-41a6-a790-dac163d7e983",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "CoordinatorClient.inspect",
+      "startMs": 27480.2,
+      "durationMs": 134.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "2cd989d8-9c74-41a6-a790-dac163d7e983"
+      }
+    }
+  ],
+  "network": {
+    "samples": [
+      {
+        "atMs": 2637,
+        "local": "relay",
+        "rttMs": 26
+      },
+      {
+        "atMs": 3638,
+        "local": "relay",
+        "rttMs": 24,
+        "receivedKbps": 277.1,
+        "fps": 5,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 4640,
+        "local": "prflx",
+        "rttMs": 25,
+        "fps": 5,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 5641,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 33.1,
+        "fps": 5,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 6642,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 41.5,
+        "fps": 2,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 7643,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 39.1,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 8644,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 29.7,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 9646,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 170.4,
+        "fps": 25,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 10647,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 47.7,
+        "fps": 25,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 11648,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 47.4,
+        "fps": 25,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 12649,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 50.1,
+        "fps": 25,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 13650,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 47.9,
+        "fps": 25,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 14651,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 918.5,
+        "fps": 25,
+        "jitterMs": 7,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 15652,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 7721,
+        "fps": 25,
+        "jitterMs": 8,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 16653,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 9317.8,
+        "fps": 24,
+        "jitterMs": 11,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 17654,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 9005.9,
+        "fps": 26,
+        "jitterMs": 10,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 18655,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 8212.9,
+        "fps": 24,
+        "jitterMs": 6,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 19656,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 40.6,
+        "jitterMs": 6,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 20656,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 30.3,
+        "jitterMs": 6,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 21657,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 29.7,
+        "jitterMs": 6,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 22658,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 30.3,
+        "jitterMs": 6,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 23659,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 30.1,
+        "jitterMs": 6,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 24660,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 29.2,
+        "jitterMs": 6,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 25661,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 29.7,
+        "jitterMs": 6,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 26662,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 35,
+        "jitterMs": 6,
+        "lossRatio": 0
+      }
+    ],
+    "pair": "prflx"
+  },
+  "character": {
+    "photo": {
+      "bytes": 321196,
+      "type": "jpeg"
+    },
+    "allocatedMs": 385,
+    "steps": [
+      {
+        "name": "session",
+        "startedMs": -285,
+        "endedMs": 2245,
+        "outcome": "ok"
+      },
+      {
+        "name": "make",
+        "startedMs": 2247,
+        "endedMs": 2282,
+        "outcome": "ok"
+      },
+      {
+        "name": "createAvatar",
+        "startedMs": 2283,
+        "endedMs": 5577,
+        "outcome": "ok"
+      },
+      {
+        "name": "startCall",
+        "startedMs": 5578,
+        "endedMs": 8735,
+        "outcome": "ok"
+      },
+      {
+        "name": "say",
+        "startedMs": 14738,
+        "endedMs": 14770,
+        "outcome": "ok"
+      },
+      {
+        "name": "endCall",
+        "startedMs": 18023,
+        "endedMs": 26673,
+        "outcome": "ok"
+      }
+    ],
+    "phases": [
+      {
+        "phase": "idle",
+        "atMs": 2284
+      },
+      {
+        "phase": "preparing_avatar",
+        "atMs": 3547
+      },
+      {
+        "phase": "avatar_ready",
+        "atMs": 5577
+      },
+      {
+        "phase": "starting",
+        "atMs": 5604
+      },
+      {
+        "phase": "warming_up",
+        "atMs": 6978
+      },
+      {
+        "phase": "live",
+        "atMs": 8734
+      },
+      {
+        "phase": "ending",
+        "atMs": 18050
+      },
+      {
+        "phase": "ended",
+        "atMs": 26671
+      }
+    ],
+    "call": {
+      "liveMs": 8735,
+      "callMaxSeconds": 7200,
+      "firstFrameMs": 173,
+      "greetingOnsetMs": 5101,
+      "greetingSilenceMs": 5661,
+      "video": {
+        "frames": 227,
+        "formats": [
+          "BGRA"
+        ],
+        "sizes": [
+          "640x360",
+          "928x1088"
+        ],
+        "firstFrameMs": 9293,
+        "fps": 24.9,
+        "interval": {
+          "p50": 40,
+          "p95": 44,
+          "max": 165
+        },
+        "lit": 227,
+        "distinct": 107,
+        "lost": 0,
+        "gaps": 0
+      },
+      "audio": {
+        "blocks": 504,
+        "sampleRates": [
+          48000
+        ],
+        "channels": [
+          1
+        ],
+        "peakRms": 0.2153,
+        "lost": 0
+      }
+    },
+    "say": {
+      "sentMs": 14738,
+      "userTranscriptMs": 236,
+      "onsetMs": 3138,
+      "characterTranscriptMs": 1457
+    },
+    "end": {
+      "endReason": "ended_by_client",
+      "durationSeconds": 9
+    },
+    "transcripts": [
+      {
+        "atMs": 11440,
+        "speaker": "character",
+        "final": true,
+        "length": 9
+      },
+      {
+        "atMs": 14974,
+        "speaker": "user",
+        "final": true,
+        "length": 37
+      },
+      {
+        "atMs": 16195,
+        "speaker": "character",
+        "final": true,
+        "length": 43
+      }
+    ],
+    "commandErrors": [],
+    "diagnostics": [],
+    "video": {
+      "frames": 251,
+      "formats": [
+        "BGRA"
+      ],
+      "sizes": [
+        "640x360",
+        "928x1088"
+      ],
+      "firstFrameMs": 2707,
+      "fps": 10.5,
+      "interval": {
+        "p50": 40,
+        "p95": 200,
+        "max": 7897
+      },
+      "lit": 250,
+      "distinct": 117,
+      "lost": 0,
+      "gaps": 0
+    },
+    "audio": {
+      "blocks": 1287,
+      "sampleRates": [
+        48000
+      ],
+      "channels": [
+        1
+      ],
+      "peakRms": 0.2443,
+      "lost": 0
+    }
+  },
+  "verdict": "pass",
+  "reasons": [],
+  "missing": []
+}
