@@ -41,7 +41,8 @@ negotiated.
 ## Decoded media
 
 `session.decoded` returns the current generation's `DecodedMedia`: `video(name)` and
-`audio(name)` streams, `pressure`, the negotiated `tracks`, and `generation`.
+`audio(name)` streams, `pressure`, the negotiated `tracks`, `generation`, and
+`setTrackActive(name, active)`, which pauses or resumes a received track here and at Reactor.
 
 | `VideoFrame`      | What it is                                                                     |
 | ----------------- | ------------------------------------------------------------------------------ |
