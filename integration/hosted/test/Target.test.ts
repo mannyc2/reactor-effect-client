@@ -9,7 +9,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, layer } from "@effect/vitest";
 import { Effect, Path, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { nodeOwnerArgs } from "../Target.js";
 
 layer(NodeServices.layer)("the paid adoption owner", (it) => {

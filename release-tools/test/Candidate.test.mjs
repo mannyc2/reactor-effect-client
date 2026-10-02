@@ -50,7 +50,7 @@ test("qualification stack metadata survives candidate retention as exact raw ide
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const fixture = yield* makeFixture();
-      const version = "4.0.0-rc.117";
+      const version = effectPin;
       const node = "@effect/platform-node";
       const shared = "@effect/platform-node-shared";
       const qualificationStack = {

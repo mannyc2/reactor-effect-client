@@ -13,8 +13,8 @@
  * already makes of its 4 MB, so frames are checked like everything else.
  */
 import * as Schema from "effect/Schema";
-import * as Rpc from "effect/unstable/rpc/Rpc";
-import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
+import * as Rpc from "effect/rpc/Rpc";
+import * as RpcGroup from "effect/rpc/RpcGroup";
 import { IceServer, Track } from "reactor-effect-client/Peer";
 import { DataChannel, Prepared } from "reactor-effect-client/Peer";
 import type * as Binding from "../binding.js";

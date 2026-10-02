@@ -46,7 +46,7 @@
     "node": ">=22"
   },
   "peerDependencies": {
-    "effect": "catalog:"
+    "effect": "~4.0.0"
   },
   "devDependencies": {
     "@bufbuild/buf": "1.73.0",

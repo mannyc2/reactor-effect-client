@@ -1,7 +1,7 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, Layer, Option, Redacted, Stream } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import { CoordinatorClient, H3, Reactor, ReactorTest } from "reactor-effect-client";
 import { NativePeer } from "reactor-effect-native";
 

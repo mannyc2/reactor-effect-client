@@ -12,7 +12,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, layer } from "@effect/vitest";
 import { ConfigProvider, Effect, FileSystem, Layer, Option, Stream, SubscriptionRef } from "effect";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import { HttpApiClient } from "effect/http-api";
 import { Api } from "../src/Api.ts";
 import { Server } from "../src/App.ts";
 

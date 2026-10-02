@@ -6,7 +6,7 @@ import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
-import * as ChildProcess from "effect/unstable/process/ChildProcess";
+import * as ChildProcess from "effect/process/ChildProcess";
 
 /** How much of the runner's output the assertions keep: its tail. */
 const kept = 256 * 1024;

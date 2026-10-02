@@ -1,6 +1,6 @@
 import { Config, Duration, Effect, Layer, Ref } from "effect";
 import type { Crypto, Redacted } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import {
   CoordinatorClient,
   H3,

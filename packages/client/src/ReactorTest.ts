@@ -20,7 +20,7 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
-import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClient from "effect/http/HttpClient";
 import * as Coordinator from "./internal/reactorTest/coordinator.js";
 import { clipId } from "./internal/reactorTest/h3.js";
 import * as Media from "./internal/reactorTest/media.js";

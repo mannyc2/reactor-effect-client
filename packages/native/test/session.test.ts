@@ -9,7 +9,7 @@ import * as Redacted from "effect/Redacted";
 import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import * as HttpClient from "effect/unstable/http/HttpClient";
+import * as HttpClient from "effect/http/HttpClient";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import { PeerFactory } from "reactor-effect-client/Peer";
 import * as Reactor from "reactor-effect-client/Reactor";

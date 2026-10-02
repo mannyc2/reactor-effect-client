@@ -1,11 +1,5 @@
 import { Schema } from "effect";
-import {
-  HttpApi,
-  HttpApiEndpoint,
-  HttpApiGroup,
-  HttpApiSchema,
-  OpenApi,
-} from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/http-api";
 
 /**
  * The channel's HTTP contract, kept apart from the server so a client (the
@@ -14,7 +8,7 @@ import {
  */
 
 export const PromptRequest = Schema.Struct({
-  prompt: Schema.Trimmed.check(Schema.isLengthBetween(1, 2000)),
+  prompt: Schema.Trimmed.check(Schema.isBetweenLength(1, 2000)),
 });
 
 /**

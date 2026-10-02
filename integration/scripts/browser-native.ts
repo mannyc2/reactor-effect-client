@@ -33,12 +33,12 @@ import * as Schema from "effect/Schema";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as HttpIncomingMessage from "effect/unstable/http/HttpIncomingMessage";
-import * as HttpRouter from "effect/unstable/http/HttpRouter";
-import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
-import * as ChildProcess from "effect/unstable/process/ChildProcess";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as ChildProcess from "effect/process/ChildProcess";
 // NodeHttpServer listens with the Node server this factory makes.
 // @effect-diagnostics-next-line nodeBuiltinImport:off
 import { createServer } from "node:http";

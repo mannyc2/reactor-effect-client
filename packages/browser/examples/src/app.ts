@@ -5,8 +5,8 @@
  * runtime's layer is built; the Studio's code is the same either way.
  */
 import { Effect, Layer, ManagedRuntime } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import { HttpApiClient } from "effect/http-api";
 import { Api } from "./Api.ts";
 import * as Live from "./Live.ts";
 import * as Offline from "./Offline.ts";

@@ -16,7 +16,7 @@ import {
   SubscriptionRef,
 } from "effect";
 import type { ManagedRuntime } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as H3 from "reactor-effect-client/H3";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { isReactorFailure, ReactorError, summarize } from "reactor-effect-client/ReactorError";
