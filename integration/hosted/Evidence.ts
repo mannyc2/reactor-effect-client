@@ -136,7 +136,16 @@ export const StatsSample = Schema.Struct({
 });
 export type StatsSample = typeof StatsSample.Type;
 
-/** A library span, with only its `reactor.*` attributes and `error.type`. */
+export const ConnectPhase = Schema.Literals([
+  "reactor.connect.described",
+  "reactor.connect.prepared",
+  "reactor.connect.registered",
+  "reactor.connect.offered",
+  "reactor.connect.answered",
+  "reactor.connect.ready",
+]);
+
+/** A library span, with its connection phases, `reactor.*` attributes and `error.type`. */
 export const Span = Schema.Struct({
   name: Schema.String,
   startMs: Ms,
@@ -145,6 +154,8 @@ export const Span = Schema.Struct({
   attributes: Schema.Union([Schema.String, Schema.Finite, Schema.Boolean]).pipe((value) =>
     Schema.Record(Schema.String, value),
   ),
+  /** Connection milestones, in milliseconds since the run started; absent in older evidence. */
+  events: Schema.Struct({ name: ConnectPhase, atMs: Ms }).pipe(Schema.Array, Schema.optionalKey),
 });
 export type Span = typeof Span.Type;
 
