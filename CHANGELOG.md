@@ -6,9 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `ViduS2Avatar`, a provider for Reactor's Vidu S2-Avatar (`reactor/vidu-s2-avatar`): a character made from one photo, who talks with a caller in a live call. Over a connected `Session` it makes or attaches the avatar, lists voices, starts a call, steers it with `say`, `interrupt`, `updateCall` and reference images, and ends it, and it follows the model's state, transcripts and `command_error`s. It resumes the character's `main_video` and `main_audio` as each call goes live: on hosted Reactor a call's picture came only after that resume. `endCall` waits up to the provider's `callTimeout`, 60 seconds by default, because hosted Vidu answered `end_call` 6.9 to 13.2 seconds after it was sent. On Node and Bun the caller speaks only through `say`, since the native host sends no microphone audio. The provider has run only on `ReactorTest`; two paid runs drove the same commands through the raw `Session`.
+- `Refused`, a `ReactorError` reason for a command a model refused with a code it documents. It carries the `code`, the model's `origin` and `retryable`, and keeps the model's sentence redacted.
+- `DecodedMedia.setTrackActive` pauses or resumes a received track on a decoded connection, as `TrackMedia.setTrackActive` already did with a browser's tracks.
+- `ReactorTest` simulates Vidu S2-Avatar beside H3, with `Timing` ranges for making an avatar, a call going live, an answer, its speech and the hang-up, set from the paid runs.
+- An avatar example, `examples/avatar`: a call with a character from Node that runs offline on `ReactorTest` without a key.
+
 ### Changed
 
 - **Breaking: Effect 4.0.0.** Every package's `effect` peer is now `~4.0.0`, as are `reactor-effect-native`'s `@effect/platform-node` and `@effect/platform-node-shared` peers, in place of an exact `4.0.0-rc.117`. A project already on Effect 4.0.0 could not add 0.9.2: npm refused the pair, and a forced install failed to load, because Effect moved every `effect/unstable/*` module to `effect/*` from rc.118 on. The peers admit Effect's 4.0.x patches and stop before 4.1: Effect 4.0.0 marks the modules the SDK builds on (`effect/http`, `effect/rpc`, `effect/process`, `effect/workers`) unstable, which may change in a minor release. Effect asks for one version across `effect` and every `@effect/*` package, so pin `@effect/platform-node-shared` to your `effect`'s version with an override wherever `@effect/platform-node` is installed, now with `reactor-effect-native` too.
+- `ReactorError`'s reasons include `Refused`, so a `switch` that handles every reason needs a case for it.
 
 ## [0.9.2] - 2026-10-01
 
