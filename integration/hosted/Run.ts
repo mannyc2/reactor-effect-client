@@ -10,11 +10,12 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import type * as Redacted from "effect/Redacted";
+import * as Predicate from "effect/Predicate";
+import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
-import { isReactorFailure } from "reactor-effect-client/ReactorError";
+import { isReactorFailure, type ReactorFailure } from "reactor-effect-client/ReactorError";
 import type { Evidence, Outcome, Span } from "./Evidence.js";
 import { SaveFailed, writer } from "./Ledger.js";
 import { Refused } from "./Spend.js";
@@ -146,14 +147,42 @@ export const recorded = <A, E, R>(command: Effect.Effect<A, E, R>): Effect.Effec
     }),
   );
 
+/**
+ * What the native addon itself says when it fails a connection as `Protocol` or `Overflow`: fixed
+ * sentences naming at most a bridge channel, with no SDP, signaling or model text. Only these are
+ * written down; any other backend text stays redacted.
+ */
+const addonTexts = [
+  /^(control|data) data channel delivered a nonbinary message$/,
+  /^(control|data) data channel message exceeds local bound$/,
+  /^received native track without a declared receive mapping$/,
+  /^native transport event queue overflowed; connection retired$/,
+  /^native data channel message exceeds local bound$/,
+  /^native data channel buffered amount bound exceeded$/,
+  /^native call admission bound exceeded$/,
+];
+
+/** The addon's own sentence behind a `Protocol` or `Overflow` failure, if it is one of its own. */
+const addonText = (error: ReactorFailure): string | undefined => {
+  if (error.reason._tag !== "Protocol" && error.reason._tag !== "Overflow") return undefined;
+  const detail =
+    error.context.detail === undefined ? undefined : Redacted.value(error.context.detail);
+  if (!Predicate.hasProperty(detail, "backendMessage")) return undefined;
+  const backend = detail.backendMessage;
+  const text = Redacted.isRedacted(backend) ? Redacted.value(backend) : undefined;
+  return typeof text === "string" && addonTexts.some((own) => own.test(text)) ? text : undefined;
+};
+
 /** A failure as the evidence states it: the library's own message, never provider text. */
 export const describe = (cause: Cause.Cause<unknown>): string => {
   if (Cause.hasInterruptsOnly(cause)) return "the run was interrupted";
   const error = Cause.squash(cause);
   if (Schema.is(Refused)(error)) return error.message;
   if (Cause.isTimeoutError(error)) return "a step ran past its deadline";
-  if (isReactorFailure(error))
-    return `${error.reason._tag}: ${error.message}${error.context.outcome === undefined ? "" : ` (outcome ${error.context.outcome})`}`;
+  if (isReactorFailure(error)) {
+    const own = addonText(error);
+    return `${error.reason._tag}: ${error.message}${own === undefined ? "" : `: ${own}`}${error.context.outcome === undefined ? "" : ` (outcome ${error.context.outcome})`}`;
+  }
   if (Schema.is(SaveFailed)(error)) return error.message;
   return `unexpected: ${String(error).slice(0, 300)}`;
 };
