@@ -367,7 +367,9 @@ export const candidateRelay = (input: { readonly far: FarPeer["Service"]; readon
   });
 
 /** A peer's decoded media: every native peer has it. */
-export const decoded = (peer: Peer): Omit<DecodedMedia, "generation" | "tracks" | "retired"> => {
+export const decoded = (
+  peer: Peer,
+): Omit<DecodedMedia, "generation" | "tracks" | "retired" | "setTrackActive"> => {
   if (peer.media._tag !== "Decoded") throw new Error("expected a peer with decoded media");
   return peer.media;
 };

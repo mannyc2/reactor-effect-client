@@ -267,6 +267,7 @@ export const make = ({
       video: (name) => fenced(c, media.video(name)),
       audio: (name) => fenced(c, media.audio(name)),
       pressure: media.pressure,
+      setTrackActive: (name, active) => setTrackActive(name, active, c),
     };
   });
 

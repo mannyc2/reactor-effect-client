@@ -81,6 +81,8 @@ export interface DecodedMedia extends Generation {
   readonly video: (name: string) => Stream.Stream<VideoFrame, ReactorError>;
   readonly audio: (name: string) => Stream.Stream<AudioFrame, ReactorError>;
   readonly pressure: Effect.Effect<MediaPressure, ReactorError>;
+  /** Pauses or resumes a received track, here and at Reactor. */
+  readonly setTrackActive: (name: string, active: boolean) => Effect.Effect<void, ReactorError>;
 }
 
 /** A generation's platform tracks: leases of received tracks and publication of sent ones. */
