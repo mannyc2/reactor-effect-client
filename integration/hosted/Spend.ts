@@ -104,9 +104,10 @@ export const plans: { readonly [C in Check]: Plan } = {
   // Five 8 s scenes air from about 7 s in and end about 47 s in; the cap leaves room for a
   // slower build and the close. $2.45 at most at 350 credits a second.
   showreel: { model: h3, sessions: 1, seconds: 70 },
-  // Two calls and their refusals are planned to end about 55 s in; the cap leaves room for a
-  // slower avatar and call. $0.84 at most at 70 credits a second, per second or by the minute.
-  avatar: { model: vidu, sessions: 1, seconds: 120 },
+  // Two calls and their refusals are planned to end about 125 s in, at the timing the first paid
+  // run measured; the cap leaves room for a slower avatar and call. $1.26 at most at 70 credits
+  // a second, by the started minute.
+  avatar: { model: vidu, sessions: 1, seconds: 180 },
 };
 
 /** How long each of a check's sessions may run: its cap, unless the check holds it longer. */
@@ -121,7 +122,7 @@ export const workSecondsFor = (check: Check): number => plans[check].seconds - 1
 /**
  * The most a check may spend: every started minute of each of its sessions,
  * for as long as it may run, at its model's reviewed rate: $2.10 for one
- * 50-second H3 session, $0.84 for `avatar`'s 120-second one. Every paid run in
+ * 50-second H3 session, $1.26 for `avatar`'s 180-second one. Every paid run in
  * a ledger shares the total, which admits the costliest check, `unconnected`,
  * at H3's rate per second ($9.45). The operator's limits may only be lower.
  */

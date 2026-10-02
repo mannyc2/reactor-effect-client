@@ -915,9 +915,10 @@ rehearse("unconnected credits Reactor with an end only its read at the end found
   },
 });
 
-// ReactorTest answers a payload its schema refuses with an error frame, and what its model refuses
-// with a command_error broadcast before the acknowledgement; hosted Vidu's answers are what avatar
-// asks. The record keeps codes and lengths: no transcript, persona, URL or voice description.
+// ReactorTest answers a payload its schema refuses, or one carrying a null, with an error frame, and
+// what its model refuses with a command_error broadcast before the acknowledgement, as hosted Vidu
+// did. A call's picture reaches the connection once it resumes main_video after the call is live.
+// The record keeps codes and lengths: no transcript, persona, URL or voice description.
 rehearse("avatar judges both calls and keeps what each refused command met, and no text", {
   check: "avatar",
   judge: (evidence) => {
@@ -948,17 +949,26 @@ rehearse("avatar judges both calls and keeps what each refused command met, and 
         ["say", "ack", "NOT_LIVE", true],
         ["update_call", "ack", "INVALID_INPUT", true],
         ["say", "error", "invalid_command", undefined],
-        ["update_call", "ack", undefined, undefined],
+        ["update_call", "error", "invalid_command", undefined],
       ],
     );
     assert.deepStrictEqual(avatar?.refusals.at(-1)?.changed, []);
     // The snapshot sent on connect is heard, though it comes before any command.
     assert.isBelow(avatar?.first?.atMs ?? Infinity, avatar?.getState?.sentMs ?? 0);
     assert.deepStrictEqual(
-      avatar?.calls.map((call) => [call.reconnect, call.end?.type]),
+      avatar?.calls.map((call) => [
+        call.picture?.map((stage) => [stage.action, stage.firstFrameMs !== undefined]),
+        call.end?.type,
+      ]),
       [
-        [undefined, "call_ended"],
-        [undefined, "call_ended"],
+        [[["resume", true]], "call_ended"],
+        [
+          [
+            ["wait", false],
+            ["resume", true],
+          ],
+          "call_ended",
+        ],
       ],
     );
     const kept = JSON.stringify(evidence);
@@ -974,8 +984,8 @@ rehearse("avatar judges both calls and keeps what each refused command met, and 
   },
 });
 
-// With no picture at all, each call reconnects once for it and finds none either: the video
-// criteria fail, the rest is still asked, and the session still ends.
+// With no picture at all, each call does all it can for one and finds none: the video criteria
+// fail, the rest is still asked, and the session still ends.
 rehearse("avatar fails without the character's picture, and still ends its session", {
   check: "avatar",
   faults: [{ _tag: "Video", video: "absent" }],
@@ -995,12 +1005,22 @@ rehearse("avatar fails without the character's picture, and still ends its sessi
       [false, false, true, true, true, true],
       evidence.reasons.join("; "),
     );
-    const calls = evidence.avatar?.calls ?? [];
-    assert.lengthOf(calls, 2);
-    for (const call of calls) {
-      assert.isDefined(call.reconnect?.readyMs, JSON.stringify(call.reconnect));
-      assert.isUndefined(call.reconnect.firstFrameMs);
-    }
+    assert.deepStrictEqual(
+      evidence.avatar?.calls.map((call) =>
+        call.picture?.map((stage) => [stage.action, stage.firstFrameMs]),
+      ),
+      [
+        [
+          ["resume", undefined],
+          ["cycle", undefined],
+        ],
+        [
+          ["wait", undefined],
+          ["resume", undefined],
+          ["cycle", undefined],
+        ],
+      ],
+    );
     assert.isTrue(evidence.sessions[0]?.close?.confirmed);
   },
 });

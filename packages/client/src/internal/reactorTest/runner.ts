@@ -80,6 +80,8 @@ export interface Runner<M extends Message> {
   readonly reject: (requestId: string, code: string, message: string) => Effect.Effect<void>;
   /** A message to every open connection, or only to `to`. */
   readonly broadcast: (message: M, to?: number) => Effect.Effect<void>;
+  /** Reactor stops sending `track` to every open connection until that connection resumes it. */
+  readonly unsubscribe: (track: string) => Effect.Effect<void>;
   /** Media reaches a connection while it is open, on a track it has resumed. */
   readonly media: (
     to: number,
@@ -215,6 +217,17 @@ export const make = Effect.fnUntraced(function* <M extends Message>(
         respond(to, requestId, { case: "error", value: { code, message } }),
       ),
     broadcast: (message, to) => data(to ?? "all", "", Wire.MessageKind.NOTIFICATION, message),
+    unsubscribe: (track) =>
+      Ref.update(
+        connections,
+        (open) =>
+          new Map(
+            Array.from(open, ([to, connection]) => [
+              to,
+              { ...connection, paused: new Set(connection.paused).add(track) },
+            ]),
+          ),
+      ),
     media: (to, link, track, deliver) =>
       Effect.flatMap(Ref.get(connections), (open) => {
         const connection = open.get(to);

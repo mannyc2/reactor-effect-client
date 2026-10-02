@@ -1030,6 +1030,13 @@ export const AvatarRefusal = Schema.Struct({
 });
 export type AvatarRefusal = typeof AvatarRefusal.Type;
 
+/**
+ * What a call's connection did for the call's picture: nothing, a resume of both of the
+ * character's tracks, or a pause and resume of `main_video`.
+ */
+export const PictureAction = Schema.Literals(["wait", "resume", "cycle"]);
+export type PictureAction = typeof PictureAction.Type;
+
 /** One call: its start and phases, its picture and sound from live, a `say` in it, and its end. */
 export const AvatarCall = Schema.Struct({
   start: AvatarWire,
@@ -1041,7 +1048,18 @@ export const AvatarCall = Schema.Struct({
   firstFrameMs: Schema.optionalKey(Ms),
   firstBlockMs: Schema.optionalKey(Ms),
   /**
-   * The one reconnect made when no frame came within 5 s of live, and the
+   * What was done for the picture, in turn, until a frame came within 5 s of it: each with the
+   * first frame and the blocks that came in those 5 s, from when it was done.
+   */
+  picture: Schema.Struct({
+    action: PictureAction,
+    atMs: Ms,
+    failure: Schema.optionalKey(Schema.String),
+    firstFrameMs: Schema.optionalKey(Ms),
+    blocks: Schema.optionalKey(Schema.Int),
+  }).pipe(Schema.Array, Schema.optionalKey),
+  /**
+   * The one reconnect the first paid run made when no frame came within 5 s of live, and the
    * first frame after its ready, from that ready.
    */
   reconnect: Schema.optionalKey(
