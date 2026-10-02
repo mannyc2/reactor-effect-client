@@ -29,16 +29,16 @@ attributed in [NOTICE](./NOTICE) and [`notices/`](./notices/).
 ## Install
 
 ```sh
-npm install --save-exact reactor-effect-client reactor-effect-native effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
+npm install --save-exact reactor-effect-client reactor-effect-native effect@4.0.0 @effect/platform-node@4.0.0
 ```
 
-`reactor-effect-client`, Effect `4.0.0-rc.117`, `@effect/platform-node` `4.0.0-rc.117` and `@effect/platform-node-shared` `4.0.0-rc.117` are exact peer dependencies: a later Effect rc needs a new SDK release. The addon is loaded only when `NativePeer.layer()` is built, so merely importing this module is safe on a host with no platform package, such as one installed with `--omit=optional`. `@effect/platform-node` supplies the Node services an application provides around its scoped operation, and the [isolated host](#isolated-host) runs its child processes on it; this package loads it only when `NativePeer.layerIsolated()` is built. This package never imports `@effect/platform-node-shared`, but the platform depends on it with a caret range, under which npm would install a later rc that fails to load on this Effect; as a peer, it is installed once, at `4.0.0-rc.117`, and the platform reuses it, so no override is needed. Install `@effect/platform-node` with `--save-exact`: under the caret range npm saves by default, a later install without a lockfile takes a later rc of it, and npm fails with `ERESOLVE`.
+`reactor-effect-client` is a peer dependency at exactly this package's version, and Effect, `@effect/platform-node` and `@effect/platform-node-shared` at `~4.0.0`, any 4.0.x patch: Effect 4.1 needs a new SDK release. The addon is loaded only when `NativePeer.layer()` is built, so merely importing this module is safe on a host with no platform package, such as one installed with `--omit=optional`. `@effect/platform-node` supplies the Node services an application provides around its scoped operation, and the [isolated host](#isolated-host) runs its child processes on it; this package loads it only when `NativePeer.layerIsolated()` is built. This package never imports `@effect/platform-node-shared`, but the platform depends on it with a caret range, under which npm would install a later release beside this Effect. The peer keeps it within 4.0.x; pin it to your `effect`'s version with an override, as [Installation](https://mannyc2.github.io/reactor-effect-client/start/installation/#pin-effectplatform-node-shared) shows, since Effect asks for one version of every `@effect/*` package. Install `@effect/platform-node` with `--save-exact`: under the caret range npm saves by default, a later install without a lockfile takes a later release of it, and npm fails with `ERESOLVE`.
 
 ## Usage
 
 ```ts
 import { Layer } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { NativePeer } from "reactor-effect-native";
@@ -72,7 +72,7 @@ The current public native peer accepts at most one incoming video track and one 
 
 ```ts
 import { Layer } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as Reactor from "reactor-effect-client/Reactor";
 import { NativePeer } from "reactor-effect-native";

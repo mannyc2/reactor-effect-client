@@ -4,7 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Console from "effect/Console";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -78,7 +78,7 @@ const Staged = Schema.fromJsonString(
 const sha256 = (bytes) =>
   Crypto.Crypto.pipe(
     Effect.flatMap((crypto) => crypto.digest("SHA-256", bytes)),
-    Effect.map(Encoding.encodeHex),
+    Effect.map(Hex.encode),
   );
 
 const program = Effect.gen(function* () {

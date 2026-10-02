@@ -10,7 +10,6 @@ import * as Ref from "effect/Ref";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type { IceCandidate } from "../../Peer.js";
 import { ReactorError } from "../../ReactorError.js";
-import { take } from "../queue.js";
 import type { Generation } from "./generation.js";
 import type { Connection, Core, Link } from "./model.js";
 import { isKnown } from "./model.js";
@@ -83,7 +82,9 @@ export const make = ({
   /** Posts what gathered before registration, then each later batch as it gathers. */
   const trickle = (c: Connection) =>
     flush(c).pipe(
-      Effect.andThen(background(c, take(c.iceWake).pipe(Effect.andThen(flush(c)), Effect.forever))),
+      Effect.andThen(
+        background(c, Queue.take(c.iceWake).pipe(Effect.andThen(flush(c)), Effect.forever)),
+      ),
     );
 
   return { gathered, trickle };

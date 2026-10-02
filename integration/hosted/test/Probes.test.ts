@@ -4,9 +4,9 @@ import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { assert, describe, it, layer } from "@effect/vitest";
 import { Effect, Redacted, Ref } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import * as HttpServer from "effect/unstable/http/HttpServer";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import * as HttpServer from "effect/http/HttpServer";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Probes from "../Probes.js";
 
 /** A local server answering every request with `reply` until the scope closes, and its origin. */

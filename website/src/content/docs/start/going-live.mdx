@@ -147,7 +147,7 @@ Reactor raises the concurrent and per-minute quotas on request at support@reacto
    <TabItem label="Hosted H3">
 
    ```ts
-   import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+   import * as FetchHttpClient from "effect/http/FetchHttpClient";
    import { NativePeer } from "reactor-effect-native";
 
    // The key from REACTOR_API_KEY, and the native host for the connection.
@@ -187,8 +187,8 @@ to do then.
   down, so Reactor ends the session 30 seconds later.
 - **A renewal holds two sessions.** A playout's replacement session opens before the retiring one
   ends, so leave room under the five-session limit.
-- **Pin exact versions.** A later Effect release candidate does not load the SDK; see
-  [Installation](/reactor-effect-client/start/installation/).
+- **Pin exact versions.** The SDK peers on Effect 4.0.x, and your lockfile should hold one release
+  of it; see [Installation](/reactor-effect-client/start/installation/).
 
 <Aside type="tip">
   Each session the SDK creates, and each connection it offers, names the SDK in its client info

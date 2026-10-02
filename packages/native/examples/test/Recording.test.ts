@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, layer } from "@effect/vitest";
 import { Effect, FileSystem, Option, Path, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/Media";
 import { toMp4 } from "../src/Recording.ts";
 

@@ -113,8 +113,8 @@ const preview = Effect.fn("preview")(function* (session: Session.Session) {
      Schema,
      Stream,
    } from "effect";
-   import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-   import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+   import * as FetchHttpClient from "effect/http/FetchHttpClient";
+   import { ChildProcess, ChildProcessSpawner } from "effect/process";
    import { CoordinatorClient, H3, Media, Reactor, ReactorTest } from "reactor-effect-client";
    import { NativePeer } from "reactor-effect-native";
 
@@ -302,7 +302,7 @@ The isolated host ran an owner under Node in the paid `adoption` check on 2026-0
 
 - **Start the reader before you submit.** A reader subscribed after the clip starts misses its
   opening frames.
-- **Let the writer end the pipe.** In `@effect/platform-node` `4.0.0-rc.117`, the child-process
+- **Let the writer end the pipe.** In `@effect/platform-node` `4.0.0`, the child-process
   spawner leaves a child's input pipe without an error listener once its writer is interrupted, so a
   write still buffered when ffmpeg exits surfaces as an uncaught `EPIPE`. Let the writer finish and end the pipe
   itself, as above, rather than interrupting it.

@@ -11,13 +11,13 @@ import {
   Option,
   Stream,
 } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
+import { Command, Flag } from "effect/cli";
 import * as Reactor from "reactor-effect-client/Reactor";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import { NativePeer } from "reactor-effect-native";
 import { toMp4 } from "./Recording.ts";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
 /** The session's cap: a token for 90 seconds bounds what one capture can cost. */
 const sessionSeconds = 90;

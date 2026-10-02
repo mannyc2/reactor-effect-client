@@ -6,7 +6,7 @@
 import { createRequire } from "node:module";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -179,7 +179,7 @@ const nodesOf = (
 /** The lowercase hex SHA-256 of `bytes`, as pack records archives and their files. */
 export const sha256 = Effect.fnUntraced(function* (bytes: Uint8Array) {
   const crypto = yield* Crypto.Crypto;
-  return Encoding.encodeHex(yield* crypto.digest("SHA-256", bytes));
+  return Hex.encode(yield* crypto.digest("SHA-256", bytes));
 });
 
 const exactVersionPattern =
@@ -195,6 +195,13 @@ const exactVersion = Effect.fnUntraced(function* (version: string | undefined, c
   Bun.semver.order(version, version);
   return version;
 });
+
+/**
+ * The range every archive publishes on a stack package: the qualified selection and its later
+ * patches. Effect marks the modules the SDK builds on unstable, and may change them in a minor
+ * release, so the range stops short of the next minor.
+ */
+export const peerRange = (selected: string) => `~${selected}`;
 
 const checkedVersion = Effect.fnUntraced(function* (
   name: StackPackage,
@@ -273,8 +280,8 @@ const packageAt = (location: string): string => {
 
 /**
  * Selection comes only from frozen bytes, and the requirements must name exactly that selection:
- * the archives' peers come from them, and a range would let a fresh install take a later RC that
- * nothing here qualified.
+ * they choose the stack every consumer installs and the qualification records, and a range would
+ * let a later Effect that nothing here qualified into the workspace.
  */
 export const selectStack = Effect.fnUntraced(function* (
   manifest: unknown,
@@ -370,7 +377,7 @@ export const selectStack = Effect.fnUntraced(function* (
   return selection;
 });
 
-/** A packed archive peers on Effect, and on every stack package, at exactly the selection. */
+/** A packed archive peers on Effect, and on every stack package, at the selection's range. */
 export const checkArchivePeers = Effect.fnUntraced(function* (
   name: string,
   peers: Readonly<Record<string, string>> | undefined,
@@ -380,19 +387,15 @@ export const checkArchivePeers = Effect.fnUntraced(function* (
     return yield* failure(`${name} must declare its ${packages.effect} peer`);
   for (const [peer, requirement] of Object.entries(peers)) {
     const key = keyFor(peer);
-    if (key !== undefined && requirement !== stack.selected[key])
+    if (key !== undefined && requirement !== peerRange(stack.selected[key]))
       return yield* failure(
-        `${name} must pin its ${peer} peer to exactly ${stack.selected[key]}, not ${requirement}`,
+        `${name} must declare its ${peer} peer as ${peerRange(stack.selected[key])}, not ${requirement}`,
       );
   }
 });
 
-/** This small filesystem seam is shared by production and disposable resolver fixtures. */
-export const resolveStackPackage = Effect.fnUntraced(function* (
-  ownerManifest: string,
-  name: StackPackage,
-  stack: StackSelection,
-) {
+/** The stack package `ownerManifest` resolves, with its installed version unchecked. */
+const resolveInstalled = Effect.fnUntraced(function* (ownerManifest: string, name: StackPackage) {
   const fs = yield* FileSystem.FileSystem;
   const unresolved = (cause: unknown) =>
     EffectStackError.make({
@@ -410,7 +413,38 @@ export const resolveStackPackage = Effect.fnUntraced(function* (
   );
   if (metadata.name !== name)
     return yield* failure(`${ownerManifest}: resolved ${name} with wrong package name`);
-  return { path, version: yield* checkedVersion(name, metadata.version, stack, ownerManifest) };
+  return { path, version: metadata.version };
+});
+
+/** This small filesystem seam is shared by production and disposable resolver fixtures. */
+export const resolveStackPackage = Effect.fnUntraced(function* (
+  ownerManifest: string,
+  name: StackPackage,
+  stack: StackSelection,
+) {
+  const { path, version } = yield* resolveInstalled(ownerManifest, name);
+  return { path, version: yield* checkedVersion(name, version, stack, ownerManifest) };
+});
+
+/**
+ * The stack package an installer chose through the archives' published peer: any version the
+ * selection's range admits, since the registry may hold a later patch than the one qualified.
+ */
+export const resolvePeerStackPackage = Effect.fnUntraced(function* (
+  ownerManifest: string,
+  name: StackPackage,
+  stack: StackSelection,
+) {
+  const { path, version } = yield* resolveInstalled(ownerManifest, name);
+  const exact = yield* exactVersion(version, `${ownerManifest} ${name}`);
+  const key = keyFor(name);
+  if (key === undefined) return yield* failure(`unsupported package ${name}`);
+  const range = peerRange(stack.selected[key]);
+  if (!Bun.semver.satisfies(exact, range))
+    return yield* failure(
+      `${ownerManifest} ${name}@${exact} is outside the published peer ${range}`,
+    );
+  return { path, version: exact };
 });
 
 const workspaceEdges = ["client", "browser", "native"].flatMap(
@@ -446,17 +480,21 @@ export const resolveWorkspaceStack = Effect.fnUntraced(function* (
       const metadata = yield* Schema.decodeEffect(OwnerManifest)(
         yield* fs.readFileString(ownerPath),
       ).pipe(Effect.mapError((error) => failure(`${owner}: ${error.message}`)));
-      const requirement = [
-        metadata.dependencies,
-        metadata.devDependencies,
-        metadata.peerDependencies,
-      ]
-        .map((group) => group?.[requested])
-        .find((value) => value !== undefined);
-      if (requirement === undefined) return yield* failure(`${owner} must declare ${requested}`);
       const key = keyFor(requested);
       if (key === undefined) return yield* failure(`unsupported package ${requested}`);
-      if (requirement !== "catalog:" && requirement !== stack.selected[key])
+      // The workspace installs what an owner depends on, and an owner that only peers on a stack
+      // package (native on the shared platform) takes it at the root override's exact selection.
+      const installed = [metadata.dependencies, metadata.devDependencies]
+        .map((group) => group?.[requested])
+        .find((value) => value !== undefined);
+      const peer = metadata.peerDependencies?.[requested];
+      if (installed === undefined && peer === undefined)
+        return yield* failure(`${owner} must declare ${requested}`);
+      if (
+        installed === undefined
+          ? peer !== peerRange(stack.selected[key])
+          : installed !== "catalog:" && installed !== stack.selected[key]
+      )
         return yield* failure(
           `${owner} declared ${requested} requirement differs from frozen selection`,
         );

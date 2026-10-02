@@ -8,10 +8,10 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import * as Headers from "effect/unstable/http/Headers";
-import * as HttpClient from "effect/unstable/http/HttpClient";
-import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
-import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
+import * as Headers from "effect/http/Headers";
+import * as HttpClient from "effect/http/HttpClient";
+import type * as HttpClientRequest from "effect/http/HttpClientRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { Authorization, clips, Refusal } from "./sessions.js";
 import type { Sessions } from "./sessions.js";
 

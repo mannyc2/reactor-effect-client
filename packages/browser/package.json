@@ -39,7 +39,7 @@
     "./index": null
   },
   "peerDependencies": {
-    "effect": "catalog:",
+    "effect": "~4.0.0",
     "reactor-effect-client": "workspace:*"
   },
   "devDependencies": {

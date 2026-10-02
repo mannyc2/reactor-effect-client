@@ -1,6 +1,6 @@
 import { Effect, FileSystem, Layer, Path } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
-import { HttpApiBuilder, HttpApiScalar } from "effect/unstable/httpapi";
+import { HttpRouter, HttpServerResponse } from "effect/http";
+import { HttpApiBuilder, HttpApiScalar } from "effect/http-api";
 import { Api, OffAir } from "./Api.ts";
 import { Broadcast } from "./Broadcast.ts";
 import { Monitor } from "./Monitor.ts";

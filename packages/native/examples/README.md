@@ -17,7 +17,7 @@ It prints the most the session can cost before it starts, at the rate Reactor's 
 - **A clip followed by its facts.** `provider.operation(submission)` resolves `generated`, then `started`, then `ended`. The recording keeps what arrives between the clip's start and its end. Both readers, video and audio, are started and subscribed before the clip is submitted (`Effect.forkScoped({ startImmediately: true })`), so neither misses the clip's opening.
 - **Loss made visible.** `Media.recorder(stream)` turns each track into its frames plus a `Lost { after, count }` wherever the host dropped frames. The recorder fills each lost frame with the one before it and each lost audio block with silence, so the file keeps the source's timing, and reports how many it filled; `media.pressure` gives the host's own drop totals.
 - **Crash containment on request.** `--isolated` swaps `NativePeer.layer()` for `NativePeer.layerIsolated()`: the same `PeerFactory`, with the native peer in a child process.
-- **Effect's CLI and child processes.** Flags are declared with `effect/unstable/cli`, and ffmpeg runs through `ChildProcessSpawner`, with the video on its stdin and the audio on a third pipe.
+- **Effect's CLI and child processes.** Flags are declared with `effect/cli`, and ffmpeg runs through `ChildProcessSpawner`, with the video on its stdin and the audio on a third pipe.
 
 | File                     | What it is                                                                        |
 | ------------------------ | --------------------------------------------------------------------------------- |

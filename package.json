@@ -19,20 +19,20 @@
     ],
     "catalog": {
       "@bufbuild/protobuf": "2.15.0",
-      "@effect/platform-bun": "4.0.0-rc.117",
-      "@effect/platform-node": "4.0.0-rc.117",
-      "@effect/platform-node-shared": "4.0.0-rc.117",
-      "@effect/vitest": "4.0.0-rc.117",
+      "@effect/platform-bun": "4.0.0",
+      "@effect/platform-node": "4.0.0",
+      "@effect/platform-node-shared": "4.0.0",
+      "@effect/vitest": "4.0.0",
       "@types/bun": "1.4.2",
       "@types/node": "22.20.2",
-      "effect": "4.0.0-rc.117",
+      "effect": "4.0.0",
       "typescript": "7.0.2",
       "vitest": "5.0.0"
     }
   },
   "devDependencies": {
     "@effect/platform-node": "catalog:",
-    "@effect/tsgo": "0.46.1",
+    "@effect/tsgo": "0.47.2",
     "@effect/vitest": "catalog:",
     "@types/bun": "catalog:",
     "@types/node": "catalog:",
@@ -47,7 +47,7 @@
     "vitest": "catalog:"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.0-rc.117"
+    "@effect/platform-node-shared": "4.0.0"
   },
   "scripts": {
     "prepare": "effect-tsgo patch --typescript",
@@ -72,6 +72,6 @@
     "check:release": "tsc -p release-tools/tsconfig.json --noEmit && oxlint -c .oxlintrc.json --deny-warnings --report-unused-disable-directives-severity=error release-tools && cd release-tools && bun --no-env-file test ./test"
   },
   "patchedDependencies": {
-    "@effect/platform-node-shared@4.0.0-rc.117": "patches/@effect%2Fplatform-node-shared@4.0.0-rc.117.patch"
+    "@effect/platform-node-shared@4.0.0": "patches/@effect%2Fplatform-node-shared@4.0.0.patch"
   }
 }

@@ -4,8 +4,8 @@
  * elements.
  */
 import { Effect, Layer, Redacted } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-import { HttpApiClient } from "effect/unstable/httpapi";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import { HttpApiClient } from "effect/http-api";
 import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as Reactor from "reactor-effect-client/Reactor";

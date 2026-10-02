@@ -15,10 +15,10 @@ This is an independent project, not an official Reactor SDK.
 ## Install
 
 ```sh
-npm install --save-exact reactor-effect-client reactor-effect-browser effect@4.0.0-rc.117
+npm install --save-exact reactor-effect-client reactor-effect-browser effect@4.0.0
 ```
 
-`reactor-effect-client` and Effect `4.0.0-rc.117` are peer dependencies, both exact: a later Effect rc needs a new SDK release. The package needs a browser with WebRTC. It has no Node dependency: its declarations compile with DOM types and without `@types/node`, and the workspace's installed-package check bundles it for the browser and runs that bundle without the Node `Buffer` global.
+`reactor-effect-client` is a peer dependency at exactly this package's version, and Effect at `~4.0.0`, any 4.0.x patch: Effect 4.1 needs a new SDK release. The package needs a browser with WebRTC. It has no Node dependency: its declarations compile with DOM types and without `@types/node`, and the workspace's installed-package check bundles it for the browser and runs that bundle without the Node `Buffer` global.
 
 ## Usage
 
@@ -26,7 +26,7 @@ npm install --save-exact reactor-effect-client reactor-effect-browser effect@4.0
 
 ```ts
 import { Effect, Layer } from "effect";
-import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import * as Reactor from "reactor-effect-client/Reactor";

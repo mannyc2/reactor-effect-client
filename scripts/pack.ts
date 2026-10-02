@@ -26,14 +26,15 @@ import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
-import * as ChildProcess from "effect/unstable/process/ChildProcess";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as ChildProcess from "effect/process/ChildProcess";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import {
   ConsumerManifest,
   QualificationStack,
   checkArchivePeers,
   completeQualification,
   inspectConsumerTree,
+  resolvePeerStackPackage,
   resolveStackPackage,
   resolveWorkspaceStack,
   selectStack,
@@ -990,7 +991,8 @@ const program = Effect.gen(function* () {
     // What an application's own `npm install reactor-effect-client` resolves. The other consumers
     // install the selected Effect by name; this one names no Effect version and sets no override,
     // so npm takes Effect from the registry through the archive's peer, whatever PACK_INSTALLER
-    // says, and every module of the client must then import on Node.
+    // says: the newest release the peer's range admits, which may be a patch later than the one
+    // qualified. Every module of the client must then import on Node.
     const fresh = yield* initConsumer("fresh-node");
     const freshInstall = yield* execute(
       "npm",
@@ -1033,7 +1035,7 @@ const program = Effect.gen(function* () {
       path.join(packDirectory, "fresh-node-dependencies.json"),
       yield* run("npm", ["ls", "--all", "--json"], fresh),
     );
-    const freshEffect = yield* resolveStackPackage(
+    const freshEffect = yield* resolvePeerStackPackage(
       path.join(fresh, "node_modules", client.manifest.name, "package.json"),
       "effect",
       stack,
@@ -1173,15 +1175,21 @@ const program = Effect.gen(function* () {
     if (addonArchive === undefined) return yield* failure("no addon archive for this host");
     const hostIdentity = identities.get(hostAddon ?? "");
     if (hostIdentity === undefined) return yield* failure("no native identity for this host");
-    // Runs only in CI, where the addons are staged. Like the fresh consumer, it names no Effect
-    // package and sets no override: the installer takes Effect, the Node platform and the shared
-    // platform from the archives' exact peers, and the tree check requires the selection.
+    // Runs only in CI, where the addons are staged. It names the selected Effect, Node platform
+    // and shared platform, as an application on that Effect does, so a later patch the peers'
+    // range admits cannot change what it qualifies; the tree check requires the selection.
     const native = yield* initConsumer("native");
     yield* install(
       native,
       // The binding's optional dependency on this host's package resolves to its archive.
       [client, nativeArchive, addonArchive],
-      [...compilerPackages, `@types/node@${nodeTypesVersion}`],
+      [
+        `effect@${selected.effect}`,
+        `@effect/platform-node@${selected.nodePlatform}`,
+        `@effect/platform-node-shared@${selected.nodeShared}`,
+        ...compilerPackages,
+        `@types/node@${nodeTypesVersion}`,
+      ],
       false,
     );
     const nativeStack = yield* checkConsumerStack(native, "native");

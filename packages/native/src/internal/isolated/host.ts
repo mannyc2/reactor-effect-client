@@ -19,20 +19,19 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import type * as Queue from "effect/Queue";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
-import * as RpcClient from "effect/unstable/rpc/RpcClient";
-import { RpcClientError } from "effect/unstable/rpc/RpcClientError";
-import type { FromClientEncoded, FromServerEncoded } from "effect/unstable/rpc/RpcMessage";
-import * as Worker from "effect/unstable/workers/Worker";
-import { WorkerReceiveError, WorkerSendError } from "effect/unstable/workers/WorkerError";
+import * as RpcClient from "effect/rpc/RpcClient";
+import { RpcClientError } from "effect/rpc/RpcClientError";
+import type { FromClientEncoded, FromServerEncoded } from "effect/rpc/RpcMessage";
+import * as Worker from "effect/workers/Worker";
+import { WorkerReceiveError, WorkerSendError } from "effect/workers/WorkerError";
 import { PeerFactory } from "reactor-effect-client/Peer";
 import { ReactorError } from "reactor-effect-client/ReactorError";
 import * as Peer from "../peer.js";
-import { takeAll } from "../queue.js";
 import { Failure, IsolatedRpcs, OpenFailure } from "./protocol.js";
 
 /**
@@ -301,7 +300,7 @@ export const remote = Effect.fnUntraced(function* (
     Deferred.await(client).pipe(
       Effect.flatMap(open),
       Effect.map((items) =>
-        takeAll(items).pipe(
+        Queue.takeAll(items).pipe(
           Effect.catchIf(Cause.isDone, Effect.fail, (error) =>
             lost(Cause.fail(error), "native WebRTC queue", true),
           ),

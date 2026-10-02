@@ -1,9 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Encoding, Result } from "effect";
+import { Effect, Result } from "effect";
+import * as Hex from "effect/encoding/Hex";
 import * as Wire from "../src/internal/wire.js";
 
 const bytes = (hex: string): Uint8Array =>
-  Result.getOrThrowWith(Encoding.decodeHex(hex), () => new globalThis.Error(`invalid hex ${hex}`));
+  Result.getOrThrowWith(Hex.decode(hex), () => new globalThis.Error(`invalid hex ${hex}`));
 
 /** The failure's reason, or undefined when the effect succeeded. */
 const refusal = <A>(effect: Effect.Effect<A, { readonly reason: { readonly _tag: string } }>) =>
@@ -57,7 +58,7 @@ describe("the wire codec", () => {
       assert.strictEqual(reply.payload.value.predictedReadyAtMs, (1n << 63n) - 1n);
       assert.deepStrictEqual(yield* Wire.encode(Wire.ControlServerMessageSchema)(reply), clip);
       assert.strictEqual(
-        Encoding.encodeHex(
+        Hex.encode(
           yield* Wire.encode(Wire.DataServerMessageSchema)({
             requestId: "data_1",
             kind: Wire.MessageKind.RESPONSE,

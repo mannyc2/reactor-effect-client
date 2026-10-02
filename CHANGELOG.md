@@ -4,6 +4,12 @@ All notable changes to `reactor-effect-client`, `reactor-effect-browser` and `re
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking: Effect 4.0.0.** Every package's `effect` peer is now `~4.0.0`, as are `reactor-effect-native`'s `@effect/platform-node` and `@effect/platform-node-shared` peers, in place of an exact `4.0.0-rc.117`. A project already on Effect 4.0.0 could not add 0.9.2: npm refused the pair, and a forced install failed to load, because Effect moved every `effect/unstable/*` module to `effect/*` from rc.118 on. The peers admit Effect's 4.0.x patches and stop before 4.1: Effect 4.0.0 marks the modules the SDK builds on (`effect/http`, `effect/rpc`, `effect/process`, `effect/workers`) unstable, which may change in a minor release. Effect asks for one version across `effect` and every `@effect/*` package, so pin `@effect/platform-node-shared` to your `effect`'s version with an override wherever `@effect/platform-node` is installed, now with `reactor-effect-native` too.
+
 ## [0.9.2] - 2026-10-01
 
 0.9.2 fixes planned clip lengths, firm admission and follower wakes near session caps, and adds the documentation site and offline examples. The five packages share version 0.9.2; public modules and exports are unchanged.

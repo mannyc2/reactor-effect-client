@@ -5,7 +5,7 @@
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Base64Url from "effect/encoding/Base64Url";
 import * as Exit from "effect/Exit";
 import * as FiberSet from "effect/FiberSet";
 import * as Option from "effect/Option";
@@ -484,7 +484,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           authorization_details: [{ ...echo, resources: { models: { match: models } } }],
         };
         const jwt = [{ alg: "none", typ: "JWT" }, claims, "reactor-test"]
-          .map((part) => Encoding.encodeBase64Url(JSON.stringify(part)))
+          .map((part) => Base64Url.encode(JSON.stringify(part)))
           .join(".");
         yield* Ref.update(grants, (current) => new Map(current).set(jwt, { ...grant, jwt }));
         return {

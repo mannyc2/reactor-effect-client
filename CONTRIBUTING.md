@@ -34,7 +34,7 @@ file does not repeat them.
 | ffmpeg        | on `PATH`                                    | the examples' video tests (skipped without it) |
 | Rust          | 1.90 (`packages/native/rust-toolchain.toml`) | native work                                    |
 | Clang (Linux) | 21                                           | native work                                    |
-| Effect        | 4.0.0-rc.117 (root catalog)                  | read its guide (below)                         |
+| Effect        | 4.0.0 (root catalog)                         | read its guide (below)                         |
 
 ```sh
 bun install --frozen-lockfile
@@ -44,8 +44,9 @@ The install brings the pinned `buf` and `protoc-gen-es` that generate the wire c
 or host `protoc` is needed. Node 22.18 strips types, so the examples and the integration runner run
 from their TypeScript sources. The `prepare` script patches the installed `typescript` with
 `@effect/tsgo`, and every rule of its Effect language service is an error in `tsconfig.base.json`,
-so `tsc` fails on any finding. `tsc --version` ends in `+effect-tsgo` when the patch is in place; an
-install that skipped lifecycle scripts needs `bunx effect-tsgo patch --typescript`. Bun also applies the pinned Node process adapter patch in `patches/`, which keeps
+so `tsc` fails on any finding. The one rule off is `unstableApiUsage`: the SDK is built on Effect
+modules marked unstable, and peers on Effect's patches only (`~4.0.0`) instead. `tsc --version` ends in `+effect-tsgo`
+when the patch is in place; an install that skipped lifecycle scripts needs `bunx effect-tsgo patch --typescript`. Bun also applies the pinned Node process adapter patch in `patches/`, which keeps
 input-pipe error listeners through teardown after their writers finish. Native
 prerequisites are in [packages/native/README.md](packages/native/README.md); ordinary builds never
 install system packages.

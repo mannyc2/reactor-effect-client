@@ -30,7 +30,6 @@ import type * as Playout from "../../Playout.js";
 import { metadataMaxChars, requestSeconds } from "../h3/profile.js";
 import { validateAudioReference, validateReference } from "../h3/references.js";
 import { Request } from "../h3/request.js";
-import { take } from "../queue.js";
 import { currentParent, spanOptions } from "../trace.js";
 import { AcquisitionFailure, CommandFailure, ReactorError } from "../../ReactorError.js";
 import type { ReactorFailure } from "../../ReactorError.js";
@@ -105,8 +104,10 @@ const reportDefects = (cause: Cause.Cause<unknown>): Effect.Effect<void> => {
  * Closes `scope` with `exit`. A finalizer that dies is reported, and what follows the close goes
  * on: a failed open still says it failed.
  */
-const closeScope = (scope: Scope.Scope, exit: Exit.Exit<unknown, unknown>): Effect.Effect<void> =>
-  Scope.close(scope, exit).pipe(Effect.catchCause(reportDefects));
+const closeScope = (
+  scope: Scope.Closeable,
+  exit: Exit.Exit<unknown, unknown>,
+): Effect.Effect<void> => Scope.close(scope, exit).pipe(Effect.catchCause(reportDefects));
 
 /**
  * Where a request for the clip `tag` names falls outside H3's documented
@@ -444,7 +445,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     // scope, so the lane ends with the session.
     const lane = yield* Queue.unbounded<QueuedCommand>();
     yield* Effect.forever(
-      Effect.flatMap(take(lane), (queued) =>
+      Effect.flatMap(Queue.take(lane), (queued) =>
         Effect.flatMap(run(queued), (result) =>
           offer({ _tag: "Result", id: queued.action.id, result }),
         ),
@@ -660,8 +661,8 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       const mono = yield* monotonic;
       const input =
         wake === undefined
-          ? Option.some(yield* take(inbox))
-          : yield* take(inbox).pipe(Effect.timeoutOption(untilWake(wake - mono)));
+          ? Option.some(yield* Queue.take(inbox))
+          : yield* Queue.take(inbox).pipe(Effect.timeoutOption(untilWake(wake - mono)));
       // Nothing falls due before the wake: a wait that ends short of it, on a clock coarser than
       // the wake, waits on.
       if (Option.isNone(input) && wake !== undefined && (yield* monotonic) < wake) continue;

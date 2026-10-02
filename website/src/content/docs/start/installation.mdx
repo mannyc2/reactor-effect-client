@@ -6,7 +6,7 @@ description: "Which packages to install for Node, Bun, the browser and tests, an
 import { Aside, Tabs, TabItem } from "@astrojs/starlight/components";
 
 Install the portable core, add one host for where your sessions connect, and pin Effect to the
-release candidate the SDK is built on.
+release the SDK is built on.
 
 ## Which packages
 
@@ -35,13 +35,13 @@ so install them at the same version.
 
 ```sh
 # The core, which is all tests and offline runs need
-npm install --save-exact reactor-effect-client effect@4.0.0-rc.117
+npm install --save-exact reactor-effect-client effect@4.0.0
 
 # A page that runs its own session
 npm install --save-exact reactor-effect-browser
 
 # Node or Bun with decoded frames
-npm install --save-exact reactor-effect-native @effect/platform-node@4.0.0-rc.117
+npm install --save-exact reactor-effect-native @effect/platform-node@4.0.0
 ```
 
 </TabItem>
@@ -49,13 +49,13 @@ npm install --save-exact reactor-effect-native @effect/platform-node@4.0.0-rc.11
 
 ```sh
 # The core, which is all tests and offline runs need
-bun add --exact reactor-effect-client effect@4.0.0-rc.117
+bun add --exact reactor-effect-client effect@4.0.0
 
 # A page that runs its own session
 bun add --exact reactor-effect-browser
 
 # Node or Bun with decoded frames
-bun add --exact reactor-effect-native @effect/platform-node@4.0.0-rc.117
+bun add --exact reactor-effect-native @effect/platform-node@4.0.0
 ```
 
 </TabItem>
@@ -63,19 +63,19 @@ bun add --exact reactor-effect-native @effect/platform-node@4.0.0-rc.117
 
 ```sh
 # The core, which is all tests and offline runs need
-pnpm add --save-exact reactor-effect-client effect@4.0.0-rc.117
+pnpm add --save-exact reactor-effect-client effect@4.0.0
 
 # A page that runs its own session
 pnpm add --save-exact reactor-effect-browser
 
 # Node or Bun with decoded frames
-pnpm add --save-exact reactor-effect-native @effect/platform-node@4.0.0-rc.117
+pnpm add --save-exact reactor-effect-native @effect/platform-node@4.0.0
 ```
 
 </TabItem>
 </Tabs>
 
-For tests, add `@effect/vitest@4.0.0-rc.117` and `vitest` 5 as development dependencies. See
+For tests, add `@effect/vitest@4.0.0` and `vitest` 5 as development dependencies. See
 [Test offline](/reactor-effect-client/guides/testing-offline/).
 
 Modules are flat. Import one by its subpath, or all of them as namespaces from the root:
@@ -113,17 +113,19 @@ addon is of another version or cannot load.
 
 ## The Effect version
 
-Every package peers on Effect `4.0.0-rc.117` exactly. Effect 4 is in release candidates, and a
-candidate can move modules: `4.0.0-rc.118` moved the `effect/unstable/*` modules the SDK imports,
-so a later candidate needs a new SDK release. Install `effect` and every `@effect/*` package at
-exactly `4.0.0-rc.117`, with `--save-exact` as above: under a caret range, a later install without
-a lockfile takes a later candidate.
+Every package peers on Effect `~4.0.0`: any 4.0.x patch, but not 4.1. The Effect modules the SDK
+builds on, such as `effect/http`, `effect/rpc` and `effect/workers`, are marked
+`@stability unstable`, and Effect may change those in a minor release, so a caret range would admit
+a release nothing has tested, and Effect 4.1 needs a new SDK release. Effect also asks for one
+version of `effect` and every `@effect/*` package. Install them all at one 4.0.x release, with
+`--save-exact` as above: under a caret range, a later install without a lockfile takes a later
+release.
 
 ### Pin `@effect/platform-node-shared`
 
-`@effect/platform-node@4.0.0-rc.117` depends on `@effect/platform-node-shared` with a caret range.
-npm, Bun and pnpm all resolve that to a later candidate, which fails to load on Effect rc.117
-(`ERR_MODULE_NOT_FOUND`). A project that installs `@effect/platform-node` pins it in its
+`@effect/platform-node@4.0.0` depends on `@effect/platform-node-shared` with a caret range. npm,
+Bun and pnpm all resolve that to the latest release, which once Effect moves on is a later one than
+the rest of the stack. A project that installs `@effect/platform-node` pins it in its
 `package.json`:
 
 <Tabs syncKey="package-manager">
@@ -132,7 +134,7 @@ npm, Bun and pnpm all resolve that to a later candidate, which fails to load on 
 ```json
 {
   "overrides": {
-    "@effect/platform-node-shared": "4.0.0-rc.117"
+    "@effect/platform-node-shared": "4.0.0"
   }
 }
 ```
@@ -143,7 +145,7 @@ npm, Bun and pnpm all resolve that to a later candidate, which fails to load on 
 ```json
 {
   "overrides": {
-    "@effect/platform-node-shared": "4.0.0-rc.117"
+    "@effect/platform-node-shared": "4.0.0"
   }
 }
 ```
@@ -155,7 +157,7 @@ npm, Bun and pnpm all resolve that to a later candidate, which fails to load on 
 {
   "pnpm": {
     "overrides": {
-      "@effect/platform-node-shared": "4.0.0-rc.117"
+      "@effect/platform-node-shared": "4.0.0"
     }
   }
 }
@@ -165,9 +167,10 @@ npm, Bun and pnpm all resolve that to a later candidate, which fails to load on 
 </Tabs>
 
 Set it before the first install. Once a lockfile holds the later candidate, delete the lockfile and
-`node_modules` and install again. With `reactor-effect-native` installed, npm alone already resolves
-the right version through the package's exact peer; Bun and pnpm still need the override. Checked
-with npm 11.11, Bun 1.4.2 and pnpm 10.34 on 2026-09-30.
+`node_modules` and install again. `reactor-effect-native`'s peer keeps the shared platform within
+4.0.x, but not at your `effect`'s patch, so set the override with it too. Use the version you
+installed `effect` at in place of `4.0.0`. Checked with npm 11.11, Bun 1.4.2 and pnpm 10.34 on
+2026-09-30.
 
 ## Runtimes
 
@@ -181,7 +184,7 @@ with npm 11.11, Bun 1.4.2 and pnpm 10.34 on 2026-09-30.
   without it.
 
 <Aside type="note" title="Strict Node projects without DOM types">
-  Effect `4.0.0-rc.117` names the DOM's `TextDecoderOptions` in its declarations. A Node project
+  Effect `4.0.0` names the DOM's `TextDecoderOptions` in its declarations. A Node project
   that omits DOM types and type-checks library declarations (`skipLibCheck: false`) declares that
   standard interface itself.
 </Aside>

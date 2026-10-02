@@ -50,9 +50,8 @@ decode frames on the server need the native addon for the machine: npm installs 
 
 Each `package.json` names its dependencies with this workspace's `catalog:` and `workspace:*`
 protocols. In a project of your own, name the versions exactly: `effect` and the `@effect/*`
-packages at `4.0.0-rc.117`, and the three SDK packages at one version. With `@effect/platform-node`,
-also pin `@effect/platform-node-shared` to `4.0.0-rc.117` with an override: always under Bun and
-pnpm, and under npm unless `reactor-effect-native` is installed
+packages at one 4.0.x release, `4.0.0` here, and the three SDK packages at one version. With
+`@effect/platform-node`, also pin `@effect/platform-node-shared` to that release with an override
 ([installation](https://mannyc2.github.io/reactor-effect-client/start/installation/)).
 
 The examples import `@effect/platform-node` by module (`@effect/platform-node/NodeRuntime`). The

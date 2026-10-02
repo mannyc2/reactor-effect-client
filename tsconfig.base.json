@@ -54,6 +54,7 @@
           "effectMapFlatten": "error",
           "effectMapVoid": "error",
           "effectSucceedWithVoid": "error",
+          "experimentalApiUsage": "error",
           "extendsNativeError": "error",
           "flatMapConditionalToFilterOrFail": "error",
           "flatMapIgnoredParamToAndThen": "error",
@@ -138,7 +139,11 @@
           "unnecessaryPipe": "error",
           "unnecessaryPipeChain": "error",
           "unnecessaryTypeofType": "error",
-          "unsafeEffectTypeAssertion": "error"
+          "unsafeEffectTypeAssertion": "error",
+          // The SDK is built on Effect's HTTP, RPC, process and worker modules, which Effect marks
+          // unstable; the Effect peer, which stops before the next minor release, guards against
+          // their changes.
+          "unstableApiUsage": "off"
         }
       }
     ]

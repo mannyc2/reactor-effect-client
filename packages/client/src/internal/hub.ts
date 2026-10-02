@@ -14,7 +14,6 @@ import * as Ref from "effect/Ref";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ReactorError } from "../ReactorError.js";
-import { take } from "./queue.js";
 
 interface Entry<A> {
   readonly value: A;
@@ -140,7 +139,7 @@ export const make = <A>(options: Options<A> = {}): Effect.Effect<Hub<A>> =>
                 () => Ref.set(reading, false),
               );
               return Stream.fromEffectRepeat(
-                take(reader.queue).pipe(
+                Queue.take(reader.queue).pipe(
                   Effect.tap((entry) => Ref.update(reader.held, (total) => total - entry.weight)),
                   Effect.map((entry) => entry.value),
                 ),

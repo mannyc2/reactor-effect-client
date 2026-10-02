@@ -5,7 +5,6 @@
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import { take } from "../queue.js";
 import type { Mapping } from "../../Peer.js";
 import { ReactorError } from "../../ReactorError.js";
 import { trackFeed } from "../../Peer.js";
@@ -184,7 +183,7 @@ export const make = Effect.fnUntraced(function* (sessions: Sessions) {
     queue: Queue.Queue<A>,
     deliver: (delivery: A) => Effect.Effect<void>,
   ) =>
-    take(queue).pipe(
+    Queue.take(queue).pipe(
       Effect.flatMap((delivery) => until(delivery.due).pipe(Effect.andThen(deliver(delivery)))),
       Effect.forever,
       Effect.forkScoped,

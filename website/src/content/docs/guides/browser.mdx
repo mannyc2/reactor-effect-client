@@ -38,7 +38,7 @@ browser's WebRTC and plays it, and your server's only job is to mint the session
    ```ts
    // Api.ts
    import { Schema } from "effect";
-   import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+   import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
    /** A session token, as the page's `Tokens` needs it. */
    export const SessionToken = Schema.Struct({
@@ -72,7 +72,7 @@ browser's WebRTC and plays it, and your server's only job is to mint the session
    ```ts
    // server.ts
    import { Config, Effect, Redacted } from "effect";
-   import { HttpApiBuilder } from "effect/unstable/httpapi";
+   import { HttpApiBuilder } from "effect/http-api";
    import { CoordinatorClient, H3 } from "reactor-effect-client";
    import { Api, TokenUnavailable } from "./Api.ts";
 
@@ -142,8 +142,8 @@ browser's WebRTC and plays it, and your server's only job is to mint the session
    ```ts
    // page.ts
    import { Effect, Exit, Layer, ManagedRuntime, Redacted, Scope } from "effect";
-   import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient";
-   import { HttpApiClient } from "effect/unstable/httpapi";
+   import * as FetchHttpClient from "effect/http/FetchHttpClient";
+   import { HttpApiClient } from "effect/http-api";
    import { CoordinatorClient, H3, Reactor, ReactorError } from "reactor-effect-client";
    import type { Session } from "reactor-effect-client";
    import { BrowserMedia, BrowserPeer } from "reactor-effect-browser";

@@ -27,26 +27,26 @@ though it has not run there itself.
    <Tabs syncKey="pm">
      <TabItem label="npm">
        ```sh
-       npm install --save-exact reactor-effect-client reactor-effect-native effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
+       npm install --save-exact reactor-effect-client reactor-effect-native effect@4.0.0 @effect/platform-node@4.0.0
        ```
      </TabItem>
      <TabItem label="bun">
        ```sh
-       bun add --exact reactor-effect-client reactor-effect-native effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
+       bun add --exact reactor-effect-client reactor-effect-native effect@4.0.0 @effect/platform-node@4.0.0
        ```
      </TabItem>
      <TabItem label="pnpm">
        ```sh
-       pnpm add --save-exact reactor-effect-client reactor-effect-native effect@4.0.0-rc.117 @effect/platform-node@4.0.0-rc.117
+       pnpm add --save-exact reactor-effect-client reactor-effect-native effect@4.0.0 @effect/platform-node@4.0.0
        ```
      </TabItem>
    </Tabs>
 
-   Effect 4 is still in release candidates, and a later candidate can move modules, so every
-   package pins it exactly. Under Bun or pnpm, first add an override to `package.json` that pins
-   `@effect/platform-node-shared` to `4.0.0-rc.117` (`"overrides"` for Bun, `"pnpm": { "overrides" }`
-   for pnpm); npm needs none here, since `reactor-effect-native` pins it. [Installation](/reactor-effect-client/start/installation/) covers
-   other hosts.
+   Every package peers on Effect 4.0.x and stops before 4.1, since the Effect modules it builds on
+   may change in a minor release. First add an override to `package.json` that pins
+   `@effect/platform-node-shared` to `4.0.0` (`"overrides"` for npm and Bun,
+   `"pnpm": { "overrides" }` for pnpm), so the whole Effect stack stays at one release.
+   [Installation](/reactor-effect-client/start/installation/) covers other hosts.
 
 3. Save this as `main.ts`. It is `examples/quickstart/src/main.ts` in the repository, which CI
    typechecks against every change.

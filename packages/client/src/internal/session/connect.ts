@@ -27,7 +27,6 @@ import type * as Tracer from "effect/Tracer";
 import type { PeerEvent, PeerFactory } from "../../Peer.js";
 import { ReactorError } from "../../ReactorError.js";
 import type { ReadyDescriptor } from "../../Session.js";
-import { take } from "../queue.js";
 import * as Stats from "../stats.js";
 import type { Token } from "../token.js";
 import { currentParent, spanOptions } from "../trace.js";
@@ -369,7 +368,7 @@ export const make = ({
           ReactorError.fromCode("Aborted", "connection scope closed", { generation: c.generation }),
         ),
       );
-      yield* take(c.events).pipe(
+      yield* Queue.take(c.events).pipe(
         Effect.flatMap((event) => inbound.apply(c, event)),
         Effect.forever,
         Effect.forkIn(scope),

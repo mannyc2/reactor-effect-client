@@ -6,12 +6,13 @@ import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import * as ChildProcess from "effect/unstable/process/ChildProcess";
+import * as ChildProcess from "effect/process/ChildProcess";
 import {
   ConsumerManifest,
   checkArchivePeers,
   completeQualification,
   inspectConsumerTree,
+  resolvePeerStackPackage,
   resolveStackPackage,
   resolveWorkspaceStack,
   selectStack,
@@ -476,13 +477,60 @@ layer(NodeServices.layer)("pack Effect stack", (it) => {
     }),
   );
 
-  it.effect("an archive peers on Effect and every stack package at exactly the selection", () =>
+  it.effect(
+    "a workspace owner that only peers on a stack package declares the published range",
+    () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const stack = yield* select();
+        const root = yield* workspace();
+        const browser = path.join(root, "packages/browser");
+        yield* put(browser, {
+          name: "reactor-effect-browser",
+          peerDependencies: { effect: `~${baseline}` },
+        });
+        assert.lengthOf(yield* resolveWorkspaceStack(root, stack), 11);
+        yield* put(browser, {
+          name: "reactor-effect-browser",
+          peerDependencies: { effect: baseline },
+        });
+        assert.match(
+          yield* rejection(resolveWorkspaceStack(root, stack)),
+          /packages\/browser declared effect requirement differs from frozen selection/,
+        );
+      }),
+  );
+
+  it.effect("a fresh install's Effect may be any patch the published peer admits", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const stack = yield* select();
+      const consumer = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
+        prefix: "pack-fresh-",
+      });
+      const owner = yield* put(consumer, { private: true });
+      for (const version of [baseline, later, "4.0.3"]) {
+        yield* put(path.join(consumer, "node_modules/effect"), { name: "effect", version });
+        assert.strictEqual(
+          (yield* resolvePeerStackPackage(owner, "effect", stack)).version,
+          version,
+        );
+      }
+      yield* put(path.join(consumer, "node_modules/effect"), { name: "effect", version: "4.1.0" });
+      assert.match(
+        yield* rejection(resolvePeerStackPackage(owner, "effect", stack)),
+        /effect@4\.1\.0 is outside the published peer ~4\.0\.0-rc\.117/,
+      );
+    }),
+  );
+
+  it.effect("an archive peers on Effect and every stack package at the selection's patches", () =>
     Effect.gen(function* () {
       const stack = yield* select();
       const native = {
-        effect: baseline,
-        "@effect/platform-node": baseline,
-        "@effect/platform-node-shared": baseline,
+        effect: `~${baseline}`,
+        "@effect/platform-node": `~${baseline}`,
+        "@effect/platform-node-shared": `~${baseline}`,
         "reactor-effect-client": "0.8.0",
       };
       yield* checkArchivePeers("reactor-effect-native", native, stack);
@@ -490,16 +538,17 @@ layer(NodeServices.layer)("pack Effect stack", (it) => {
         Effect.flip(checkArchivePeers(name, peers, stack)).pipe(
           Effect.map((error) => error.message),
         );
-      assert.match(
-        yield* refused("reactor-effect-client", { effect: `^${baseline}` }),
-        /reactor-effect-client must pin its effect peer to exactly 4\.0\.0-rc\.117, not \^4\.0\.0-rc\.117/,
-      );
+      for (const range of [`^${baseline}`, baseline, `>=${baseline}`, `~${later}`, "~4.0"])
+        assert.match(
+          yield* refused("reactor-effect-client", { effect: range }),
+          /reactor-effect-client must declare its effect peer as ~4\.0\.0-rc\.117, not /,
+        );
       assert.match(
         yield* refused("reactor-effect-native", {
           ...native,
-          "@effect/platform-node": `^${baseline}`,
+          "@effect/platform-node": baseline,
         }),
-        /its @effect\/platform-node peer to exactly 4\.0\.0-rc\.117/,
+        /its @effect\/platform-node peer as ~4\.0\.0-rc\.117/,
       );
       assert.match(
         yield* refused("reactor-effect-browser", { "reactor-effect-client": "0.8.0" }),
