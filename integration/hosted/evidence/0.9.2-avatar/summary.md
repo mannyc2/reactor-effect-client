@@ -112,3 +112,17 @@
 - Voice cloning: clone_voice declared, answered ack; voices.cloned present.
 - Partial transcripts: 0 of 5 not final.
 - The deployment's version: (text, 6 chars).
+
+## The commits
+
+Both runs ran on branch `claude/vidu`, on Effect 4.0.0-rc.117. The branch was then rebased onto
+the move to Effect 4.0.0, so the trees differ from the ones the runs name: Effect 4.0.0's import
+paths, and its queue and race changes in the client and the native host's TypeScript. The native
+source is unchanged, and the addon both runs loaded is the one the later `character` runs loaded.
+The commits the runs name stay reachable from the tag `archive/vidu-pre-effect-4`, and each is on
+the branch as:
+
+| The evidence names | On the branch | Runs                |
+| ------------------ | ------------- | ------------------- |
+| becfca52           | 7071adf       | 527bf9ae (`avatar`) |
+| b7ce932a           | 5a0d092       | 3ae28dd8 (`avatar`) |
