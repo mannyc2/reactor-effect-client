@@ -4,7 +4,11 @@ All notable changes to `reactor-effect-client`, `reactor-effect-browser` and `re
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] - 2026-10-02
+
+0.10.0 moves the SDK to Effect 4.0.0 and adds `ViduS2Avatar`, a provider for Reactor's Vidu S2-Avatar, a character made from one photo who talks with a caller in a live call. Every package now peers on Effect `~4.0.0`, so a project on Effect 4.0.0 or a later 4.0.x patch can add it; a project on `4.0.0-rc.117` moves to Effect 4.0.0 first, including its own `effect/unstable/*` imports. The native Rust sources are unchanged since 0.9.2.
+
+Qualification: the main CI run that built these archives passed every job: the shared portable checks; the portable suites on Ubuntu with Node 22 and 24 and on macOS with Node 24; the native addon on linux-x64 and on darwin-arm64, with its suites on Node and on Bun and the Chrome browser/native WebRTC test on Node; and the pack/install smoke of all five archives, whose fresh install takes Effect through the `~4.0.0` peer. Two paid `character` runs drove `ViduS2Avatar` on hosted Reactor on this source with Effect 4.0.0, under Bun with the 0.9.2 linux-x64 addon: one passed every criterion, and one failed at its first command with a native `Protocol` failure whose cause is unknown. No paid H3 run has used Effect 4.0.0; H3 and the playout use the same session, connection and native paths the `character` run exercised.
 
 ### Added
 
@@ -620,6 +624,7 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
 [unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/2418ac1f5ebbf86f38c2cda2c622bf79aec77a31...main
+[0.10.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.10.0
 [0.9.2]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.2
 [0.9.1]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.1
 [0.9.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.0

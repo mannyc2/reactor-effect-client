@@ -23,7 +23,7 @@
     },
     "examples/avatar": {
       "name": "reactor-effect-example-avatar",
-      "version": "0.9.2",
+      "version": "0.10.0",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -36,7 +36,7 @@
     },
     "examples/livestream": {
       "name": "reactor-effect-example-livestream",
-      "version": "0.9.2",
+      "version": "0.10.0",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -51,7 +51,7 @@
     },
     "examples/quickstart": {
       "name": "reactor-effect-example-quickstart",
-      "version": "0.9.2",
+      "version": "0.10.0",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -64,7 +64,7 @@
     },
     "examples/terminal": {
       "name": "reactor-effect-example-terminal",
-      "version": "0.9.2",
+      "version": "0.10.0",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -77,7 +77,7 @@
     },
     "integration": {
       "name": "reactor-effect-integration",
-      "version": "0.9.2",
+      "version": "0.10.0",
       "devDependencies": {
         "@bufbuild/protobuf": "catalog:",
         "@effect/platform-node": "catalog:",
@@ -93,7 +93,7 @@
     },
     "packages/browser": {
       "name": "reactor-effect-browser",
-      "version": "0.9.2",
+      "version": "0.10.0",
       "devDependencies": {
         "@effect/vitest": "catalog:",
         "effect": "catalog:",
@@ -107,7 +107,7 @@
     },
     "packages/browser/examples": {
       "name": "reactor-effect-browser-examples",
-      "version": "0.9.2",
+      "version": "0.10.0",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -120,7 +120,7 @@
     },
     "packages/client": {
       "name": "reactor-effect-client",
-      "version": "0.9.2",
+      "version": "0.10.0",
       "dependencies": {
         "@bufbuild/protobuf": "catalog:",
       },
@@ -140,7 +140,7 @@
     },
     "packages/client/examples": {
       "name": "reactor-effect-client-examples",
-      "version": "0.9.2",
+      "version": "0.10.0",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -154,7 +154,7 @@
     },
     "packages/native": {
       "name": "reactor-effect-native",
-      "version": "0.9.2",
+      "version": "0.10.0",
       "devDependencies": {
         "@effect/platform-node": "catalog:",
         "@effect/vitest": "catalog:",
@@ -177,7 +177,7 @@
     },
     "packages/native/examples": {
       "name": "reactor-effect-native-examples",
-      "version": "0.9.2",
+      "version": "0.10.0",
       "dependencies": {
         "@effect/platform-node": "catalog:",
         "effect": "catalog:",
@@ -192,11 +192,11 @@
     },
     "packages/native/npm/darwin-arm64": {
       "name": "reactor-effect-native-darwin-arm64",
-      "version": "0.9.2",
+      "version": "0.10.0",
     },
     "packages/native/npm/linux-x64-gnu": {
       "name": "reactor-effect-native-linux-x64-gnu",
-      "version": "0.9.2",
+      "version": "0.10.0",
     },
   },
   "patchedDependencies": {
