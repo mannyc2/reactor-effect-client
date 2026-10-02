@@ -139,8 +139,7 @@ included. `Timing.hosted` uses the first paid run's timings: an avatar in 25–2
 
 Two paid runs of the [`avatar` probe](/reactor-effect-client/reference/hosted-evidence/), on
 2026-10-01 and 2026-10-02, drove the model's commands through the raw `Session` under Bun on
-Linux x64. The provider and the example have not run there themselves. The second run passed every
-criterion:
+Linux x64. The probe's second run passed every criterion:
 
 - The picture came 0.20 s after both tracks were resumed at live, at 24.9 fps, in frames of
   928×1088 and of 640×360. On the same connection, the second call's picture came 0.11 s after
@@ -156,6 +155,15 @@ criterion:
 - `call_max_seconds` read 7200, and `update_call` to another voice answered in 0.24 s.
 - `list_voices` listed 56 voices. `clone_voice` is declared but was refused with
   `CLONING_DISABLED`, and the provider has no operation for it.
+
+The provider itself ran in two paid runs of the `character` check on 2026-10-02, on Effect 4.0.0
+under Bun. One passed every criterion: `make` in 0.04 s, the avatar in 3.3 s, the call live 3.2 s
+after `startCall` with the picture through the provider's own resume, an answer to `say`, and
+`endCall` in 8.7 s. In the other, `make`'s first command went out 6 ms after the connection was
+ready, and 21 ms later the native addon failed the connection with a `Protocol` failure, so the
+command's outcome was unknown. Its cause is not known yet: the addon raises that failure for a data
+channel message that is not binary or a remote track nobody declared, and the run's evidence kept
+neither text. The example has not run on hosted Reactor itself.
 
 ## Pitfalls and limits
 

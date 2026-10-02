@@ -151,6 +151,7 @@ What one run cannot tell apart:
 - **Judged:** the provider made the avatar from the photo; it returned the call live; the character's picture came within 5 s of live, lit and changing, until `endCall`; its speech came within 8 s of live; the character answered the `say`, by speech or a character transcript within 8 s; `endCall` returned the call's end; and the session was confirmed ended.
 - **The picture after live.** `startCall` returns once the provider has resumed the character's tracks, which the second `avatar` run found brings the call's picture. The check does nothing more for it, so a frame within 5 s of live is the provider's own doing.
 - **Rehearsed.** ReactorTest sends a call's picture only once `main_video` is resumed during the call, so with the provider's resume removed the picture's criterion fails; with the picture absent, it fails while the rest pass.
+- **Its runs.** On 2026-10-02, on Effect 4.0.0, one run passed every criterion, about $0.20. In the other, about $0.03, the native addon failed the connection with a `Protocol` failure 21 ms after `make`'s first `get_state`, which went out 6 ms after the connection was ready; its cause is not yet known. A native connection's `Protocol` or `Overflow` failure now keeps the addon's own sentence in the evidence when it is one of the addon's fixed sentences, which name no SDP or address, so a recurrence names the check that fired.
 
 ## What we gather, and why
 
@@ -314,7 +315,7 @@ The run takes about two minutes. Its summary ends with a table of the refused co
 
 ### The character check
 
-`character` runs from a built checkout, with the linux-x64 addon staged as above, in a ledger of its own, `evidence/0.9.2-character/`, whose total is its worst case at Vidu's per-second rate: one session of at most 75 s, $0.525.
+`character` runs from a built checkout, with the linux-x64 addon staged as above, in a ledger of its own, `evidence/0.9.2-character/`, whose total is its worst case at Vidu's per-second rate: one session of at most 75 s, $0.525. The ledger holds the two runs of 2026-10-02, which reserved $1.05 together, so a third needs a total of $1.575, as below.
 
 ```sh
 node packages/native/scripts/stage.mjs <reactor-effect-native.linux-x64-gnu.node> linux-x64-gnu
@@ -327,11 +328,11 @@ P=<a photo of one person, outside the repository>
 # Free: the photo on ReactorTest; then Vidu S2-Avatar's rate, the ledger and a token for it, the
 # addon, and the token probes.
 bun --no-env-file integration/hosted/main.ts rehearse character --avatar-image "$P"
-bun --no-env-file integration/hosted/main.ts preflight --check character --total-budget-usd 0.525 --ledger $L
+bun --no-env-file integration/hosted/main.ts preflight --check character --total-budget-usd 1.575 --ledger $L
 
 # Paid: one session, $0.525 at most.
 bun --no-env-file integration/hosted/main.ts run character --avatar-image "$P" --budget-usd 0.525 \
-  --total-budget-usd 0.525 --ledger $L --network "$N" --i-authorize-paid-sessions
+  --total-budget-usd 1.575 --ledger $L --network "$N" --i-authorize-paid-sessions
 
 bun --no-env-file integration/hosted/main.ts summarize $L > $L/summary.md
 ```

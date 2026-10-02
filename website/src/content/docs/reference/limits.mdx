@@ -28,8 +28,10 @@ replacement of an ended session. They ran from Linux x64, through the native hos
 Bun and isolated under Node, over a direct network path. On 0.9.0 only the one-session `showreel` check (2026-10-01) has run;
 0.9.0's other checks, its published client packages, the browser host and the in-process native host
 under Node have not run on hosted Reactor yet. Vidu S2-Avatar's avatar, calls, picture, voice and
-refusals ran through the raw `Session` in two `avatar` probes (2026-10-01 and 10-02); its
-provider has not run there.
+refusals ran through the raw `Session` in two `avatar` probes (2026-10-01 and 10-02), and its
+provider in two `character` runs on Effect 4.0.0 (2026-10-02): one passed every criterion, and in
+the other the native connection failed with a `Protocol` failure right after the provider's first
+command, for a cause not yet known.
 
 **Locally and in CI only:**
 

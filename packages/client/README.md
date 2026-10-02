@@ -91,8 +91,9 @@ const ended = yield * avatar.endCall;
 
 A refused command fails with the `Refused` reason, carrying the model's own `code`. On Node and
 Bun the caller speaks only through `say`: the native host can't publish a microphone track; a
-browser publishes one on `mic`. The provider has run only on `ReactorTest`; two paid probes drove
-the same commands through the raw `Session` on hosted Reactor.
+browser publishes one on `mic`. Of two paid runs of the provider on hosted Reactor, one passed
+every criterion; in the other, the native connection failed with a `Protocol` failure 21 ms after
+the provider's first command, for a cause not yet known.
 [A talking character](https://mannyc2.github.io/reactor-effect-client/guides/avatar/) and the
 [avatar example](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/avatar) cover
 the rest.

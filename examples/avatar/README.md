@@ -43,10 +43,13 @@ The session runs on a token minted for it, which caps it at two minutes. At the 
 Reactor's pricing API stated for Vidu S2-Avatar on October 2, 2026 ($0.007 a second), a run can
 cost at most $0.84. Reactor bills the whole session, time between calls included.
 
-This program has not run on hosted Reactor. The paid `avatar` probe drove the same commands
-through the raw `Session` under Bun on 2026-10-01 and 2026-10-02
+This program has not run on hosted Reactor itself. The provider it uses has, in the paid
+`character` check under Bun on 2026-10-02: one run passed every criterion, and in the other the
+native connection failed with a `Protocol` failure 21 ms after the provider's first command, for a
+cause not yet known. Before that, the paid `avatar` probe drove the same commands through the raw
+`Session` on 2026-10-01 and 2026-10-02
 ([hosted evidence](https://mannyc2.github.io/reactor-effect-client/reference/hosted-evidence/)).
-On the second run:
+On the probe's second run:
 
 - the avatar was ready 2.1 s after `create_avatar`, against 26.7 s on the first, from the same
   photo;
