@@ -499,6 +499,14 @@ jobs:
           PACK_EXPECT_NATIVE_PLATFORMS: linux-x64-gnu,darwin-arm64
         run: bun run verify --profile package
 
+      - name: Install isolated release tooling
+        run: bun install --cwd release-tools --frozen-lockfile --ignore-scripts
+
+      - name: Check packed packages against the release model
+        env:
+          PACKAGE_IDENTITY: ${{ steps.package.outputs.identity }}
+        run: node release-tools/ci.mjs validate "$PACKAGE_IDENTITY"
+
       - name: Stage a flat artifact without changing package bytes
         env:
           PACKAGE_DIRECTORY: ${{ steps.package.outputs.directory }}

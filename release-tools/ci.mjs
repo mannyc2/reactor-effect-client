@@ -20,8 +20,12 @@ const program = Effect.gen(function* () {
   const [command, file, output] = yield* (yield* Stdio.Stdio).args;
   if (file === undefined || file === "")
     return yield* reject(
-      "usage: ci.mjs select run.json | stamp package-identity.json qualification.json",
+      "usage: ci.mjs validate package-identity.json | select run.json | stamp package-identity.json qualification.json",
     );
+  if (command === "validate") {
+    yield* readJson(file).pipe(Effect.flatMap(validatePackageIdentity));
+    return;
+  }
   const environment = yield* Config.all({
     repository: variable("GITHUB_REPOSITORY"),
     ref: variable("GITHUB_REF"),
