@@ -5,8 +5,7 @@
  * and leaves open what a refused command answers on the wire, whether its
  * `command_error` comes before that answer, what a command carrying an
  * explicit null does, how long its slower commands take to answer, and
- * whether a call's picture flows without the outputs being resumed after
- * `live`. The check drives one session through the raw `Session`, never a
+ * what a connection must do for a call's picture. The check drives one session through the raw `Session`, never a
  * module of the model's, and records what it meets, so that the SDK's module
  * for the model can be designed from it.
  *
@@ -18,22 +17,25 @@
  * session's time, the session is ended either way, and some are sent to see
  * whether they are answered at all.
  *
- * The planned timeline, from the allocation A, at the timing Reactor documents
- * (an avatar ready within a few seconds, a call live usually within 5 s):
+ * The planned timeline, from the allocation A, at the timing the paid run of
+ * 2026-10-01 measured (an avatar ready 26.7 s after create_avatar, a call
+ * live in 3 to 4 s, end_call answered after 13.2 s):
  *
  *   A+2    connected: the schema, the first snapshot, get_state, list_voices,
  *          clone_voice with a name it refuses, and say before any call
- *   A+5    the photo uploads, and create_avatar makes the avatar from it
- *   A+11   start_call with a greeting; live about A+16, when its picture must
- *          come within 5 s, after one reconnect at most
- *   A+17   the greeting; say, and an interrupt 1.5 s into the answer's sound
- *   A+27   update_call with no field, say with no text, update_call with a
+ *   A+4    the photo uploads, and create_avatar makes the avatar from it
+ *   A+31   start_call with a greeting; live about A+35, when the character's
+ *          tracks are resumed and its picture must come within 5 s, or within
+ *          5 s of a pause and resume of main_video
+ *   A+40   the greeting; say, and an interrupt 1.5 s into the answer's sound
+ *   A+60   update_call with no field, say with no text, update_call with a
  *          null voice, and update_call to another voice
- *   A+38   end_call, then attach_avatar with the avatar's id
- *   A+43   a second call without a greeting: live, its picture, a say, end_call
- *   A+55   get_state, and the session is closed
+ *   A+66   end_call, then attach_avatar with the avatar's id
+ *   A+82   a second call without a greeting: live, 5 s of waiting for its
+ *          picture with nothing done, then the resumes; a say, end_call
+ *   A+125  get_state, and the session is closed
  *
- * That ends about 55 s inside the 110 s work deadline.
+ * That ends about 125 s inside the 170 s work deadline.
  */
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -98,8 +100,10 @@ const counting = "Please count slowly from one to twenty.";
 const sea = "Say one short sentence about the sea.";
 /** How long after a command's answer the broadcasts that follow it are waited for. */
 const windowMs = 2_000;
-/** A call's first frame must come this long after live, or after the one reconnect's ready. */
+/** A call's first frame must come this long after what was last done for it. */
 const frameWithinMs = 5_000;
+/** How long `end_call` is given to answer: hosted Vidu answered one 13.2 s after it was sent. */
+const endWithinMs = 30_000;
 /** How long the character's sound is waited for after a call is live, or after a say. */
 const onsetWithinMs = 8_000;
 /** How long an answer is given to fall silent. */
@@ -110,8 +114,8 @@ const interruptAfterMs = 1_500;
 const transcriptWithinMs = 3_000;
 /** How long a call is watched for picture and sound after `ended`. */
 const afterEndedMs = 2_000;
-/** How long a phase the docs promise is waited for: an avatar ready, a call live. */
-const phaseWithinMs = 30_000;
+/** How long a phase is waited for: hosted Vidu made an avatar in 26.7 s, and a call live in 4.3. */
+const phaseWithinMs = 45_000;
 /** The sound's level is taken over 100 ms; 0.01 RMS (-40 dBFS) or more is speech. */
 const binMs = 100;
 const speechRms = 0.01;
@@ -184,6 +188,19 @@ interface Sent {
   readonly answer: string | undefined;
 }
 
+/**
+ * One thing done on the call's connection for its picture, and the first frame and the blocks
+ * that came in the 5 s after it: nothing, a resume of both of the character's tracks, or a pause
+ * and resume of `main_video`.
+ */
+interface Stage {
+  readonly action: Evidence.PictureAction;
+  readonly atMs: number;
+  failure?: string;
+  firstFrameMs?: number;
+  blocks?: number;
+}
+
 /** Picture and sound from a call's live until `end_call` was sent. */
 interface Window {
   readonly video: Media.VideoLog;
@@ -201,12 +218,8 @@ interface Call {
   closedMs?: number;
   /** Until when its sound was watched. */
   untilMs?: number;
-  reconnect?: {
-    readonly startedMs: number;
-    readonly readyMs?: number;
-    readonly failure?: string;
-    readonly firstFrameMs?: number;
-  };
+  /** What was done for its picture, in turn, until a frame came. */
+  picture: Array<Stage>;
   say?: { readonly sent: Sent; onsetMs?: number };
   end?: {
     readonly sent: Sent;
@@ -640,7 +653,7 @@ export const avatar = Effect.fnUntraced(function* (pieces: Pieces) {
           transcripts: ReadonlyArray<Transcript>,
           nowMs: number,
         ): Evidence.AvatarCall => {
-          const { liveMs, window, reconnect, say, end } = call;
+          const { liveMs, window, picture, say, end } = call;
           const untilMs = call.untilMs ?? call.closedMs ?? nowMs;
           const firstFrame = liveMs === undefined ? undefined : video.firstAfter(liveMs);
           const firstBlock =
@@ -664,20 +677,15 @@ export const avatar = Effect.fnUntraced(function* (pieces: Pieces) {
             ...(firstBlock === undefined || liveMs === undefined
               ? {}
               : { firstBlockMs: round(firstBlock - liveMs) }),
-            ...(reconnect === undefined
-              ? {}
-              : {
-                  reconnect: {
-                    startedMs: since(reconnect.startedMs),
-                    ...(reconnect.readyMs === undefined
-                      ? {}
-                      : { readyMs: since(reconnect.readyMs) }),
-                    ...(reconnect.failure === undefined ? {} : { failure: reconnect.failure }),
-                    ...(reconnect.firstFrameMs === undefined
-                      ? {}
-                      : { firstFrameMs: round(reconnect.firstFrameMs) }),
-                  },
-                }),
+            picture: picture.map((stage) => ({
+              action: stage.action,
+              atMs: since(stage.atMs),
+              ...(stage.failure === undefined ? {} : { failure: stage.failure }),
+              ...(stage.firstFrameMs === undefined
+                ? {}
+                : { firstFrameMs: round(stage.firstFrameMs) }),
+              ...(stage.blocks === undefined ? {} : { blocks: stage.blocks }),
+            })),
             ...(window === undefined
               ? {}
               : { video: window.video.summary(), audio: window.audio.summary() }),
@@ -920,43 +928,53 @@ export const avatar = Effect.fnUntraced(function* (pieces: Pieces) {
         });
 
         /**
-         * Waits for a call's first frame after live; with none in 5 s, reconnects once and waits
-         * as long after the new connection's ready. Whether a call's picture needs its tracks
-         * resumed once it is live is what this asks.
+         * Waits for a call's first frame after live, doing each of `actions` in turn on the call's
+         * connection until one comes within 5 s of it: nothing, which asks whether a resume made
+         * before the call carries into it; a resume of both of the character's tracks, as Reactor's
+         * tutorial does at every live; or a pause and resume of `main_video`, which makes Reactor
+         * renegotiate the track rather than find it already resumed.
          */
-        const awaitPicture = Effect.fnUntraced(function* (call: Call, liveMs: number) {
-          yield* pieces.watch(
-            Effect.sync(() => video.firstAfter(liveMs) !== undefined),
-            Math.min(deadline, run.origin + liveMs + frameWithinMs),
-          );
-          if (video.firstAfter(liveMs) !== undefined) return;
-          const startedMs = yield* now;
-          call.reconnect = { startedMs };
-          yield* run.mark("reconnecting for the picture");
-          const reconnected = yield* Effect.exit(session.reconnect);
-          if (Exit.isFailure(reconnected)) {
-            call.reconnect = { startedMs, failure: describe(reconnected.cause) };
-            return;
+        const awaitPicture = Effect.fnUntraced(function* (
+          call: Call,
+          actions: ReadonlyArray<Evidence.PictureAction>,
+        ) {
+          for (const action of actions) {
+            const atMs = yield* now;
+            const stage: Stage = { action, atMs };
+            call.picture.push(stage);
+            const done = yield* Effect.exit(
+              Effect.gen(function* () {
+                if (action === "wait") return;
+                const media = yield* session.decoded;
+                if (action === "cycle") yield* media.setTrackActive(tracks.video, false);
+                for (const name of [tracks.video, tracks.audio])
+                  yield* media.setTrackActive(name, true);
+              }),
+            );
+            if (Exit.isFailure(done)) stage.failure = describe(done.cause);
+            yield* pieces.watch(
+              Effect.sync(() => video.firstAfter(atMs) !== undefined),
+              Math.min(deadline, run.origin + atMs + frameWithinMs),
+            );
+            const first = video.firstAfter(atMs);
+            stage.blocks = between(blockTimes, atMs, atMs + frameWithinMs);
+            if (first !== undefined) {
+              stage.firstFrameMs = first - atMs;
+              return;
+            }
           }
-          const readyMs = yield* now;
-          call.reconnect = { startedMs, readyMs };
-          yield* listen(session);
-          yield* pieces.watch(
-            Effect.sync(() => video.firstAfter(readyMs) !== undefined),
-            Math.min(deadline, run.origin + readyMs + frameWithinMs),
-          );
-          const first = video.firstAfter(readyMs);
-          if (first !== undefined)
-            call.reconnect = { startedMs, readyMs, firstFrameMs: first - readyMs };
         });
         /**
          * Starts a call and follows it to live, failed or ended, or to a `command_error` that
          * refuses it; at live its window opens.
          */
-        const startCall = Effect.fnUntraced(function* (data: Schema.JsonObject) {
+        const startCall = Effect.fnUntraced(function* (
+          data: Schema.JsonObject,
+          actions: ReadonlyArray<Evidence.PictureAction>,
+        ) {
           const from = (yield* heardNow).length;
           const sent = yield* send("start_call", data);
-          const call: Call = { start: sent, phases: [] };
+          const call: Call = { start: sent, phases: [], picture: [] };
           calls.push(call);
           const settled = yield* awaitHeard(
             from,
@@ -977,7 +995,7 @@ export const avatar = Effect.fnUntraced(function* (pieces: Pieces) {
           windows.add(window);
           call.window = window;
           yield* run.mark("live", `call ${calls.length}`);
-          yield* awaitPicture(call, live.atMs);
+          yield* awaitPicture(call, actions);
           return call;
         });
         /** Ends a call: closes its window, sends `end_call`, and watches what follows `ended`. */
@@ -985,7 +1003,7 @@ export const avatar = Effect.fnUntraced(function* (pieces: Pieces) {
           call.closedMs = yield* now;
           if (call.window !== undefined) windows.delete(call.window);
           const from = (yield* heardNow).length;
-          const sent = yield* send("end_call", {});
+          const sent = yield* send("end_call", {}, { replyTimeout: endWithinMs });
           const end: NonNullable<Call["end"]> = { sent, phases: [] };
           call.end = end;
           const ended = yield* awaitHeard(
@@ -1142,7 +1160,7 @@ export const avatar = Effect.fnUntraced(function* (pieces: Pieces) {
         // 5. The avatar, from the photo uploaded for it.
         yield* step(
           "create_avatar",
-          45,
+          60,
           Effect.gen(function* () {
             const kind = kinds[photo.type];
             const startedMs = yield* now;
@@ -1203,7 +1221,7 @@ export const avatar = Effect.fnUntraced(function* (pieces: Pieces) {
           "first call",
           50,
           Effect.gen(function* () {
-            yield* startCall({ persona, greeting, llm });
+            yield* startCall({ persona, greeting, llm }, ["resume", "cycle"]);
             yield* saveCalls;
           }),
         );
@@ -1351,10 +1369,10 @@ export const avatar = Effect.fnUntraced(function* (pieces: Pieces) {
           }),
         );
 
-        // 12. end_call, answered within the SDK's 10 s default reply deadline or not.
+        // 12. end_call, answered within 30 s.
         yield* step(
           "end_call",
-          25,
+          45,
           Effect.gen(function* () {
             const call = calls[0];
             if (call === undefined)
@@ -1392,13 +1410,13 @@ export const avatar = Effect.fnUntraced(function* (pieces: Pieces) {
           }),
         );
 
-        // 14. A second call without a greeting: whether its picture flows with no resume after
-        // its live, its answer to a say, and its end.
+        // 14. A second call without a greeting: whether its picture flows with nothing done once it
+        // is live, then what brings it; its answer to a say, and its end.
         yield* step(
           "second call",
-          60,
+          90,
           Effect.gen(function* () {
-            const call = yield* startCall({ persona, llm });
+            const call = yield* startCall({ persona, llm }, ["wait", "resume", "cycle"]);
             yield* saveCalls;
             if (call.liveMs !== undefined) {
               const said = yield* send("say", { text: sea });

@@ -312,12 +312,13 @@ export const Timing = {
    * after its acknowledgement and one continued 5 s clip built in 5.45 s; and
    * from 0.8.0's cut run, a moderation verdict 1.01 s after its enqueue. These
    * are small samples, drawn as ranges and not replayed as a trace: use them
-   * for demos and realism checks, not as what a test depends on. No paid run
-   * has timed Vidu S2-Avatar yet: its ranges are what Reactor documents, an
-   * avatar ready "within a few seconds" and a call live "usually within 5 s".
+   * for demos and realism checks, not as what a test depends on. One paid
+   * Vidu S2-Avatar run on 2026-10-01 made an avatar in 26.7 s, had two calls
+   * live in 4.3 s and 2.7 s and answered `end_call` after 13.2 s; its answer
+   * and speech ranges are still this simulation's.
    */
   hosted: {
-    label: "hosted H3, paid runs of 2026-09-27 and 2026-09-28",
+    label: "hosted H3, paid runs of 2026-09-27 and 2026-09-28; Vidu S2-Avatar, 2026-10-01",
     seed: 1,
     http: range(["200 millis", "300 millis"]),
     channel: range(["30 millis", "45 millis"]),
@@ -327,11 +328,11 @@ export const Timing = {
     seam: range(["30 millis", "110 millis"]),
     stop: point("20 millis"),
     moderation: point("1 second"),
-    avatar: range(["2 seconds", "5 seconds"]),
-    call: range(["3 seconds", "5 seconds"]),
+    avatar: range(["25 seconds", "28 seconds"]),
+    call: range(["2700 millis", "4300 millis"]),
     answer: range(["500 millis", "1500 millis"]),
     speech: range(["2 seconds", "4 seconds"]),
-    hangup: range(["1 second", "3 seconds"]),
+    hangup: range(["13 seconds", "13500 millis"]),
     buildSpeed: { min: 2.3, max: 2.6 },
     continuedBuildSpeed: { min: 0.92, max: 0.92 },
   } satisfies Timing,

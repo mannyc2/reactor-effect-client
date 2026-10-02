@@ -97,14 +97,14 @@ describe("the spending gates", () => {
     Effect.gen(function* () {
       const vidu = { creditsPerSecond: 70, creditsPerDollar: 10_000, per: "second" } as const;
       assert.strictEqual(Spend.plans.avatar.model.name, "reactor/vidu-s2-avatar");
-      assert.strictEqual(Spend.ceilingFor("avatar"), 0.84);
-      const authorization = { check: "avatar", budgetUsd: 0.84, totalUsd: 2 } as const;
+      assert.strictEqual(Spend.ceilingFor("avatar"), 1.26);
+      const authorization = { check: "avatar", budgetUsd: 1.26, totalUsd: 2 } as const;
       yield* Spend.authorize(authorization);
-      yield* refused(Spend.authorize({ ...authorization, budgetUsd: 0.85 }));
-      assert.strictEqual(yield* Spend.admit({ rate: vidu, authorization, reservedUsd: 0 }), 0.84);
+      yield* refused(Spend.authorize({ ...authorization, budgetUsd: 1.27 }));
+      assert.strictEqual(yield* Spend.admit({ rate: vidu, authorization, reservedUsd: 0 }), 1.26);
       assert.strictEqual(
         yield* Spend.admit({ rate: { ...vidu, per: "minute" }, authorization, reservedUsd: 0 }),
-        0.84,
+        1.26,
       );
       // Priced at H3's rate, the same session would cost five times its budget.
       yield* refused(Spend.admit({ rate, authorization, reservedUsd: 0 }));

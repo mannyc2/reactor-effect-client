@@ -164,6 +164,11 @@ const start = (avatars: Avatars) =>
           case "Picture": {
             const picture = { token: output.token, call: output.call, at: output.at };
             yield* Ref.update(playing, (now) => ({ ...now, picture }));
+            // A call's picture reaches a connection that resumed `main_video` once the call was
+            // live, as Reactor's tutorial has a client do at every live. The paid run of
+            // 2026-10-01, whose connection resumed it only on connecting, had the call's voice
+            // and none of its picture.
+            yield* runner.unsubscribe(video);
             return yield* everyone((to, connection) =>
               Effect.asVoid(
                 FiberMap.run(

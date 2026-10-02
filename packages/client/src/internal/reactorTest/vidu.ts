@@ -725,8 +725,9 @@ export const step = ({
     if (!isCommand(name))
       return emit({ _tag: "Reject", requestId: id, code: "invalid_command", message: name });
     // Reactor documents a command carrying an explicit null as dropped whole, with no
-    // `command_error`; that it is still acknowledged is this simulation's reading.
-    if (Object.values(args).some((value) => value === null)) return ack(id);
+    // `command_error`; hosted Vidu answered one with an error frame on 2026-10-01.
+    if (Object.values(args).some((value) => value === null))
+      return emit({ _tag: "Reject", requestId: id, code: "invalid_command", message: name });
     switch (name) {
       case "create_avatar":
         return createAvatar(id, args, input.newAvatarId ?? "");

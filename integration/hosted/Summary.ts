@@ -322,6 +322,25 @@ const reconnected = (reconnect: AvatarRecord["calls"][number]["reconnect"]) => {
 
 type AvatarCall = AvatarRecord["calls"][number];
 
+const pictureActions = {
+  wait: "nothing done",
+  resume: "both tracks resumed",
+  cycle: "main_video paused and resumed",
+} as const;
+
+/** What was done for a call's picture, in turn, and what came after each. */
+const pictured = (call: AvatarCall) => {
+  if (call.picture === undefined) return reconnected(call.reconnect);
+  return (
+    call.picture
+      .map(
+        (stage) =>
+          `${pictureActions[stage.action]} at ${fromAllocation(stage.atMs)}${stage.failure === undefined ? "" : ` (failed: ${stage.failure})`}: ${stage.firstFrameMs === undefined ? "no frame within 5 s" : `the first frame ${seconds(stage.firstFrameMs)} after`}${stage.blocks === undefined ? "" : `, ${stage.blocks} blocks`}`,
+      )
+      .join("; ") || "nothing done for the picture"
+  );
+};
+
 /** A call's start, and its picture and sound once it was live. */
 const callOpening = (call: AvatarCall, label: string): ReadonlyArray<string> => {
   const lines = [
@@ -329,7 +348,7 @@ const callOpening = (call: AvatarCall, label: string): ReadonlyArray<string> => 
   ];
   if (call.liveMs !== undefined)
     lines.push(
-      `**${label}, picture and sound:** first frame ${call.firstFrameMs === undefined ? "never" : `${seconds(call.firstFrameMs)} after live`}, first block ${call.firstBlockMs === undefined ? "never" : `${seconds(call.firstBlockMs)} after live`}; ${reconnected(call.reconnect)}; ${call.video === undefined ? "no picture read" : `${call.video.frames} frames of ${listed(call.video.sizes)}${call.video.fps === undefined ? "" : ` at ${call.video.fps} fps`} (${call.video.lit} lit, ${call.video.distinct} distinct, ${call.video.lost} lost)`}; ${call.audio === undefined ? "no sound read" : `${call.audio.blocks} blocks at ${listed(call.audio.sampleRates.map(String))} Hz, ${listed(call.audio.channels.map(String))} channel(s), peak RMS ${call.audio.peakRms}`}; speech ${call.speech.map((stretch) => `${fromAllocation(stretch.fromMs)}–${seconds(stretch.toMs)}`).join(", ") || "none"}`,
+      `**${label}, picture and sound:** first frame ${call.firstFrameMs === undefined ? "never" : `${seconds(call.firstFrameMs)} after live`}, first block ${call.firstBlockMs === undefined ? "never" : `${seconds(call.firstBlockMs)} after live`}; ${pictured(call)}; ${call.video === undefined ? "no picture read" : `${call.video.frames} frames of ${listed(call.video.sizes)}${call.video.fps === undefined ? "" : ` at ${call.video.fps} fps`} (${call.video.lit} lit, ${call.video.distinct} distinct, ${call.video.lost} lost)`}; ${call.audio === undefined ? "no sound read" : `${call.audio.blocks} blocks at ${listed(call.audio.sampleRates.map(String))} Hz, ${listed(call.audio.channels.map(String))} channel(s), peak RMS ${call.audio.peakRms}`}; speech ${call.speech.map((stretch) => `${fromAllocation(stretch.fromMs)}–${seconds(stretch.toMs)}`).join(", ") || "none"}`,
     );
   return lines;
 };
@@ -350,7 +369,7 @@ const callEnd = (call: AvatarCall, label: string): ReadonlyArray<string> => {
   return end === undefined
     ? []
     : [
-        `**${label}, end:** end_call ${answered(end)}, against the SDK's 10 s default deadline; end_reason ${end.endReason ?? "unread"}, duration_seconds ${String(end.durationSeconds ?? "unread")}; ${phased(end.phases)}; ${end.afterEnded === undefined ? "ended never reported" : `${end.afterEnded.frames} frames and ${end.afterEnded.blocks} blocks in the ${seconds(end.afterEnded.forMs)} after ended`}`,
+        `**${label}, end:** end_call ${answered(end)}; end_reason ${end.endReason ?? "unread"}, duration_seconds ${String(end.durationSeconds ?? "unread")}; ${phased(end.phases)}; ${end.afterEnded === undefined ? "ended never reported" : `${end.afterEnded.frames} frames and ${end.afterEnded.blocks} blocks in the ${seconds(end.afterEnded.forMs)} after ended`}`,
       ];
 };
 
@@ -450,6 +469,12 @@ const avatarAnswers = (avatar: AvatarRecord): ReadonlyArray<string> => {
   const nulled = avatar.refusals.find((refusal) => refusal.changed !== undefined);
   const picture = calls.map((call, index) => {
     if (call.liveMs === undefined) return `call ${index + 1} never went live`;
+    if (call.picture !== undefined) {
+      const brought = call.picture.find((stage) => stage.firstFrameMs !== undefined);
+      return brought === undefined
+        ? `call ${index + 1} had no frame after ${call.picture.map((stage) => pictureActions[stage.action]).join(", then ")}`
+        : `call ${index + 1}'s picture came ${seconds(brought.firstFrameMs ?? 0)} after ${pictureActions[brought.action]}`;
+    }
     if (call.reconnect === undefined)
       return `call ${index + 1}'s first frame came ${seconds(call.firstFrameMs ?? 0)} after live, with no reconnect`;
     return `call ${index + 1} had no frame within 5 s of live; ${call.reconnect.firstFrameMs === undefined ? "none came within 5 s of the one reconnect either" : `after one reconnect the first came ${seconds(call.reconnect.firstFrameMs)} after its ready`}`;
