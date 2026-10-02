@@ -11,6 +11,7 @@
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -40,7 +41,10 @@ export interface Options {
   readonly uploadTimeout?: Duration.Input | undefined;
   /** From `create_avatar` or `attach_avatar` until the avatar is ready; 60 seconds by default. */
   readonly avatarTimeout?: Duration.Input | undefined;
-  /** From `start_call` until the call is live; 60 seconds by default. */
+  /**
+   * From `start_call` until the call is live, and from `end_call` until the model released the
+   * call; 60 seconds by default. Hosted Vidu answered an `end_call` 13.2 s after it was sent.
+   */
   readonly callTimeout?: Duration.Input | undefined;
 }
 
@@ -49,6 +53,7 @@ export type ProviderEvent =
   | { readonly _tag: "Transcript"; readonly transcript: Transcript; readonly source: SessionEvent }
   /** A refusal or a failed call, this client's or another's. */
   | { readonly _tag: "CommandError"; readonly error: CommandError; readonly source: SessionEvent }
+  /** A message the model does not document, or the character's tracks not resumed at `live`. */
   | { readonly _tag: "Diagnostic"; readonly error: ReactorError; readonly source?: SessionEvent };
 
 export interface ObservationOptions {
@@ -108,6 +113,8 @@ interface Internal {
   readonly timeline: ReadonlyArray<Entry>;
   /** Why the provider stopped observing, for good. */
   readonly ended: ReactorError | undefined;
+  /** The generation the character's tracks were last resumed on, as a call was live there. */
+  readonly resumed: bigint | undefined;
 }
 
 type Entry =
@@ -115,6 +122,9 @@ type Entry =
   | { readonly _tag: "CommandError"; readonly sequence: bigint; readonly error: CommandError };
 
 const bounds = { observation: 256, timeline: 64 };
+
+/** The character's picture and voice. */
+const outputs = ["main_video", "main_audio"] as const;
 
 type Command =
   | "create_avatar"
@@ -207,6 +217,43 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   const diagnose = (error: ReactorError, source?: SessionEvent) =>
     hub.publish({ _tag: "Diagnostic", error, ...(source === undefined ? {} : { source }) });
 
+  /**
+   * Resumes the character's tracks as a call goes live, and on a generation that replaced the one
+   * it went live on, as Reactor's own tutorial does on every `live`. With only the resume each
+   * connection makes as it becomes ready, the paid probe of 2026-10-01 had a call's voice and
+   * none of its picture.
+   */
+  const resumeOutputs = Effect.fnUntraced(function* (event: SessionEvent) {
+    const due = yield* SubscriptionRef.modify(internal, (current) =>
+      current === undefined ||
+      (current.state?.phase === "live" && current.resumed === event.generation)
+        ? ([false, current] as const)
+        : ([true, { ...current, resumed: event.generation }] as const),
+    );
+    if (!due) return;
+    const resumed = yield* Effect.exit(
+      Effect.gen(function* () {
+        const media = yield* session.decoded.pipe(
+          Effect.catchReason("ReactorError", "UnsupportedCapability", () => session.tracks),
+        );
+        // A generation since replaced resumes nothing; the live snapshot of its successor does.
+        if (media.generation !== event.generation) return;
+        for (const name of outputs) yield* media.setTrackActive(name, true);
+      }),
+    );
+    if (Exit.isFailure(resumed))
+      yield* diagnose(
+        Cause.findErrorOption(resumed.cause).pipe(
+          Option.getOrElse(() =>
+            ReactorError.fromCode("InvalidState", "the character's tracks were not resumed", {
+              detail: resumed.cause,
+            }),
+          ),
+        ),
+        event,
+      );
+  });
+
   /** Applies one session event: a snapshot, a transcript or a command error. */
   const apply = Effect.fnUntraced(function* (event: SessionEvent) {
     const sequence = event.sequence;
@@ -225,6 +272,8 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           if (Result.isFailure(decoded)) yield* malformed(decoded.failure);
           else {
             const state = decoded.success;
+            // Before the snapshot is applied, so a call is live to its caller once it can be seen.
+            if (state.phase === "live") yield* resumeOutputs(event);
             yield* SubscriptionRef.update(internal, record({ _tag: "State", sequence, state }));
             yield* hub.publish({ _tag: "State", state, source: event });
           }
@@ -282,12 +331,13 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     operation: Command,
     data: Schema.JsonObject,
     uploads?: ReadonlyMap<string, UploadReference>,
+    replyTimeout: Duration.Duration = limits.reply,
   ) =>
     lock.withPermit(
       Effect.gen(function* () {
         const since = (yield* SubscriptionRef.get(internal))?.applied ?? observation.revision;
         const source = yield* session.command(operation, data, {
-          replyTimeout: limits.reply,
+          replyTimeout,
           ...(uploads === undefined ? {} : { uploads }),
         });
         const known = yield* applied(operation, source);
@@ -339,8 +389,9 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     type: string,
     schema: Schema.Decoder<A>,
     data: Schema.JsonObject = {},
+    replyTimeout: Duration.Duration = limits.reply,
   ): Effect.Effect<A, CommandFailure> =>
-    dispatch(operation, data).pipe(
+    dispatch(operation, data, undefined, replyTimeout).pipe(
       Effect.flatMap(({ source }) =>
         source.kind === "message" && source.type === type
           ? Schema.decodeEffect(schema)(source.data ?? {}).pipe(
@@ -537,6 +588,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     applied: observation.revision,
     timeline: [],
     ended: undefined,
+    resumed: undefined,
   });
   yield* observation.events.pipe(
     Stream.runForEach(apply),
@@ -565,7 +617,8 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     updateCall,
     setReferenceImages,
     clearReferenceImages,
-    endCall: answered("end_call", "call_ended", CallEnded),
+    // The model answers once the call is released, which took longer than a reply deadline.
+    endCall: answered("end_call", "call_ended", CallEnded, {}, limits.call),
     getState,
   } satisfies Provider;
 });

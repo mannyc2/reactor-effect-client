@@ -1,6 +1,6 @@
 /** Vidu S2-Avatar through its provider, on a simulated Reactor at the timing each case states. */
 import { assert, layer } from "@effect/vitest";
-import { Effect, Fiber, Stream } from "effect";
+import { Effect, Fiber, Option, Stream } from "effect";
 import { CoordinatorClient, Reactor, ReactorTest, ViduS2Avatar } from "../src/index.js";
 import type { CommandFailure } from "../src/ReactorError.js";
 import { environment } from "./fixtures/Simulated.js";
@@ -12,7 +12,8 @@ const timing = ReactorTest.Timing.fixed({
   call: "4 seconds",
   answer: "1 second",
   speech: "2 seconds",
-  hangup: "1 second",
+  // Hosted Vidu answered an end_call after 13.2 s, past a command's 10 s reply deadline.
+  hangup: "13 seconds",
 });
 
 const photo = {
@@ -44,10 +45,10 @@ const refusal = (failure: CommandFailure) =>
     : [failure.reason._tag, failure.context.outcome];
 
 layer(environment({ timing }))("a call", (it) => {
-  it.effect("goes from a photo to a live call, a spoken answer and its end", () =>
+  it.effect("goes from a photo to a live call, its picture, a spoken answer and its end", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow());
-      const { provider } = yield* connect;
+      const { session, provider } = yield* connect;
       assert.strictEqual((yield* provider.state).phase, "idle");
       const avatar = yield* provider.createAvatar({ ...photo, name: "Tina" });
       assert.strictEqual(avatar.phase, "avatar_ready");
@@ -63,6 +64,11 @@ layer(environment({ timing }))("a call", (it) => {
       );
       const live = yield* provider.startCall({ persona, greeting: "Say hello." });
       assert.deepStrictEqual([live.phase, live.control_ready], ["live", true]);
+      const media = yield* session.decoded;
+      const frame = yield* media
+        .video(ViduS2Avatar.tracks.video)
+        .pipe(Stream.runHead, Effect.timeoutOption("1 second"));
+      assert.isTrue(Option.isSome(Option.flatten(frame)), "no frame of the live call arrived");
       yield* provider.say("What lives in the deepest tank?");
       // The caller's line is heard at once; the character speaks its greeting, then its answer.
       assert.deepStrictEqual(yield* Fiber.join(transcripts), ["user", "character", "character"]);
