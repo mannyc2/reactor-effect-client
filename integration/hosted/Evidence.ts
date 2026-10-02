@@ -969,6 +969,358 @@ export const UnconnectedRecord = Schema.Struct({
 });
 export type UnconnectedRecord = typeof UnconnectedRecord.Type;
 
+/**
+ * What a command met on the wire in `avatar`: an acknowledgement, a message
+ * of a type, an error frame with its code, the SDK's reply deadline, or
+ * another failure; and when it was sent and settled.
+ */
+export const AvatarWire = Schema.Struct({
+  sentMs: Ms,
+  answeredMs: Ms,
+  wire: Schema.Literals(["ack", "message", "error", "timeout", "failed"]),
+  /** A message's type, as a code. */
+  type: Schema.optionalKey(Schema.String),
+  /** An error frame's code, as a code. */
+  code: Schema.optionalKey(Schema.String),
+  /** Another failure's reason. */
+  reason: Schema.optionalKey(Schema.String),
+  /** A failure's dispatch outcome. */
+  outcome: Schema.optionalKey(Outcome),
+});
+export type AvatarWire = typeof AvatarWire.Type;
+
+/** A phase a `session_state` reported after a command, from the command's send. */
+const AvatarPhase = Schema.Struct({ phase: Schema.String, afterMs: Ms });
+
+/** A `session_state`'s phase, booleans and numbers, and its end_reason and call_mode, as codes. */
+const AvatarValues = Schema.Record(
+  Schema.String,
+  Schema.Union([Schema.String, Schema.Finite, Schema.Boolean]),
+);
+
+/**
+ * A command sent to be refused: what came back on the wire, and what was
+ * broadcast in the 2 s after it was answered.
+ */
+export const AvatarRefusal = Schema.Struct({
+  /** What it asks, in the check's words. */
+  probe: Schema.String,
+  command: Schema.String,
+  ...AvatarWire.fields,
+  /** The first `command_error` broadcast after the send. */
+  commandError: Schema.optionalKey(
+    Schema.Struct({
+      atMs: Ms,
+      code: Schema.optionalKey(Schema.String),
+      origin: Schema.optionalKey(Schema.String),
+      command: Schema.optionalKey(Schema.String),
+      retryable: Schema.optionalKey(Schema.Boolean),
+      /** Whether it named a trace id, never the id. */
+      traceId: Schema.Boolean,
+      /** Whether it came before the command's own answer; absent when none came. */
+      beforeAnswer: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+  /** The first `session_state` after the send: whether its `last_error` was set, and its code. */
+  state: Schema.optionalKey(
+    Schema.Struct({ atMs: Ms, lastError: Schema.Boolean, code: Schema.optionalKey(Schema.String) }),
+  ),
+  /** The `session_state` fields that read otherwise after it, by name, the call's clocks aside. */
+  changed: Schema.String.pipe(Schema.Array, Schema.optionalKey),
+});
+export type AvatarRefusal = typeof AvatarRefusal.Type;
+
+/**
+ * What a call's connection did for the call's picture: nothing, a resume of both of the
+ * character's tracks, or a pause and resume of `main_video`.
+ */
+export const PictureAction = Schema.Literals(["wait", "resume", "cycle"]);
+export type PictureAction = typeof PictureAction.Type;
+
+/** One call: its start and phases, its picture and sound from live, a `say` in it, and its end. */
+export const AvatarCall = Schema.Struct({
+  start: AvatarWire,
+  phases: Schema.Array(AvatarPhase),
+  liveMs: Schema.optionalKey(Ms),
+  /** The `session_state` that reported live, by its values. */
+  atLive: Schema.optionalKey(AvatarValues),
+  /** The first frame and the first block after live, from live. */
+  firstFrameMs: Schema.optionalKey(Ms),
+  firstBlockMs: Schema.optionalKey(Ms),
+  /**
+   * What was done for the picture, in turn, until a frame came within 5 s of it: each with the
+   * first frame and the blocks that came in those 5 s, from when it was done.
+   */
+  picture: Schema.Struct({
+    action: PictureAction,
+    atMs: Ms,
+    failure: Schema.optionalKey(Schema.String),
+    firstFrameMs: Schema.optionalKey(Ms),
+    blocks: Schema.optionalKey(Schema.Int),
+  }).pipe(Schema.Array, Schema.optionalKey),
+  /**
+   * The one reconnect the first paid run made when no frame came within 5 s of live, and the
+   * first frame after its ready, from that ready.
+   */
+  reconnect: Schema.optionalKey(
+    Schema.Struct({
+      startedMs: Ms,
+      readyMs: Schema.optionalKey(Ms),
+      failure: Schema.optionalKey(Schema.String),
+      firstFrameMs: Schema.optionalKey(Ms),
+    }),
+  ),
+  /** What arrived from live until `end_call` was sent. */
+  video: Schema.optionalKey(VideoSummary),
+  audio: Schema.optionalKey(AudioSummary),
+  /** The sound's level each 100 ms from live, RMS from 0 to 1; null where no block arrived. */
+  levels: Schema.optionalKey(
+    Schema.Struct({ fromMs: Ms, rms: Schema.Finite.pipe(Schema.NullOr, Schema.Array) }),
+  ),
+  /** Each stretch of speech: 100 ms levels of 0.01 RMS or more, ended by 300 ms below it. */
+  speech: Schema.Array(Schema.Struct({ fromMs: Ms, toMs: Ms })),
+  /** A `say`: the user's transcript and the answer's sound, from its send. */
+  say: Schema.optionalKey(
+    Schema.Struct({
+      ...AvatarWire.fields,
+      userTranscriptMs: Schema.optionalKey(Ms),
+      onsetMs: Schema.optionalKey(Ms),
+    }),
+  ),
+  end: Schema.optionalKey(
+    Schema.Struct({
+      ...AvatarWire.fields,
+      endReason: Schema.optionalKey(Schema.String),
+      durationSeconds: Schema.optionalKey(Schema.Finite),
+      phases: Schema.Array(AvatarPhase),
+      /** Frames and blocks that still arrived in the time after `ended`. */
+      afterEnded: Schema.optionalKey(
+        Schema.Struct({ forMs: Ms, frames: Schema.Int, blocks: Schema.Int }),
+      ),
+    }),
+  ),
+});
+export type AvatarCall = typeof AvatarCall.Type;
+
+/**
+ * `avatar`: one Vidu S2-Avatar session driven through the raw `Session`, to
+ * record what Reactor's docs leave open. Its times count from the session's
+ * allocation, in milliseconds on the run's clock. It keeps codes, names,
+ * numbers and booleans: never a transcript, a reason, a persona, a voice's
+ * description, a URL, or the photo's bytes or path.
+ */
+export const AvatarRecord = Schema.Struct({
+  photo: Schema.Struct({ bytes: Schema.Int, type: Schema.Literals(["png", "jpeg", "webp"]) }),
+  /** The allocation on the run's timeline, as `sessions` has it. */
+  allocatedMs: Schema.optionalKey(Ms),
+  /** The deployment's schema: its title and version as codes, and the commands it declares. */
+  contract: Schema.optionalKey(
+    Schema.Struct({
+      title: Schema.optionalKey(Schema.String),
+      version: Schema.optionalKey(Schema.String),
+      commands: Schema.Array(Schema.String),
+      cloneVoice: Schema.Boolean,
+    }),
+  ),
+  /** The first `session_state`: which documented fields it set, set null or left out. */
+  first: Schema.optionalKey(
+    Schema.Struct({
+      atMs: Ms,
+      present: Schema.Array(Schema.String),
+      nulls: Schema.Array(Schema.String),
+      absent: Schema.Array(Schema.String),
+      undocumented: Schema.Array(Schema.String),
+      values: AvatarValues,
+    }),
+  ),
+  getState: Schema.optionalKey(AvatarWire),
+  voices: Schema.optionalKey(
+    Schema.Struct({
+      ...AvatarWire.fields,
+      system: Schema.Int,
+      /** The system voices' ids that are codes. */
+      ids: Schema.Array(Schema.String),
+      cloned: Schema.Boolean,
+      defaultVoice: Schema.Boolean,
+    }),
+  ),
+  refusals: Schema.Array(AvatarRefusal),
+  avatar: Schema.optionalKey(
+    Schema.Struct({
+      /** `submitted`, or the reason the upload failed with. */
+      upload: Schema.Struct({ startedMs: Ms, endedMs: Ms, outcome: Schema.String }),
+      create: Schema.optionalKey(AvatarWire),
+      phases: Schema.Array(AvatarPhase),
+      status: Schema.optionalKey(Schema.String),
+      /** How long the `avatar_id` was; the id itself is kept only in memory. */
+      idLength: Schema.optionalKey(Schema.Int),
+    }),
+  ),
+  calls: Schema.Array(AvatarCall),
+  /** The first call's greeting, from live. */
+  greeting: Schema.optionalKey(
+    Schema.Struct({
+      onsetMs: Schema.optionalKey(Ms),
+      transcriptMs: Schema.optionalKey(Ms),
+      transcripts: Schema.Int,
+      /** Each one's `final`, or null where it gave none. */
+      finals: Schema.Boolean.pipe(Schema.NullOr, Schema.Array),
+    }),
+  ),
+  /** The `interrupt` sent while the character answered the first call's `say`. */
+  interrupt: Schema.optionalKey(
+    Schema.Struct({
+      ...AvatarWire.fields,
+      /** From the answer's first sound to the send. */
+      afterOnsetMs: Schema.optionalKey(Ms),
+      /** From the send until the sound fell silent. */
+      silenceMs: Schema.optionalKey(Ms),
+      /** The answer's first character transcript, from the send; negative when it came before. */
+      cut: Schema.optionalKey(
+        Schema.Struct({ afterMs: Ms, final: Schema.NullOr(Schema.Boolean), length: Schema.Int }),
+      ),
+    }),
+  ),
+  /** `update_call` to a voice `list_voices` named other than the one in effect. */
+  voiceChange: Schema.optionalKey(
+    Schema.Struct({
+      ...AvatarWire.fields,
+      voice: Schema.optionalKey(Schema.String),
+      applied: Schema.Array(Schema.String),
+      changed: Schema.Boolean,
+    }),
+  ),
+  attach: Schema.optionalKey(
+    Schema.Struct({ ...AvatarWire.fields, phases: Schema.Array(AvatarPhase) }),
+  ),
+  lastState: Schema.optionalKey(
+    Schema.Struct({ ...AvatarWire.fields, phase: Schema.optionalKey(Schema.String) }),
+  ),
+  /** Every `session_state`, broadcast or a reply to `get_state`, by its values. */
+  states: Schema.Array(
+    Schema.Struct({
+      atMs: Ms,
+      via: Schema.Literals(["broadcast", "reply"]),
+      values: AvatarValues,
+    }),
+  ),
+  /** The frames and blocks that arrived in each phase, from the first `session_state`. */
+  windows: Schema.Array(
+    Schema.Struct({
+      phase: Schema.String,
+      fromMs: Ms,
+      toMs: Ms,
+      frames: Schema.Int,
+      blocks: Schema.Int,
+    }),
+  ),
+  /**
+   * Every transcript: who spoke, whether it was final (null where it did not
+   * say), and its length, never its text.
+   */
+  transcripts: Schema.Array(
+    Schema.Struct({
+      atMs: Ms,
+      speaker: Schema.optionalKey(Schema.String),
+      final: Schema.NullOr(Schema.Boolean),
+      length: Schema.Int,
+    }),
+  ),
+  /** The model messages that arrived, by type. */
+  messages: Counts,
+  /**
+   * Every session event in order, from before the session connected: a model
+   * message's kind, type and correlation, a command error's reason and code,
+   * and for the rest a code such as a status or a track's name.
+   */
+  events: Schema.Array(
+    Schema.Struct({
+      atMs: Ms,
+      tag: Schema.String,
+      kind: Schema.optionalKey(Schema.Literals(["ack", "message"])),
+      type: Schema.optionalKey(Schema.String),
+      correlation: Schema.optionalKey(Schema.String),
+      reason: Schema.optionalKey(Schema.String),
+      code: Schema.optionalKey(Schema.String),
+      detail: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  /** The session's picture and sound, from its connection to its close. */
+  video: Schema.optionalKey(VideoSummary),
+  audio: Schema.optionalKey(AudioSummary),
+});
+export type AvatarRecord = typeof AvatarRecord.Type;
+
+/**
+ * `character`: one call through the SDK's `ViduS2Avatar` provider. Its times
+ * count from the session's allocation, in milliseconds on the run's clock,
+ * unless a field says otherwise. It keeps codes, numbers and lengths: never a
+ * transcript, a persona, a reason, or the photo's bytes or path.
+ */
+export const CharacterRecord = Schema.Struct({
+  photo: Schema.Struct({ bytes: Schema.Int, type: Schema.Literals(["png", "jpeg", "webp"]) }),
+  /** The allocation on the run's timeline, as `sessions` has it. */
+  allocatedMs: Schema.optionalKey(Ms),
+  /** Each operation in order: when it started and settled, and `ok` or its failure as the library states it. */
+  steps: Schema.Array(
+    Schema.Struct({ name: Schema.String, startedMs: Ms, endedMs: Ms, outcome: Schema.String }),
+  ),
+  /** Each phase the provider's snapshots moved to, as it was seen. */
+  phases: Schema.Array(Schema.Struct({ phase: Schema.String, atMs: Ms })),
+  /** The call: when `startCall` returned it live, and its picture and sound until `endCall` was called. */
+  call: Schema.optionalKey(
+    Schema.Struct({
+      liveMs: Ms,
+      /** The live snapshot's `call_max_seconds`. */
+      callMaxSeconds: Schema.optionalKey(Schema.Finite),
+      /** From live: the first frame, the greeting's first sound, and the silence after it. */
+      firstFrameMs: Schema.optionalKey(Ms),
+      greetingOnsetMs: Schema.optionalKey(Ms),
+      greetingSilenceMs: Schema.optionalKey(Ms),
+      video: VideoSummary,
+      audio: AudioSummary,
+    }),
+  ),
+  /** The `say`: when it was sent, and from then the user's transcript, the answer's sound and the character's transcript. */
+  say: Schema.optionalKey(
+    Schema.Struct({
+      sentMs: Ms,
+      userTranscriptMs: Schema.optionalKey(Ms),
+      onsetMs: Schema.optionalKey(Ms),
+      characterTranscriptMs: Schema.optionalKey(Ms),
+    }),
+  ),
+  /** What `endCall` returned: the end's reason as a code, and how long the call was live. */
+  end: Schema.optionalKey(
+    Schema.Struct({ endReason: Schema.String, durationSeconds: Schema.Finite }),
+  ),
+  /** Every transcript the provider gave: who spoke, whether it was final, and its length, never its text. */
+  transcripts: Schema.Array(
+    Schema.Struct({
+      atMs: Ms,
+      speaker: Schema.Literals(["user", "character"]),
+      final: Schema.Boolean,
+      length: Schema.Int,
+    }),
+  ),
+  /** Every `command_error` the provider gave, by its codes. */
+  commandErrors: Schema.Array(
+    Schema.Struct({
+      atMs: Ms,
+      command: Schema.String,
+      origin: Schema.String,
+      code: Schema.String,
+      retryable: Schema.Boolean,
+    }),
+  ),
+  /** The provider's diagnostics, by their reason's tag. */
+  diagnostics: Schema.Array(Schema.Struct({ atMs: Ms, reason: Schema.String })),
+  /** The session's picture and sound, from its connection to its close. */
+  video: Schema.optionalKey(VideoSummary),
+  audio: Schema.optionalKey(AudioSummary),
+});
+export type CharacterRecord = typeof CharacterRecord.Type;
+
 export const Evidence = Schema.Struct({
   format: Schema.Literal(format),
   runId: Schema.String,
@@ -1171,6 +1523,8 @@ export const Evidence = Schema.Struct({
   show: Schema.optionalKey(ShowRecord),
   unconnected: Schema.optionalKey(UnconnectedRecord),
   showreel: Schema.optionalKey(ShowreelRecord),
+  avatar: Schema.optionalKey(AvatarRecord),
+  character: Schema.optionalKey(CharacterRecord),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -1196,6 +1550,8 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   show: ["playout", "show"],
   unconnected: ["unconnected"],
   showreel: ["playout", "showreel"],
+  avatar: ["server", "network", "avatar"],
+  character: ["network", "character"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */

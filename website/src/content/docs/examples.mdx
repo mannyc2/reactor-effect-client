@@ -7,7 +7,7 @@ import { Aside, Badge, LinkCard } from "@astrojs/starlight/components";
 
 Every example is a small Effect application in the repository, typechecked against the packages on
 every change. Most run offline on `ReactorTest` with no API key. All but the rundown are written to
-run on hosted H3 with `REACTOR_API_KEY` set, where only the layer changes; no example has run there
+run on hosted Reactor with `REACTOR_API_KEY` set, where only the layer changes; no example has run there
 yet, though paid checks ran most of the SDK they use
 ([hosted evidence](/reactor-effect-client/reference/hosted-evidence/)). Clone the repository and
 install once:
@@ -51,6 +51,22 @@ node src/main.ts "A lighthouse on a sea cliff at dusk" "A neon-lit alley in the 
 <LinkCard
   title="examples/terminal"
   href="https://github.com/mannyc2/reactor-effect-client/tree/main/examples/terminal"
+/>
+
+## Avatar <Badge text="offline or live" variant="tip" />
+
+A Vidu S2-Avatar character made from one photo, and one call with it: a greeting, an answer to a
+line sent with `say`, the character's picture decoded in your process and both sides' transcripts.
+On Node the caller speaks only through `say`. With a key, set `AVATAR_PHOTO` to a photo of one
+person. [A talking character](/reactor-effect-client/guides/avatar/) walks through it.
+
+```sh
+node examples/avatar/src/main.ts
+```
+
+<LinkCard
+  title="examples/avatar"
+  href="https://github.com/mannyc2/reactor-effect-client/tree/main/examples/avatar"
 />
 
 ## Live channel <Badge text="offline or live" variant="tip" />

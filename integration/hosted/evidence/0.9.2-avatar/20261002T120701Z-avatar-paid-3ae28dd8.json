@@ -1,0 +1,3756 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "3ae28dd8",
+  "check": "avatar",
+  "mode": "paid",
+  "startedAt": "2026-10-02T12:07:01.545Z",
+  "finishedAt": "2026-10-02T12:07:59.582Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "b7ce932a097861be5c972189675e723456972249",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.9.2",
+      "reactor-effect-native": "0.9.2",
+      "effect": "4.0.0-rc.117",
+      "@effect/platform-node": "4.0.0-rc.117"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "9390d1775d66cd0307c90b1db89c969d7adfd2592086ec1b07a5f7acdd614da4",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "maintainer's Linux workstation, network not described",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 1.26,
+    "totalUsd": 2.1,
+    "reservedBeforeUsd": 0.84,
+    "rate": {
+      "creditsPerSecond": 70,
+      "creditsPerDollar": 10000,
+      "per": "second"
+    },
+    "worstCaseUsd": 1.26,
+    "estimatedUsd": 0.406
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 180,
+      "expiresAt": 1790943061
+    }
+  ],
+  "sessions": [
+    {
+      "id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+      "allocatedMs": 432,
+      "capEndsAt": "2026-10-02T12:10:01.995Z",
+      "close": {
+        "requestedMs": 57446,
+        "reportedMs": 57865,
+        "confirmed": true,
+        "report": {
+          "localClosed": true,
+          "allocation": "known",
+          "ownership": "owned",
+          "sessionId": "18c870a2-de68-417e-b362-2d711a7ed4da",
+          "remote": {
+            "attempted": true,
+            "responseReceived": true,
+            "confirmed": true,
+            "evidence": "terminal",
+            "deleteStatus": 200,
+            "state": "CLOSED"
+          },
+          "unpublishSubmitted": [],
+          "unresolvedPublications": [],
+          "localErrors": []
+        }
+      },
+      "trail": [
+        {
+          "atMs": 58017,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 58017
+    }
+  ],
+  "milestones": [
+    {
+      "atMs": 1,
+      "step": "admitted",
+      "detail": "worst case $1.2600"
+    },
+    {
+      "atMs": 101,
+      "step": "minted"
+    },
+    {
+      "atMs": 433,
+      "step": "allocated",
+      "detail": "18c870a2-de68-417e-b362-2d711a7ed4da"
+    },
+    {
+      "atMs": 2914,
+      "step": "connected"
+    },
+    {
+      "atMs": 3565,
+      "step": "contract read"
+    },
+    {
+      "atMs": 6696,
+      "step": "avatar ready"
+    },
+    {
+      "atMs": 10778,
+      "step": "live",
+      "detail": "call 1"
+    },
+    {
+      "atMs": 36283,
+      "step": "call ended",
+      "detail": "message call_ended"
+    },
+    {
+      "atMs": 41017,
+      "step": "live",
+      "detail": "call 2"
+    },
+    {
+      "atMs": 57414,
+      "step": "call ended",
+      "detail": "message call_ended"
+    },
+    {
+      "atMs": 57865,
+      "step": "closed",
+      "detail": "18c870a2-de68-417e-b362-2d711a7ed4da confirmed"
+    },
+    {
+      "atMs": 57866,
+      "step": "avatar observed"
+    },
+    {
+      "atMs": 58017,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [],
+  "criteria": [
+    {
+      "name": "the session's first snapshot arrived",
+      "passed": true
+    },
+    {
+      "name": "the avatar became ready",
+      "passed": true
+    },
+    {
+      "name": "the first call went live",
+      "passed": true
+    },
+    {
+      "name": "character video arrived during the first call",
+      "passed": true
+    },
+    {
+      "name": "character audio arrived during the first call",
+      "passed": true
+    },
+    {
+      "name": "end_call was answered with call_ended",
+      "passed": true
+    },
+    {
+      "name": "the second call went live with video",
+      "passed": true
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "spans": [
+    {
+      "name": "CoordinatorClient.mintToken",
+      "startMs": 1.8,
+      "durationMs": 99,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 102.8,
+      "durationMs": 2811.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.model.name": "reactor/vidu-s2-avatar",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da"
+      }
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 434,
+      "durationMs": 2479.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da"
+      }
+    },
+    {
+      "name": "Session.control",
+      "startMs": 2916.4,
+      "durationMs": 509.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_schema",
+        "reactor.request.id": "ctrl_f4c5d7e5de41254ab2352232bc8e87af_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "CoordinatorClient.inspect",
+      "startMs": 3426.3,
+      "durationMs": 138,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3566.9,
+      "durationMs": 29.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3596.9,
+      "durationMs": 486.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "list_voices",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_2",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 4084.3,
+      "durationMs": 28.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "clone_voice",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_3",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 4113.5,
+      "durationMs": 27.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "say",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_4",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.upload",
+      "startMs": 4143.3,
+      "durationMs": 416.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.upload.mime_type": "image/jpeg",
+        "reactor.upload.size": 321196,
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 4560.1,
+      "durationMs": 2135,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "create_avatar",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_5",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 6697.2,
+      "durationMs": 28.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "start_call",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_6",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 17284.4,
+      "durationMs": 29.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "say",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_7",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 21900.2,
+      "durationMs": 31.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "interrupt",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_8",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 22942.8,
+      "durationMs": 33.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "update_call",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_9",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 22977.5,
+      "durationMs": 29.3,
+      "status": "error",
+      "attributes": {
+        "reactor.operation": "say",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_10",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied",
+        "error.type": "Remote"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 25008.3,
+      "durationMs": 29,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_11",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 25038.1,
+      "durationMs": 27.4,
+      "status": "error",
+      "attributes": {
+        "reactor.operation": "update_call",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_12",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied",
+        "error.type": "Remote"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 27066.7,
+      "durationMs": 28.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_13",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 27096.6,
+      "durationMs": 241.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "update_call",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_14",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 27339.1,
+      "durationMs": 6943.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "end_call",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_15",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 36286.4,
+      "durationMs": 246.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "attach_avatar",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_16",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 36533.8,
+      "durationMs": 27.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "start_call",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_17",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 41269.5,
+      "durationMs": 28,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "say",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_18",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 48053.1,
+      "durationMs": 7360.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "end_call",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_19",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.command",
+      "startMs": 57416.3,
+      "durationMs": 27,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_f4c5d7e5de41254ab2352232bc8e87af_20",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.command.outcome": "replied"
+      }
+    },
+    {
+      "name": "Session.close",
+      "startMs": 57445.9,
+      "durationMs": 418.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "CoordinatorClient.terminate",
+      "startMs": 57452.7,
+      "durationMs": 411.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "CoordinatorClient.inspect",
+      "startMs": 57877,
+      "durationMs": 140,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "18c870a2-de68-417e-b362-2d711a7ed4da"
+      }
+    }
+  ],
+  "server": {
+    "cluster": "5a004973-4a49-4f0e-96ac-6cd7637f61eb",
+    "zone": "us-east",
+    "serverVersion": "1.20260930.52",
+    "transport": "webrtc/1.0"
+  },
+  "network": {
+    "samples": [
+      {
+        "atMs": 2919,
+        "local": "relay",
+        "rttMs": 26
+      },
+      {
+        "atMs": 3920,
+        "local": "relay",
+        "rttMs": 25,
+        "receivedKbps": 312.8,
+        "fps": 4,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 4922,
+        "local": "prflx",
+        "rttMs": 26,
+        "fps": 5,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 5923,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 33.8,
+        "fps": 5,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 6924,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 43.4,
+        "fps": 4,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 7925,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 30.3,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 8926,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 38.6,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 9927,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 29.2,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 10929,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 39.4,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 11930,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 107.5,
+        "fps": 25,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 12931,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 47.4,
+        "fps": 25,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 13932,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 1999.5,
+        "fps": 25,
+        "jitterMs": 5,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 14933,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 9365.5,
+        "fps": 24,
+        "jitterMs": 12,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 15934,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 8917.6,
+        "fps": 24,
+        "jitterMs": 11,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 16935,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 8713,
+        "fps": 25,
+        "jitterMs": 11,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 17935,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 8593.8,
+        "fps": 25,
+        "jitterMs": 6,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 18936,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 8850.8,
+        "fps": 25,
+        "jitterMs": 13,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 19937,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 8846.7,
+        "fps": 25,
+        "jitterMs": 9,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 20938,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 8825.5,
+        "fps": 24,
+        "jitterMs": 11,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 21948,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 8768.6,
+        "fps": 25,
+        "jitterMs": 11,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 22950,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 8926.6,
+        "fps": 26,
+        "jitterMs": 15,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 23952,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 8870.7,
+        "fps": 25,
+        "jitterMs": 9,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 24953,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 8573.7,
+        "fps": 25,
+        "jitterMs": 6,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 25954,
+        "local": "prflx",
+        "rttMs": 28,
+        "receivedKbps": 8717.5,
+        "fps": 25,
+        "jitterMs": 9,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 26955,
+        "local": "prflx",
+        "rttMs": 28,
+        "receivedKbps": 9027.2,
+        "fps": 25,
+        "jitterMs": 15,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 27956,
+        "local": "relay",
+        "rttMs": 25,
+        "fps": 17,
+        "jitterMs": 12,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 28958,
+        "local": "prflx",
+        "rttMs": 27,
+        "jitterMs": 12,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 29959,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 34.8,
+        "jitterMs": 12,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 30960,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 28,
+        "jitterMs": 12,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 31961,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 28.5,
+        "jitterMs": 12,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 32962,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 28.9,
+        "jitterMs": 12,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 33963,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 33.2,
+        "jitterMs": 11,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 34964,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 41.2,
+        "fps": 4,
+        "jitterMs": 11,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 35966,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 31.5,
+        "fps": 4,
+        "jitterMs": 8,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 36968,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 48.2,
+        "fps": 4,
+        "jitterMs": 7,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 37969,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 37.4,
+        "jitterMs": 7,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 38970,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 28.5,
+        "jitterMs": 7,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 39970,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 29.1,
+        "jitterMs": 7,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 40971,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 37.4,
+        "jitterMs": 7,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 41975,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 50.3,
+        "fps": 26,
+        "jitterMs": 2,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 42976,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 49,
+        "fps": 25,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 43977,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 2503.4,
+        "fps": 24,
+        "jitterMs": 6,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 44978,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 9973.7,
+        "fps": 25,
+        "jitterMs": 14,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 45979,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 8891.4,
+        "fps": 25,
+        "jitterMs": 9,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 46980,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 8803.6,
+        "fps": 25,
+        "jitterMs": 8,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 47981,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 8576.2,
+        "fps": 25,
+        "jitterMs": 8,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 48981,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 1907.1,
+        "fps": 6,
+        "jitterMs": 10,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 49982,
+        "local": "prflx",
+        "rttMs": 27,
+        "receivedKbps": 29.7,
+        "jitterMs": 10,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 50983,
+        "local": "prflx",
+        "rttMs": 30,
+        "receivedKbps": 33.1,
+        "jitterMs": 10,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 51984,
+        "local": "prflx",
+        "rttMs": 30,
+        "receivedKbps": 29.1,
+        "jitterMs": 10,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 52985,
+        "local": "prflx",
+        "rttMs": 30,
+        "receivedKbps": 29.5,
+        "jitterMs": 10,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 53986,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 28.5,
+        "jitterMs": 10,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 54987,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 32.7,
+        "jitterMs": 13,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 55988,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 38.6,
+        "fps": 3,
+        "jitterMs": 12,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 56989,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 33,
+        "fps": 5,
+        "jitterMs": 9,
+        "lossRatio": 0
+      }
+    ],
+    "pair": "prflx"
+  },
+  "avatar": {
+    "photo": {
+      "bytes": 321196,
+      "type": "jpeg"
+    },
+    "allocatedMs": 432,
+    "contract": {
+      "title": "vidu-s2-avatar",
+      "version": "(text, 6 chars)",
+      "commands": [
+        "set_reference_images",
+        "start_call",
+        "interrupt",
+        "clone_voice",
+        "update_call",
+        "say",
+        "create_avatar",
+        "end_call",
+        "get_state",
+        "clear_reference_images",
+        "list_voices",
+        "attach_avatar"
+      ],
+      "cloneVoice": true
+    },
+    "first": {
+      "atMs": 2508,
+      "present": [
+        "phase",
+        "voice",
+        "persona_set",
+        "warmup_attempts",
+        "control_ready",
+        "video_receiving",
+        "audio_receiving",
+        "mic_forwarding",
+        "camera_forwarding",
+        "reference_images"
+      ],
+      "nulls": [
+        "avatar_id",
+        "avatar_status",
+        "avatar_name",
+        "call_mode",
+        "call_started_at",
+        "call_max_seconds",
+        "call_elapsed_seconds",
+        "last_frame_age_ms",
+        "end_reason",
+        "last_error"
+      ],
+      "absent": [],
+      "undocumented": [],
+      "values": {
+        "persona_set": false,
+        "audio_receiving": false,
+        "phase": "idle",
+        "control_ready": false,
+        "camera_forwarding": false,
+        "mic_forwarding": false,
+        "video_receiving": false,
+        "warmup_attempts": 0
+      }
+    },
+    "getState": {
+      "sentMs": 3134,
+      "answeredMs": 3164,
+      "wire": "message",
+      "type": "session_state"
+    },
+    "voices": {
+      "sentMs": 3165,
+      "answeredMs": 3651,
+      "wire": "message",
+      "type": "voices",
+      "system": 56,
+      "ids": [
+        "Tina",
+        "Cindy",
+        "Sunnybobi",
+        "Raymond",
+        "Ethan",
+        "Serena",
+        "Harvey",
+        "Maia",
+        "Evan",
+        "Qiao",
+        "Momo",
+        "Wil",
+        "Angel",
+        "Mia",
+        "Joyner",
+        "Gold",
+        "Katerina",
+        "Ryan",
+        "Jennifer",
+        "Aiden",
+        "Mione",
+        "Sunny",
+        "Dylan",
+        "Eric",
+        "Peter",
+        "Marcus",
+        "Li",
+        "Kiki",
+        "Rocky",
+        "Sohee",
+        "Lenn",
+        "Sonrisa",
+        "Bodega",
+        "Emilien",
+        "Andre",
+        "Alek",
+        "Rizky",
+        "Roya",
+        "Arda",
+        "Hana",
+        "Dolce",
+        "Jakub",
+        "Griet",
+        "Marina",
+        "Siiri",
+        "Ingrid",
+        "Sigga",
+        "Bea",
+        "Chloe"
+      ],
+      "cloned": true,
+      "defaultVoice": true
+    },
+    "refusals": [
+      {
+        "probe": "clone_voice with an invalid name",
+        "command": "clone_voice",
+        "sentMs": 3652,
+        "answeredMs": 3681,
+        "wire": "ack",
+        "commandError": {
+          "atMs": 3681,
+          "code": "CLONING_DISABLED",
+          "origin": "state",
+          "command": "clone_voice",
+          "retryable": true,
+          "traceId": false,
+          "beforeAnswer": true
+        },
+        "state": {
+          "atMs": 3681,
+          "lastError": true,
+          "code": "CLONING_DISABLED"
+        }
+      },
+      {
+        "probe": "say before any call",
+        "command": "say",
+        "sentMs": 3681,
+        "answeredMs": 3709,
+        "wire": "ack",
+        "commandError": {
+          "atMs": 3709,
+          "code": "NOT_LIVE",
+          "origin": "state",
+          "command": "say",
+          "retryable": true,
+          "traceId": false,
+          "beforeAnswer": true
+        },
+        "state": {
+          "atMs": 3709,
+          "lastError": true,
+          "code": "NOT_LIVE"
+        }
+      },
+      {
+        "probe": "update_call with no field",
+        "command": "update_call",
+        "sentMs": 22510,
+        "answeredMs": 22544,
+        "wire": "ack",
+        "commandError": {
+          "atMs": 22544,
+          "code": "INVALID_INPUT",
+          "origin": "request",
+          "command": "update_call",
+          "retryable": false,
+          "traceId": false,
+          "beforeAnswer": true
+        },
+        "state": {
+          "atMs": 22544,
+          "lastError": true,
+          "code": "INVALID_INPUT"
+        }
+      },
+      {
+        "probe": "say with no text",
+        "command": "say",
+        "sentMs": 22545,
+        "answeredMs": 22575,
+        "wire": "error",
+        "code": "invalid_command",
+        "outcome": "replied",
+        "state": {
+          "atMs": 23362,
+          "lastError": true,
+          "code": "INVALID_INPUT"
+        }
+      },
+      {
+        "probe": "update_call with a null voice",
+        "command": "update_call",
+        "sentMs": 24606,
+        "answeredMs": 24634,
+        "wire": "error",
+        "code": "invalid_command",
+        "outcome": "replied",
+        "state": {
+          "atMs": 25365,
+          "lastError": true,
+          "code": "INVALID_INPUT"
+        },
+        "changed": []
+      }
+    ],
+    "avatar": {
+      "upload": {
+        "startedMs": 3711,
+        "endedMs": 4128,
+        "outcome": "submitted"
+      },
+      "create": {
+        "sentMs": 4128,
+        "answeredMs": 6263,
+        "wire": "ack"
+      },
+      "phases": [
+        {
+          "phase": "preparing_avatar",
+          "afterMs": 291
+        },
+        {
+          "phase": "avatar_ready",
+          "afterMs": 2136
+        }
+      ],
+      "status": "ready",
+      "idLength": 19
+    },
+    "calls": [
+      {
+        "start": {
+          "sentMs": 6265,
+          "answeredMs": 6294,
+          "wire": "ack"
+        },
+        "phases": [
+          {
+            "phase": "starting",
+            "afterMs": 29
+          },
+          {
+            "phase": "warming_up",
+            "afterMs": 1458
+          },
+          {
+            "phase": "live",
+            "afterMs": 4080
+          }
+        ],
+        "liveMs": 10345,
+        "atLive": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "live",
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 0,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 1
+        },
+        "firstFrameMs": 201,
+        "firstBlockMs": 4,
+        "picture": [
+          {
+            "action": "resume",
+            "atMs": 10347,
+            "firstFrameMs": 199,
+            "blocks": 13
+          }
+        ],
+        "video": {
+          "frames": 408,
+          "formats": [
+            "BGRA"
+          ],
+          "sizes": [
+            "640x360",
+            "928x1088"
+          ],
+          "firstFrameMs": 10978,
+          "fps": 24.9,
+          "interval": {
+            "p50": 40,
+            "p95": 51,
+            "max": 172
+          },
+          "lit": 408,
+          "distinct": 355,
+          "lost": 0,
+          "gaps": 0
+        },
+        "audio": {
+          "blocks": 1013,
+          "sampleRates": [
+            48000
+          ],
+          "channels": [
+            1
+          ],
+          "peakRms": 0.3111,
+          "lost": 0
+        },
+        "levels": {
+          "fromMs": 10268,
+          "rms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.0271,
+            0.1601,
+            0.1242,
+            0.2374,
+            0.1945,
+            0.2463,
+            0.2047,
+            0.0529,
+            0.1251,
+            0.0933,
+            0.2208,
+            0.2052,
+            0.2379,
+            0.1243,
+            0.0329,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.0001,
+            0.1046,
+            0.1419,
+            0.1242,
+            0.1145,
+            0.0575,
+            0.003,
+            0.0003,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.0254,
+            0.0331,
+            0.0906,
+            0.1273,
+            0.1057,
+            0.0624,
+            0.0137,
+            0.0001,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.0001,
+            0.0014,
+            0.0043,
+            0.0816,
+            0.1383,
+            0.1107,
+            0.0643,
+            0.012,
+            0.0005,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        "speech": [
+          {
+            "fromMs": 14768,
+            "toMs": 16268
+          },
+          {
+            "fromMs": 19968,
+            "toMs": 20468
+          },
+          {
+            "fromMs": 21168,
+            "toMs": 21868
+          },
+          {
+            "fromMs": 22868,
+            "toMs": 23368
+          }
+        ],
+        "say": {
+          "sentMs": 16852,
+          "answeredMs": 16882,
+          "wire": "ack",
+          "userTranscriptMs": 234,
+          "onsetMs": 3116
+        },
+        "end": {
+          "sentMs": 26907,
+          "answeredMs": 33851,
+          "wire": "message",
+          "type": "call_ended",
+          "endReason": "ended_by_client",
+          "durationSeconds": 16,
+          "phases": [
+            {
+              "phase": "ending",
+              "afterMs": 35
+            },
+            {
+              "phase": "ended",
+              "afterMs": 6944
+            }
+          ],
+          "afterEnded": {
+            "forMs": 2000,
+            "frames": 9,
+            "blocks": 100
+          }
+        }
+      },
+      {
+        "start": {
+          "sentMs": 36102,
+          "answeredMs": 36129,
+          "wire": "ack"
+        },
+        "phases": [
+          {
+            "phase": "starting",
+            "afterMs": 27
+          },
+          {
+            "phase": "warming_up",
+            "afterMs": 1406
+          },
+          {
+            "phase": "live",
+            "afterMs": 4483
+          }
+        ],
+        "liveMs": 40585,
+        "atLive": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "live",
+          "call_started_at": 1790942862.5655537,
+          "call_elapsed_seconds": 0,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 2
+        },
+        "firstFrameMs": 110,
+        "firstBlockMs": 4,
+        "picture": [
+          {
+            "action": "wait",
+            "atMs": 40586,
+            "firstFrameMs": 109,
+            "blocks": 13
+          }
+        ],
+        "video": {
+          "frames": 173,
+          "formats": [
+            "BGRA"
+          ],
+          "sizes": [
+            "640x360",
+            "928x1088"
+          ],
+          "firstFrameMs": 41127,
+          "fps": 24.9,
+          "interval": {
+            "p50": 40,
+            "p95": 42,
+            "max": 179
+          },
+          "lit": 173,
+          "distinct": 120,
+          "lost": 0,
+          "gaps": 0
+        },
+        "audio": {
+          "blocks": 498,
+          "sampleRates": [
+            48000
+          ],
+          "channels": [
+            1
+          ],
+          "peakRms": 0.3321,
+          "lost": 0
+        },
+        "levels": {
+          "fromMs": 40568,
+          "rms": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.0818,
+            0.1017,
+            0.2219,
+            0.0815,
+            0.2066,
+            0.1372,
+            0.1235,
+            0.0588,
+            0.0184,
+            0.1298,
+            0.038,
+            0.2113,
+            0.1535,
+            0.0543,
+            0.0879,
+            0.0519,
+            0.1208,
+            0.0471,
+            0.0333,
+            0.205,
+            0.1962,
+            0.1454,
+            0.0827,
+            0.0995,
+            0.0751,
+            0.1049,
+            0.1178,
+            0.0882,
+            0.0416,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        },
+        "speech": [
+          {
+            "fromMs": 44268,
+            "toMs": 47168
+          }
+        ],
+        "say": {
+          "sentMs": 40837,
+          "answeredMs": 40866,
+          "wire": "ack",
+          "userTranscriptMs": 247,
+          "onsetMs": 3431
+        },
+        "end": {
+          "sentMs": 47619,
+          "answeredMs": 54982,
+          "wire": "message",
+          "type": "call_ended",
+          "endReason": "ended_by_client",
+          "durationSeconds": 7,
+          "phases": [
+            {
+              "phase": "ending",
+              "afterMs": 31
+            },
+            {
+              "phase": "ended",
+              "afterMs": 7363
+            }
+          ],
+          "afterEnded": {
+            "forMs": 2000,
+            "frames": 10,
+            "blocks": 100
+          }
+        }
+      }
+    ],
+    "greeting": {
+      "onsetMs": 4423,
+      "transcriptMs": 2525,
+      "transcripts": 1,
+      "finals": [
+        true
+      ]
+    },
+    "interrupt": {
+      "sentMs": 21468,
+      "answeredMs": 21500,
+      "wire": "ack",
+      "afterOnsetMs": 1500,
+      "silenceMs": 400,
+      "cut": {
+        "afterMs": -1998,
+        "final": true,
+        "length": 46
+      }
+    },
+    "voiceChange": {
+      "sentMs": 26665,
+      "answeredMs": 26906,
+      "wire": "message",
+      "type": "call_updated",
+      "voice": "Cindy",
+      "applied": [
+        "voice"
+      ],
+      "changed": true
+    },
+    "attach": {
+      "sentMs": 35854,
+      "answeredMs": 36101,
+      "wire": "ack",
+      "phases": [
+        {
+          "phase": "preparing_avatar",
+          "afterMs": 247
+        },
+        {
+          "phase": "avatar_ready",
+          "afterMs": 247
+        }
+      ]
+    },
+    "lastState": {
+      "sentMs": 56984,
+      "answeredMs": 57011,
+      "wire": "message",
+      "type": "session_state",
+      "phase": "ended"
+    },
+    "states": [
+      {
+        "atMs": 2508,
+        "via": "broadcast",
+        "values": {
+          "persona_set": false,
+          "audio_receiving": false,
+          "phase": "idle",
+          "control_ready": false,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 0
+        }
+      },
+      {
+        "atMs": 3165,
+        "via": "reply",
+        "values": {
+          "persona_set": false,
+          "audio_receiving": false,
+          "phase": "idle",
+          "control_ready": false,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 0
+        }
+      },
+      {
+        "atMs": 3681,
+        "via": "broadcast",
+        "values": {
+          "persona_set": false,
+          "audio_receiving": false,
+          "phase": "idle",
+          "control_ready": false,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 0
+        }
+      },
+      {
+        "atMs": 3709,
+        "via": "broadcast",
+        "values": {
+          "persona_set": false,
+          "audio_receiving": false,
+          "phase": "idle",
+          "control_ready": false,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 0
+        }
+      },
+      {
+        "atMs": 4419,
+        "via": "broadcast",
+        "values": {
+          "persona_set": false,
+          "audio_receiving": false,
+          "phase": "preparing_avatar",
+          "control_ready": false,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 0
+        }
+      },
+      {
+        "atMs": 6264,
+        "via": "broadcast",
+        "values": {
+          "persona_set": false,
+          "audio_receiving": false,
+          "phase": "avatar_ready",
+          "control_ready": false,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 0
+        }
+      },
+      {
+        "atMs": 6294,
+        "via": "broadcast",
+        "values": {
+          "persona_set": false,
+          "audio_receiving": false,
+          "phase": "starting",
+          "control_ready": false,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 0
+        }
+      },
+      {
+        "atMs": 7723,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "warming_up",
+          "control_ready": false,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 0
+        }
+      },
+      {
+        "atMs": 7723,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "warming_up",
+          "control_ready": false,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 10131,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "warming_up",
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 10345,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "live",
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 0,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 11346,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "live",
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 1,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 12347,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "live",
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 2,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 13349,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 2,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 3,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 14349,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 24,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 4,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 15350,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 31,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 5,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 16351,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 11,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 6,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 17352,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 11,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 7,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 18353,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 34,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 8,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 19355,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 34,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 9,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 20357,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 37,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 10,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 21360,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 40,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 11,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 22364,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 1,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 12,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 22544,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 22,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 12,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 23362,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 2,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 13,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 24363,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 0,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 14,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 24606,
+        "via": "reply",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 45,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 14,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 25365,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 3,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 15,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 26365,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 2,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 16,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 26664,
+        "via": "reply",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 2,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 16,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 26906,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 4,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 16,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 26942,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "ending",
+          "last_frame_age_ms": 41,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 16,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 27350,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "ending",
+          "last_frame_age_ms": 29,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 17,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 28682,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "ending",
+          "last_frame_age_ms": 59,
+          "call_started_at": 1790942832.3247821,
+          "call_elapsed_seconds": 18,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 33851,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "ended",
+          "end_reason": "ended_by_client",
+          "call_started_at": 1790942832.3247821,
+          "control_ready": false,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 36101,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "preparing_avatar",
+          "end_reason": "ended_by_client",
+          "call_started_at": 1790942832.3247821,
+          "control_ready": false,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 36101,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "avatar_ready",
+          "end_reason": "ended_by_client",
+          "call_started_at": 1790942832.3247821,
+          "control_ready": false,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 36129,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "starting",
+          "end_reason": "ended_by_client",
+          "call_started_at": 1790942832.3247821,
+          "control_ready": false,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 37508,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "warming_up",
+          "control_ready": false,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 0
+        }
+      },
+      {
+        "atMs": 37508,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "warming_up",
+          "control_ready": false,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 1
+        }
+      },
+      {
+        "atMs": 40013,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "warming_up",
+          "control_ready": false,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 40403,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "warming_up",
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 40585,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "live",
+          "call_started_at": 1790942862.5655537,
+          "call_elapsed_seconds": 0,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 41586,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "live",
+          "call_started_at": 1790942862.5655537,
+          "call_elapsed_seconds": 1,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 42591,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "live",
+          "call_started_at": 1790942862.5655537,
+          "call_elapsed_seconds": 2,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 43590,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 9,
+          "call_started_at": 1790942862.5655537,
+          "call_elapsed_seconds": 3,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 44591,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 30,
+          "call_started_at": 1790942862.5655537,
+          "call_elapsed_seconds": 4,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 45592,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 10,
+          "call_started_at": 1790942862.5655537,
+          "call_elapsed_seconds": 5,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 46593,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 12,
+          "call_started_at": 1790942862.5655537,
+          "call_elapsed_seconds": 6,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 47594,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "live",
+          "last_frame_age_ms": 12,
+          "call_started_at": 1790942862.5655537,
+          "call_elapsed_seconds": 7,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 47650,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "ending",
+          "last_frame_age_ms": 28,
+          "call_started_at": 1790942862.5655537,
+          "call_elapsed_seconds": 7,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 48054,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "ending",
+          "last_frame_age_ms": 33,
+          "call_started_at": 1790942862.5655537,
+          "call_elapsed_seconds": 7,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 49850,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": true,
+          "phase": "ending",
+          "last_frame_age_ms": 82,
+          "call_started_at": 1790942862.5655537,
+          "call_elapsed_seconds": 9,
+          "control_ready": true,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": true,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 54982,
+        "via": "broadcast",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "ended",
+          "end_reason": "ended_by_client",
+          "call_started_at": 1790942862.5655537,
+          "control_ready": false,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 2
+        }
+      },
+      {
+        "atMs": 57012,
+        "via": "reply",
+        "values": {
+          "persona_set": true,
+          "audio_receiving": false,
+          "phase": "ended",
+          "end_reason": "ended_by_client",
+          "call_started_at": 1790942862.5655537,
+          "control_ready": false,
+          "call_mode": "audio",
+          "call_max_seconds": 7200,
+          "camera_forwarding": false,
+          "mic_forwarding": false,
+          "video_receiving": false,
+          "warmup_attempts": 2
+        }
+      }
+    ],
+    "windows": [
+      {
+        "phase": "idle",
+        "fromMs": 2508,
+        "toMs": 4419,
+        "frames": 9,
+        "blocks": 107
+      },
+      {
+        "phase": "preparing_avatar",
+        "fromMs": 4419,
+        "toMs": 6264,
+        "frames": 9,
+        "blocks": 92
+      },
+      {
+        "phase": "avatar_ready",
+        "fromMs": 6264,
+        "toMs": 6294,
+        "frames": 0,
+        "blocks": 2
+      },
+      {
+        "phase": "starting",
+        "fromMs": 6294,
+        "toMs": 7723,
+        "frames": 0,
+        "blocks": 71
+      },
+      {
+        "phase": "warming_up",
+        "fromMs": 7723,
+        "toMs": 10345,
+        "frames": 0,
+        "blocks": 131
+      },
+      {
+        "phase": "live",
+        "fromMs": 10345,
+        "toMs": 26942,
+        "frames": 409,
+        "blocks": 1015
+      },
+      {
+        "phase": "ending",
+        "fromMs": 26942,
+        "toMs": 33851,
+        "frames": 7,
+        "blocks": 346
+      },
+      {
+        "phase": "ended",
+        "fromMs": 33851,
+        "toMs": 36101,
+        "frames": 11,
+        "blocks": 112
+      },
+      {
+        "phase": "preparing_avatar",
+        "fromMs": 36101,
+        "toMs": 36101,
+        "frames": 0,
+        "blocks": 0
+      },
+      {
+        "phase": "avatar_ready",
+        "fromMs": 36101,
+        "toMs": 36129,
+        "frames": 0,
+        "blocks": 1
+      },
+      {
+        "phase": "starting",
+        "fromMs": 36129,
+        "toMs": 37508,
+        "frames": 1,
+        "blocks": 69
+      },
+      {
+        "phase": "warming_up",
+        "fromMs": 37508,
+        "toMs": 40585,
+        "frames": 0,
+        "blocks": 154
+      },
+      {
+        "phase": "live",
+        "fromMs": 40585,
+        "toMs": 47650,
+        "frames": 173,
+        "blocks": 500
+      },
+      {
+        "phase": "ending",
+        "fromMs": 47650,
+        "toMs": 54982,
+        "frames": 5,
+        "blocks": 366
+      },
+      {
+        "phase": "ended",
+        "fromMs": 54982,
+        "toMs": 57443,
+        "frames": 10,
+        "blocks": 102
+      }
+    ],
+    "transcripts": [
+      {
+        "atMs": 12870,
+        "speaker": "character",
+        "final": true,
+        "length": 26
+      },
+      {
+        "atMs": 17086,
+        "speaker": "user",
+        "final": true,
+        "length": 39
+      },
+      {
+        "atMs": 19470,
+        "speaker": "character",
+        "final": true,
+        "length": 46
+      },
+      {
+        "atMs": 41084,
+        "speaker": "user",
+        "final": true,
+        "length": 37
+      },
+      {
+        "atMs": 42507,
+        "speaker": "character",
+        "final": true,
+        "length": 61
+      }
+    ],
+    "messages": {
+      "session_state": 55,
+      "voices": 1,
+      "command_error": 3,
+      "transcript": 5,
+      "call_updated": 1,
+      "call_ended": 2
+    },
+    "events": [
+      {
+        "atMs": 6,
+        "tag": "Status",
+        "detail": "connecting"
+      },
+      {
+        "atMs": 6,
+        "tag": "Status",
+        "detail": "waiting"
+      },
+      {
+        "atMs": 1720,
+        "tag": "Track",
+        "detail": "main_video"
+      },
+      {
+        "atMs": 1720,
+        "tag": "Decoded",
+        "detail": "main_video"
+      },
+      {
+        "atMs": 1720,
+        "tag": "Track",
+        "detail": "main_audio"
+      },
+      {
+        "atMs": 1720,
+        "tag": "Decoded",
+        "detail": "main_audio"
+      },
+      {
+        "atMs": 2482,
+        "tag": "Status",
+        "detail": "ready"
+      },
+      {
+        "atMs": 2508,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 2995,
+        "tag": "Control",
+        "correlation": "matched",
+        "detail": "ModelSchema"
+      },
+      {
+        "atMs": 3165,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 3651,
+        "tag": "Model",
+        "kind": "message",
+        "type": "voices",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 3681,
+        "tag": "Model",
+        "kind": "message",
+        "type": "command_error",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 3681,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 3681,
+        "tag": "Model",
+        "kind": "ack",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 3709,
+        "tag": "Model",
+        "kind": "message",
+        "type": "command_error",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 3709,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 3709,
+        "tag": "Model",
+        "kind": "ack",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 4128,
+        "tag": "Upload",
+        "detail": "submitted"
+      },
+      {
+        "atMs": 4419,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 6264,
+        "tag": "Model",
+        "kind": "ack",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 6264,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 6294,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 6294,
+        "tag": "Model",
+        "kind": "ack",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 7723,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 7723,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 10131,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 10345,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 11346,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 12347,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 12870,
+        "tag": "Model",
+        "kind": "message",
+        "type": "transcript",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 13349,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 14349,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 15350,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 16351,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 16882,
+        "tag": "Model",
+        "kind": "ack",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 17086,
+        "tag": "Model",
+        "kind": "message",
+        "type": "transcript",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 17352,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 18353,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 19355,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 19470,
+        "tag": "Model",
+        "kind": "message",
+        "type": "transcript",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 20357,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 21360,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 21500,
+        "tag": "Model",
+        "kind": "ack",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 22364,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 22544,
+        "tag": "Model",
+        "kind": "message",
+        "type": "command_error",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 22544,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 22545,
+        "tag": "Model",
+        "kind": "ack",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 22575,
+        "tag": "CommandError",
+        "correlation": "matched",
+        "reason": "Remote",
+        "code": "invalid_command"
+      },
+      {
+        "atMs": 23362,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 24363,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 24606,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 24634,
+        "tag": "CommandError",
+        "correlation": "matched",
+        "reason": "Remote",
+        "code": "invalid_command"
+      },
+      {
+        "atMs": 25365,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 26365,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 26664,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 26906,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 26906,
+        "tag": "Model",
+        "kind": "message",
+        "type": "call_updated",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 26942,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 27350,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 28682,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 33851,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 33851,
+        "tag": "Model",
+        "kind": "message",
+        "type": "call_ended",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 36101,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 36101,
+        "tag": "Model",
+        "kind": "ack",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 36101,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 36129,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 36129,
+        "tag": "Model",
+        "kind": "ack",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 37508,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 37508,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 40013,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 40403,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 40585,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 40866,
+        "tag": "Model",
+        "kind": "ack",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 41084,
+        "tag": "Model",
+        "kind": "message",
+        "type": "transcript",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 41586,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 42507,
+        "tag": "Model",
+        "kind": "message",
+        "type": "transcript",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 42591,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 43590,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 44591,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 45592,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 46593,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 47594,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 47650,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 48054,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 49850,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 54982,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "unsolicited"
+      },
+      {
+        "atMs": 54982,
+        "tag": "Model",
+        "kind": "message",
+        "type": "call_ended",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 57012,
+        "tag": "Model",
+        "kind": "message",
+        "type": "session_state",
+        "correlation": "matched"
+      },
+      {
+        "atMs": 57016,
+        "tag": "Status",
+        "detail": "closing"
+      },
+      {
+        "atMs": 57434,
+        "tag": "Status",
+        "detail": "closed"
+      }
+    ],
+    "video": {
+      "frames": 634,
+      "formats": [
+        "BGRA"
+      ],
+      "sizes": [
+        "640x360",
+        "928x1088"
+      ],
+      "firstFrameMs": 3004,
+      "fps": 11.7,
+      "interval": {
+        "p50": 40,
+        "p95": 199,
+        "max": 6681
+      },
+      "lit": 632,
+      "distinct": 492,
+      "lost": 0,
+      "gaps": 0
+    },
+    "audio": {
+      "blocks": 3068,
+      "sampleRates": [
+        48000
+      ],
+      "channels": [
+        1
+      ],
+      "peakRms": 0.3321,
+      "lost": 0
+    }
+  },
+  "verdict": "pass",
+  "reasons": [],
+  "missing": []
+}

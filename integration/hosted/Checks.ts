@@ -32,6 +32,8 @@ import type * as Session from "reactor-effect-client/Session";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import { adoption } from "./checks/Adoption.js";
+import { avatar } from "./checks/Avatar.js";
+import { character } from "./checks/Character.js";
 import { tour } from "./checks/Tour.js";
 import { show } from "./checks/Show.js";
 import { showreel } from "./checks/Showreel.js";
@@ -215,7 +217,7 @@ const mint = Effect.fnUntraced(function* (
   const coordinator = yield* CoordinatorClient.CoordinatorClient;
   const grant = yield* coordinator.mintToken({
     apiKey: target.apiKey,
-    modelName: H3.modelName,
+    modelName: plans[check].model.name,
     maxSessionDuration: `${plans[check].seconds} seconds`,
     expiresAfter: `${expiresAfterSeconds} seconds`,
   });
@@ -246,7 +248,7 @@ const binder = Effect.fnUntraced(function* (
     const sentAt = yield* Clock.currentTimeMillis;
     const token = yield* coordinator.mintToken({
       apiKey: target.apiKey,
-      modelName: H3.modelName,
+      modelName: plans[run.check].model.name,
       bind: [sessionId],
       expiresAfter: `${expiresAfterSeconds} seconds`,
     });
@@ -339,10 +341,11 @@ const close = Effect.fnUntraced(function* (session: Pick<Session.Session, "id" |
 /** A session created on `grant`, recorded in `grants` and closed with the scope, and its work deadline. */
 const create = Effect.fnUntraced(function* (grant: CoordinatorClient.TokenGrant, grants: Grants) {
   const reactor = yield* Reactor.Reactor;
+  const run = yield* Run;
   let deadline = 0;
   const session = yield* recorded(
     reactor.create({
-      model: H3.modelName,
+      model: plans[run.check].model.name,
       tokens: CoordinatorClient.fixedTokens(grant),
       onAllocated: (allocation) =>
         Effect.map(allocated(allocation.id, grant), (at) => {
@@ -1085,7 +1088,7 @@ export const tokens = Effect.gen(function* () {
         const unboundSentAt = yield* Clock.currentTimeMillis;
         const unbound = yield* coordinator.mintToken({
           apiKey: target.apiKey,
-          modelName: H3.modelName,
+          modelName: plans.tokens.model.name,
           // It could create one session of a second; it creates none.
           maxSessionDuration: "1 second",
           expiresAfter: "15 seconds",
@@ -2301,6 +2304,8 @@ const all = {
   show: show(pieces),
   unconnected: unconnected(pieces),
   showreel: showreel(pieces),
+  avatar: avatar(pieces),
+  character: character(pieces),
 };
 /** What a check can fail with, and what it needs. */
 export type CheckError = Effect.Error<(typeof all)[Check]>;

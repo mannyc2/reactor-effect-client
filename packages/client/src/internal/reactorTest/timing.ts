@@ -15,7 +15,12 @@ export type Delay =
   | "connect"
   | "seam"
   | "stop"
-  | "moderation";
+  | "moderation"
+  | "avatar"
+  | "call"
+  | "answer"
+  | "speech"
+  | "hangup";
 
 export interface Sampler {
   /** A delay in milliseconds. */

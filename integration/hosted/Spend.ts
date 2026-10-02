@@ -4,6 +4,7 @@
  */
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as H3 from "reactor-effect-client/H3";
 
 /**
  * The checks. `vertical`, `takeover` and `turn` qualified 0.3.0; each later
@@ -13,7 +14,10 @@ import * as Schema from "effect/Schema";
  * token that created it). `tour` then walks the raw API through one longer
  * session. `unconnected` asks Reactor a question instead: what becomes of a
  * session nothing connects to. `showreel` records footage rather than
- * qualifying anything: the playout's picture and sound, to an MP4.
+ * qualifying anything: the playout's picture and sound, to an MP4. `avatar`
+ * asks another question, of Vidu S2-Avatar: what its docs leave open about a
+ * call, for the SDK's module for it. `character` qualifies that module, the
+ * `ViduS2Avatar` provider, through one call.
  */
 export const checks = [
   "vertical",
@@ -31,16 +35,41 @@ export const checks = [
   "show",
   "unconnected",
   "showreel",
+  "avatar",
+  "character",
 ] as const;
 export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;
 
+/** A model a check's sessions run, and the rate its ceiling was reviewed at. */
+export interface Model {
+  readonly name: string;
+  /**
+   * What the pricing endpoint stated when the ceiling was reviewed, counted
+   * by the started minute; a run reserves at the rate stated as it starts.
+   */
+  readonly reviewed: Rate;
+}
+
+/** H3: 350 credits a second at 10,000 a dollar, $2.10 a minute, on September 30, 2026. */
+const h3: Model = {
+  name: H3.modelName,
+  reviewed: { creditsPerSecond: 350, creditsPerDollar: 10_000, per: "minute" },
+};
+
+/** Vidu S2-Avatar: 70 credits a second at 10,000 a dollar, $0.42 a minute, on October 1, 2026. */
+const vidu: Model = {
+  name: "reactor/vidu-s2-avatar",
+  reviewed: { creditsPerSecond: 70, creditsPerDollar: 10_000, per: "minute" },
+};
+
 /**
- * What a check may hold: how many sessions it opens, and each one's cap in
- * seconds, which its token sets server-side. A check that renews rests its
- * timing on full grants, so a shorter grant cannot qualify it.
+ * What a check may hold: the model its sessions run, how many it opens, and
+ * each one's cap in seconds, which its token sets server-side. A check that
+ * renews rests its timing on full grants, so a shorter grant cannot qualify it.
  */
 export interface Plan {
+  readonly model: Model;
   readonly sessions: number;
   readonly seconds: number;
   readonly renews?: true;
@@ -53,7 +82,7 @@ export interface Plan {
 
 /** One 50-second session, which every check held before the longer runs. */
 export const sessionSeconds = 50;
-const single: Plan = { sessions: 1, seconds: sessionSeconds };
+const single: Plan = { model: h3, sessions: 1, seconds: sessionSeconds };
 
 export const plans: { readonly [C in Check]: Plan } = {
   vertical: single,
@@ -62,21 +91,30 @@ export const plans: { readonly [C in Check]: Plan } = {
   audio: single,
   resume: single,
   queue: single,
-  renewal: { sessions: 2, seconds: sessionSeconds, renews: true },
+  renewal: { model: h3, sessions: 2, seconds: sessionSeconds, renews: true },
   edits: single,
   cut: single,
   tokens: single,
-  tour: { sessions: 1, seconds: 90 },
-  adoption: { sessions: 1, seconds: 75 },
-  show: { sessions: 3, seconds: 75, renews: true },
+  tour: { model: h3, sessions: 1, seconds: 90 },
+  adoption: { model: h3, sessions: 1, seconds: 75 },
+  show: { model: h3, sessions: 3, seconds: 75, renews: true },
   // One session, watched past its cap and then ended with the key, 155 s at most from its
   // request. On a token of its own, one more, held past its ready and ended with the key within
   // 59 s of its request, and a third if that token's second create allocates again, ended
   // within 56 s of that create. Each short one stays within a started minute.
-  unconnected: { sessions: 3, seconds: 60, holds: [155, 59, 56] },
+  unconnected: { model: h3, sessions: 3, seconds: 60, holds: [155, 59, 56] },
   // Five 8 s scenes air from about 7 s in and end about 47 s in; the cap leaves room for a
   // slower build and the close. $2.45 at most at 350 credits a second.
-  showreel: { sessions: 1, seconds: 70 },
+  showreel: { model: h3, sessions: 1, seconds: 70 },
+  // Two calls and their refusals are planned to end about 125 s in, at the timing the first paid
+  // run measured; the cap leaves room for a slower avatar and call. $1.26 at most at 70 credits
+  // a second, by the started minute.
+  avatar: { model: vidu, sessions: 1, seconds: 180 },
+  // One call is planned to end about 28 s in at the second paid avatar run's timing, and about
+  // 59 s in at the first's, whose avatar took 26.7 s and end_call 13.2 s; a 60 s cap would leave
+  // that one no 10 s margin. $0.525 at most at 70 credits a second, and $0.84 by the started
+  // minute.
+  character: { model: vidu, sessions: 1, seconds: 75 },
 };
 
 /** How long each of a check's sessions may run: its cap, unless the check holds it longer. */
@@ -88,21 +126,17 @@ export const tokenSecondsFor = (check: Check): number => Math.max(...holdsFor(ch
 /** A check's work ends this long after allocation, so a slow step fails it before the cap does. */
 export const workSecondsFor = (check: Check): number => plans[check].seconds - 10;
 
-/** The rate the ceilings were reviewed at, counted by the started minute; a run reserves at the live one. */
-const reviewedRate: Rate = { creditsPerSecond: 350, creditsPerDollar: 10_000, per: "minute" };
-
 /**
  * The most a check may spend: every started minute of each of its sessions,
- * for as long as it may run, at the published rate (350 credits a second at
- * 10,000 a dollar, $2.10 a minute, on September 30, 2026), so $2.10 for one
- * 50-second session. Every paid run in a ledger shares the total, which admits
- * the costliest check, `unconnected`, at that rate per second ($9.45). The
- * operator's limits may only be lower.
+ * for as long as it may run, at its model's reviewed rate: $2.10 for one
+ * 50-second H3 session, $1.26 for `avatar`'s 180-second one. Every paid run in
+ * a ledger shares the total, which admits the costliest check, `unconnected`,
+ * at H3's rate per second ($9.45). The operator's limits may only be lower.
  */
 export const ceilingFor = (check: Check): number =>
   reservationUsd(
     holdsFor(check).reduce(
-      (total, seconds) => total + billedUsd({ rate: reviewedRate, seconds }),
+      (total, seconds) => total + billedUsd({ rate: plans[check].model.reviewed, seconds }),
       0,
     ),
   );

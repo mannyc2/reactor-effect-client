@@ -336,6 +336,7 @@ const program = Effect.gen(function* () {
       "packages/browser/examples/src/server.ts",
       "packages/native/examples/src/Recording.ts",
       "packages/native/examples/src/capture.ts",
+      "examples/avatar/src/main.ts",
       "examples/quickstart/src/main.ts",
       "examples/terminal/src/Picture.ts",
       "examples/terminal/src/Screen.ts",

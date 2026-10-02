@@ -41,7 +41,8 @@ negotiated.
 ## Decoded media
 
 `session.decoded` returns the current generation's `DecodedMedia`: `video(name)` and
-`audio(name)` streams, `pressure`, the negotiated `tracks`, and `generation`.
+`audio(name)` streams, `pressure`, the negotiated `tracks`, `generation`, and
+`setTrackActive(name, active)`, which pauses or resumes a received track here and at Reactor.
 
 | `VideoFrame`      | What it is                                                                     |
 | ----------------- | ------------------------------------------------------------------------------ |
@@ -185,7 +186,9 @@ element that already has a source, and fails when playback takes longer than `pl
 generation and lease them again.
 
 Reactor sends a connection no media until its receive-only tracks are resumed. `create` and
-`attach` resume them as each connection becomes ready, unless you pass `resumeTracks: false`.
+`attach` resume them as each connection becomes ready, unless you pass `resumeTracks: false`. Vidu
+S2-Avatar also needs them resumed when a call goes live, which its provider does
+([A talking character](/reactor-effect-client/guides/avatar/)).
 
 ## Which host gives what
 

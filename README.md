@@ -102,6 +102,7 @@ The hosted figures come from paid runs between 2026-09-24 and 2026-10-01, on the
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
 | [Quickstart](./examples/quickstart)      | One clip from prompt to its end, with its frames decoded, in one file                                                                                                                                | runs on `ReactorTest` |
 | [Terminal viewer](./examples/terminal)   | H3 drawn in your terminal from decoded frames: no browser anywhere                                                                                                                                   | runs on `ReactorTest` |
+| [Avatar](./examples/avatar)              | A Vidu S2-Avatar character made from a photo: one call, its picture decoded in your process, both sides' transcripts                                                                                 |
 | [Live channel](./examples/livestream)    | Your own 24/7 AI channel: viewers prompt it, filler covers the gaps, sessions renew with no dark air, many browsers watch; needs ffmpeg, and can restream over RTMP (tried against a local listener) | runs on `ReactorTest` |
 | [H3 Studio](./packages/browser/examples) | A page that runs its own session over WebRTC: H3's queue live, references, each clip's lifecycle                                                                                                     | runs in the browser   |
 | [Capture](./packages/native/examples)    | A command line that writes a clip's decoded frames and audio to an MP4                                                                                                                               | paid only             |
@@ -109,11 +110,11 @@ The hosted figures come from paid runs between 2026-09-24 and 2026-10-01, on the
 
 ## Packages
 
-| Package                                        | What it gives you                                                                                                                 | Runs in                |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| [`reactor-effect-client`](./packages/client)   | `Reactor` and `Session`, `CoordinatorClient` and tokens, `H3`, `Playout` with `H3Source` and `LocalSource`, `ReactorTest`         | Node, Bun and browsers |
-| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the browser's `RTCPeerConnection`, and `BrowserMedia` for the session's tracks                                   | Browsers               |
-| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a Node-API addon over Reactor's `reactor-webrtc` crate, prebuilt for Linux x64 (glibc) and macOS on Apple silicon | Node and Bun           |
+| Package                                        | What it gives you                                                                                                                         | Runs in                |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| [`reactor-effect-client`](./packages/client)   | `Reactor` and `Session`, `CoordinatorClient` and tokens, `H3`, `ViduS2Avatar`, `Playout` with `H3Source` and `LocalSource`, `ReactorTest` | Node, Bun and browsers |
+| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the browser's `RTCPeerConnection`, and `BrowserMedia` for the session's tracks                                           | Browsers               |
+| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a Node-API addon over Reactor's `reactor-webrtc` crate, prebuilt for Linux x64 (glibc) and macOS on Apple silicon         | Node and Bun           |
 
 ```sh
 npm install --save-exact reactor-effect-client effect@4.0.0

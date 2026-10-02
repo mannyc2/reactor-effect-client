@@ -1,6 +1,6 @@
 /** A ledger's runs as Markdown, for `summary.md` and the release notes. */
 import { isTerminal } from "reactor-effect-client/CoordinatorClient";
-import type { Evidence } from "./Evidence.js";
+import type { AvatarWire, Evidence } from "./Evidence.js";
 import { cleanupInstructions } from "./Evidence.js";
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(2)} s`;
@@ -269,10 +269,299 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
   if (unconnected !== undefined) lines.push(...unconnectedLines(evidence, unconnected));
   const showreel = evidence.showreel;
   if (showreel !== undefined) lines.push(...showreelLines(showreel));
+  const avatar = evidence.avatar;
+  if (avatar !== undefined) lines.push(...avatarLines(avatar));
+  const character = evidence.character;
+  if (character !== undefined) lines.push(...characterLines(character));
   return lines;
 };
 
+type AvatarRecord = NonNullable<Evidence["avatar"]>;
+
+/** A time in `avatar`'s record, which counts from the allocation. */
+const fromAllocation = (ms: number) => `A+${seconds(ms)}`;
+
+/** What a command met on the wire. */
+const wired = (wire: AvatarWire): string => {
+  switch (wire.wire) {
+    case "ack":
+      return "ack";
+    case "message":
+      return `message ${wire.type ?? "of no type"}`;
+    case "error":
+      return `error frame ${wire.code ?? "without a code"}`;
+    case "timeout":
+      return `no answer by its deadline (outcome ${wire.outcome ?? "unknown"})`;
+    case "failed":
+      return `failed with ${wire.reason ?? "?"} (outcome ${wire.outcome ?? "?"})`;
+  }
+};
+
+/** What a command met on the wire, and how long after its send. */
+const answered = (wire: AvatarWire) =>
+  `${wired(wire)} in ${seconds(wire.answeredMs - wire.sentMs)}`;
+
+const phased = (phases: ReadonlyArray<{ readonly phase: string; readonly afterMs: number }>) =>
+  phases.map((entry) => `${entry.phase} +${seconds(entry.afterMs)}`).join(", ") || "no phase";
+
+/** The live snapshot's fields Reactor's docs name for a call that is ready. */
+const atLiveFields = [
+  "warmup_attempts",
+  "call_max_seconds",
+  "control_ready",
+  "video_receiving",
+  "audio_receiving",
+  "mic_forwarding",
+] as const;
+
+/** The one reconnect a call made for its picture, if it made one. */
+const reconnected = (reconnect: AvatarRecord["calls"][number]["reconnect"]) => {
+  if (reconnect === undefined) return "no reconnect";
+  if (reconnect.failure !== undefined)
+    return `no frame within 5 s, and the one reconnect failed: ${reconnect.failure}`;
+  return `no frame within 5 s, so one reconnect at ${fromAllocation(reconnect.startedMs)}${reconnect.readyMs === undefined ? "" : `, ready in ${seconds(reconnect.readyMs - reconnect.startedMs)}`}; ${reconnect.firstFrameMs === undefined ? "no frame within 5 s of its ready" : `the first frame ${seconds(reconnect.firstFrameMs)} after its ready`}`;
+};
+
+type AvatarCall = AvatarRecord["calls"][number];
+
+const pictureActions = {
+  wait: "nothing done",
+  resume: "both tracks resumed",
+  cycle: "main_video paused and resumed",
+} as const;
+
+/** What was done for a call's picture, in turn, and what came after each. */
+const pictured = (call: AvatarCall) => {
+  if (call.picture === undefined) return reconnected(call.reconnect);
+  return (
+    call.picture
+      .map(
+        (stage) =>
+          `${pictureActions[stage.action]} at ${fromAllocation(stage.atMs)}${stage.failure === undefined ? "" : ` (failed: ${stage.failure})`}: ${stage.firstFrameMs === undefined ? "no frame within 5 s" : `the first frame ${seconds(stage.firstFrameMs)} after`}${stage.blocks === undefined ? "" : `, ${stage.blocks} blocks`}`,
+      )
+      .join("; ") || "nothing done for the picture"
+  );
+};
+
+/** A call's start, and its picture and sound once it was live. */
+const callOpening = (call: AvatarCall, label: string): ReadonlyArray<string> => {
+  const lines = [
+    `**${label}:** start_call ${answered(call.start)}; ${phased(call.phases)}${call.liveMs === undefined ? "; never live" : ` (live at ${fromAllocation(call.liveMs)}); at live ${atLiveFields.map((key) => `${key} ${String(call.atLive?.[key] ?? "none")}`).join(", ")}`}`,
+  ];
+  if (call.liveMs !== undefined)
+    lines.push(
+      `**${label}, picture and sound:** first frame ${call.firstFrameMs === undefined ? "never" : `${seconds(call.firstFrameMs)} after live`}, first block ${call.firstBlockMs === undefined ? "never" : `${seconds(call.firstBlockMs)} after live`}; ${pictured(call)}; ${call.video === undefined ? "no picture read" : `${call.video.frames} frames of ${listed(call.video.sizes)}${call.video.fps === undefined ? "" : ` at ${call.video.fps} fps`} (${call.video.lit} lit, ${call.video.distinct} distinct, ${call.video.lost} lost)`}; ${call.audio === undefined ? "no sound read" : `${call.audio.blocks} blocks at ${listed(call.audio.sampleRates.map(String))} Hz, ${listed(call.audio.channels.map(String))} channel(s), peak RMS ${call.audio.peakRms}`}; speech ${call.speech.map((stretch) => `${fromAllocation(stretch.fromMs)}–${seconds(stretch.toMs)}`).join(", ") || "none"}`,
+    );
+  return lines;
+};
+
+/** A `say` in a call: its answer on the wire, the user's transcript and the answer's sound. */
+const callSay = (call: AvatarCall, label: string): ReadonlyArray<string> => {
+  const say = call.say;
+  return say === undefined
+    ? []
+    : [
+        `**${label}, say:** ${answered(say)}; the user's transcript ${say.userTranscriptMs === undefined ? "never came" : `${seconds(say.userTranscriptMs)} after the send`}; the answer's sound ${say.onsetMs === undefined ? "never came" : `${seconds(say.onsetMs)} after the send`}`,
+      ];
+};
+
+/** A call's `end_call`, its phases, and what still arrived after `ended`. */
+const callEnd = (call: AvatarCall, label: string): ReadonlyArray<string> => {
+  const end = call.end;
+  return end === undefined
+    ? []
+    : [
+        `**${label}, end:** end_call ${answered(end)}; end_reason ${end.endReason ?? "unread"}, duration_seconds ${String(end.durationSeconds ?? "unread")}; ${phased(end.phases)}; ${end.afterEnded === undefined ? "ended never reported" : `${end.afterEnded.frames} frames and ${end.afterEnded.blocks} blocks in the ${seconds(end.afterEnded.forMs)} after ended`}`,
+      ];
+};
+
+/** `avatar`'s steps, in order, a line each. */
+const avatarLines = (avatar: AvatarRecord): ReadonlyArray<string> => {
+  const lines = [`**Photo:** ${avatar.photo.type}, ${avatar.photo.bytes} bytes`];
+  const contract = avatar.contract;
+  if (contract !== undefined)
+    lines.push(
+      `**Contract:** title ${contract.title ?? "none"}, version ${contract.version ?? "none"}; declares ${listed(contract.commands)}; clone_voice ${contract.cloneVoice ? "declared" : "not declared"}`,
+    );
+  const first = avatar.first;
+  if (first !== undefined)
+    lines.push(
+      `**First snapshot:** ${fromAllocation(first.atMs)}, phase ${String(first.values.phase ?? "unset")}; set ${listed(first.present)}; null ${listed(first.nulls)}; left out ${listed(first.absent)}; undocumented ${listed(first.undocumented)}`,
+    );
+  if (avatar.getState !== undefined) lines.push(`**get_state:** ${answered(avatar.getState)}`);
+  const voices = avatar.voices;
+  if (voices !== undefined)
+    lines.push(
+      `**list_voices:** ${answered(voices)}; ${voices.system} system voice(s)${voices.ids.length === 0 ? "" : `: ${voices.ids.join(", ")}`}; cloned ${voices.cloned ? "present" : "absent"}, default_voice ${voices.defaultVoice ? "present" : "absent"}`,
+    );
+  const made = avatar.avatar;
+  if (made !== undefined)
+    lines.push(
+      `**Avatar:** upload ${made.upload.outcome} in ${seconds(made.upload.endedMs - made.upload.startedMs)}; create_avatar ${made.create === undefined ? "unsent" : answered(made.create)}; ${phased(made.phases)}; avatar_status ${made.status ?? "unread"}; ${made.idLength === undefined ? "no avatar_id" : `an avatar_id of ${made.idLength} characters`}`,
+    );
+  const [call1, call2] = avatar.calls;
+  if (call1 !== undefined) lines.push(...callOpening(call1, "Call 1"));
+  const greeting = avatar.greeting;
+  if (greeting !== undefined)
+    lines.push(
+      `**Greeting:** sound ${greeting.onsetMs === undefined ? "never came" : `${seconds(greeting.onsetMs)} after live`}; the first character transcript ${greeting.transcriptMs === undefined ? "never came" : `${seconds(greeting.transcriptMs)} after live`}; ${greeting.transcripts} character transcript(s), final ${greeting.finals.map(String).join(", ") || "–"}`,
+    );
+  if (call1 !== undefined) lines.push(...callSay(call1, "Call 1"));
+  const interrupt = avatar.interrupt;
+  if (interrupt !== undefined)
+    lines.push(
+      `**Interrupt:** ${answered(interrupt)}, sent ${interrupt.afterOnsetMs === undefined ? "with no answer heard" : `${seconds(interrupt.afterOnsetMs)} into the answer's sound`}; silent ${interrupt.silenceMs === undefined ? "never" : `${seconds(interrupt.silenceMs)} after it`}; the cut answer's character transcript ${interrupt.cut === undefined ? "never came" : `came ${seconds(Math.abs(interrupt.cut.afterMs))} ${interrupt.cut.afterMs < 0 ? "before" : "after"} it, final ${String(interrupt.cut.final)}, ${interrupt.cut.length} characters`}`,
+    );
+  const change = avatar.voiceChange;
+  if (change !== undefined)
+    lines.push(
+      `**Voice change:** update_call ${answered(change)}${change.voice === undefined ? "" : ` to ${change.voice}`}; applied ${listed(change.applied)}; the state's voice ${change.changed ? "changed" : "did not change"}`,
+    );
+  if (call1 !== undefined) lines.push(...callEnd(call1, "Call 1"));
+  const attach = avatar.attach;
+  if (attach !== undefined)
+    lines.push(`**Attach:** attach_avatar ${answered(attach)}; ${phased(attach.phases)}`);
+  if (call2 !== undefined)
+    lines.push(
+      ...callOpening(call2, "Call 2"),
+      ...callSay(call2, "Call 2"),
+      ...callEnd(call2, "Call 2"),
+    );
+  const last = avatar.lastState;
+  if (last !== undefined)
+    lines.push(`**Last state:** get_state ${answered(last)}, phase ${last.phase ?? "unread"}`);
+  lines.push(
+    `**Phases, with the frames and blocks that arrived in each:** ${avatar.windows.map((window) => `${window.phase} ${fromAllocation(window.fromMs)} (${window.frames}, ${window.blocks})`).join(" › ") || "none reported"}`,
+  );
+  const spoken = (speaker: string) =>
+    avatar.transcripts.filter((entry) => entry.speaker === speaker).length;
+  const finals = (final: boolean | null) =>
+    avatar.transcripts.filter((entry) => entry.final === final).length;
+  lines.push(
+    `**Transcripts:** ${avatar.transcripts.length}: ${spoken("user")} user, ${spoken("character")} character; ${finals(true)} final, ${finals(false)} not final, ${finals(null)} that did not say`,
+  );
+  lines.push(
+    `**Messages:** ${
+      Object.entries(avatar.messages)
+        .map(([type, count]) => `${type} ${count}`)
+        .join(", ") || "none"
+    }; ${avatar.events.length} session events`,
+  );
+  return lines;
+};
+
+/** The `last_error` of the state after a refused command. */
+const lastErrorOf = (state: AvatarRecord["refusals"][number]["state"]) => {
+  if (state === undefined) return "no state";
+  return state.lastError ? (state.code ?? "set, with no code") : "null";
+};
+
+/** `avatar`'s refused commands as a table, and what the run answers of the docs' open questions. */
+const avatarAnswers = (avatar: AvatarRecord): ReadonlyArray<string> => {
+  const yesNo = (value: boolean | undefined, yes: string, no: string) =>
+    value === undefined ? "–" : value ? yes : no;
+  const calls = avatar.calls;
+  const timed = (label: string, wires: ReadonlyArray<AvatarWire | undefined>) => {
+    const sent = wires.filter((wire) => wire !== undefined);
+    return sent.length === 0
+      ? []
+      : [`${label} ${sent.map((wire) => seconds(wire.answeredMs - wire.sentMs)).join(" and ")}`];
+  };
+  const clone = avatar.refusals.find((refusal) => refusal.command === "clone_voice");
+  const nulled = avatar.refusals.find((refusal) => refusal.changed !== undefined);
+  const picture = calls.map((call, index) => {
+    if (call.liveMs === undefined) return `call ${index + 1} never went live`;
+    if (call.picture !== undefined) {
+      const brought = call.picture.find((stage) => stage.firstFrameMs !== undefined);
+      return brought === undefined
+        ? `call ${index + 1} had no frame after ${call.picture.map((stage) => pictureActions[stage.action]).join(", then ")}`
+        : `call ${index + 1}'s picture came ${seconds(brought.firstFrameMs ?? 0)} after ${pictureActions[brought.action]}`;
+    }
+    if (call.reconnect === undefined)
+      return `call ${index + 1}'s first frame came ${seconds(call.firstFrameMs ?? 0)} after live, with no reconnect`;
+    return `call ${index + 1} had no frame within 5 s of live; ${call.reconnect.firstFrameMs === undefined ? "none came within 5 s of the one reconnect either" : `after one reconnect the first came ${seconds(call.reconnect.firstFrameMs)} after its ready`}`;
+  });
+  const finals = avatar.transcripts.map((entry) => entry.final);
+  return [
+    "",
+    `**Refused commands** (each watched until its command_error and next session_state came, or 2 s after its answer):`,
+    "",
+    "| Probe | On the wire | Answered in | command_error | Before the answer | trace_id | Next state's last_error | Changed after it |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ...avatar.refusals.map((refusal) => {
+      const error = refusal.commandError;
+      return `| ${refusal.probe} | ${wired(refusal)} | ${seconds(refusal.answeredMs - refusal.sentMs)} | ${error === undefined ? "none" : `${error.code ?? "no code"} (${error.origin ?? "no origin"}, ${error.command ?? "no command"}, ${yesNo(error.retryable, "retryable", "not retryable")})`} | ${yesNo(error?.beforeAnswer, "yes", "no")} | ${error === undefined ? "–" : yesNo(error.traceId, "named", "none")} | ${lastErrorOf(refusal.state)} | ${refusal.changed === undefined ? "–" : listed(refusal.changed)} |`;
+    }),
+    "",
+    "**What this run answers:**",
+    "",
+    `- A refused command, on the wire: ${avatar.refusals.map((refusal) => `${refusal.probe}, ${wired(refusal)}`).join("; ") || "nothing was refused"}.`,
+    `- command_error against its command's answer: ${
+      avatar.refusals
+        .flatMap((refusal) =>
+          refusal.commandError === undefined
+            ? []
+            : [
+                `${refusal.probe}, ${yesNo(refusal.commandError.beforeAnswer, "before it", "after it")}`,
+              ],
+        )
+        .join("; ") || "no command_error was broadcast"
+    }.`,
+    `- A command carrying an explicit null: ${nulled === undefined ? "not sent" : `${wired(nulled)}; ${nulled.changed?.length === 0 ? "nothing read otherwise after it" : `${listed(nulled.changed ?? [])} read otherwise after it`}`}.`,
+    `- Answer times, against the SDK's 10 s default: ${
+      [
+        ...timed("create_avatar", [avatar.avatar?.create]),
+        ...timed(
+          "start_call",
+          calls.map((call) => call.start),
+        ),
+        ...timed(
+          "end_call",
+          calls.map((call) => call.end),
+        ),
+        ...timed("clone_voice", [clone]),
+        ...timed("attach_avatar", [avatar.attach]),
+      ].join("; ") || "none answered"
+    }.`,
+    `- The picture after live: ${picture.join("; ") || "no call was started"}.`,
+    `- The call's limit at live: ${calls.map((call, index) => `call ${index + 1} call_max_seconds ${String(call.atLive?.call_max_seconds ?? "none")}`).join(", ") || "no call went live"}.`,
+    `- The picture's size: ${listed([...new Set(calls.flatMap((call) => call.video?.sizes ?? []))])}.`,
+    `- Voice cloning: clone_voice ${avatar.contract?.cloneVoice === true ? "declared" : "not declared"}, ${clone === undefined ? "not sent" : `answered ${wired(clone)}`}; voices.cloned ${avatar.voices?.cloned === true ? "present" : "absent"}.`,
+    `- Partial transcripts: ${finals.filter((final) => final === false).length} of ${finals.length} not final${finals.includes(null) ? `, ${finals.filter((final) => final === null).length} with no final` : ""}.`,
+    `- The deployment's version: ${avatar.contract?.version ?? "unread"}.`,
+  ];
+};
+
 /** `showreel`'s scenes, its seams on air, and its reel and the files made from it. */
+/** `character`'s call through the provider: its operations, phases, picture, sound and transcripts. */
+const characterLines = (character: NonNullable<Evidence["character"]>): ReadonlyArray<string> => {
+  const lines = [
+    `**Photo:** ${character.photo.type}, ${character.photo.bytes} bytes`,
+    // The session's own step starts before its allocation.
+    `**Operations:** ${character.steps.map((step) => `${step.name} ${step.outcome} in ${seconds(step.endedMs - step.startedMs)} at ${step.startedMs < 0 ? `A-${seconds(-step.startedMs)}` : fromAllocation(step.startedMs)}`).join("; ") || "none"}`,
+    `**Phases:** ${character.phases.map((entry) => `${entry.phase} ${fromAllocation(entry.atMs)}`).join(" › ") || "none seen"}`,
+  ];
+  const call = character.call;
+  if (call !== undefined)
+    lines.push(
+      `**Call:** live at ${fromAllocation(call.liveMs)}${call.callMaxSeconds === undefined ? "" : `, call_max_seconds ${call.callMaxSeconds}`}; the first frame ${call.firstFrameMs === undefined ? "never came" : `${seconds(call.firstFrameMs)} after live`}; the greeting's sound ${call.greetingOnsetMs === undefined ? "never came" : `${seconds(call.greetingOnsetMs)} after live`}${call.greetingSilenceMs === undefined ? "" : `, silent ${seconds(call.greetingSilenceMs)} after live`}; ${call.video.frames} frames of ${listed(call.video.sizes)}${call.video.fps === undefined ? "" : ` at ${call.video.fps} fps`} (${call.video.lit} lit, ${call.video.distinct} distinct, ${call.video.lost} lost); ${call.audio.blocks} blocks at ${listed(call.audio.sampleRates.map(String))} Hz, peak RMS ${call.audio.peakRms}`,
+    );
+  const say = character.say;
+  if (say !== undefined)
+    lines.push(
+      `**Say:** sent at ${fromAllocation(say.sentMs)}; the user's transcript ${say.userTranscriptMs === undefined ? "never came" : `${seconds(say.userTranscriptMs)} after`}; the answer's sound ${say.onsetMs === undefined ? "never came" : `${seconds(say.onsetMs)} after`}; the character's transcript ${say.characterTranscriptMs === undefined ? "never came" : `${seconds(say.characterTranscriptMs)} after`}`,
+    );
+  const end = character.end;
+  if (end !== undefined)
+    lines.push(`**End:** ${end.endReason}, the call live ${end.durationSeconds} s`);
+  const finals = character.transcripts.filter((entry) => entry.final);
+  lines.push(
+    `**Transcripts:** ${character.transcripts.length}: ${finals.filter((entry) => entry.speaker === "user").length} final from the user, ${finals.filter((entry) => entry.speaker === "character").length} from the character`,
+    `**Provider events:** command errors ${character.commandErrors.map((entry) => `${entry.command} ${entry.code} at ${fromAllocation(entry.atMs)}`).join(", ") || "none"}; diagnostics ${character.diagnostics.map((entry) => `${entry.reason} at ${fromAllocation(entry.atMs)}`).join(", ") || "none"}`,
+  );
+  return lines;
+};
+
 const showreelLines = (showreel: NonNullable<Evidence["showreel"]>): ReadonlyArray<string> => {
   const lines = [
     `**Scenes:** ${showreel.scenes.map((scene) => `${scene.key} ${scene.seconds} s`).join(", ")}; gaps on air ${showreel.gaps.map((gap) => `${Math.round(gap.toMs - gap.fromMs)} ms`).join(", ") || "none measured"}`,
@@ -508,6 +797,7 @@ const section = (evidence: Evidence): string => {
     ...evidence.reasons.map((reason) => `  - ${reason}`),
     ...cleanupInstructions(evidence).map((line) => `- **Cleanup:** ${line}`),
     ...(evidence.unconnected === undefined ? [] : billing(evidence, evidence.unconnected)),
+    ...(evidence.avatar === undefined ? [] : avatarAnswers(evidence.avatar)),
   ].join("\n");
 };
 

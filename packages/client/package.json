@@ -1,7 +1,7 @@
 {
   "name": "reactor-effect-client",
   "version": "0.9.2",
-  "description": "Effect SDK for Reactor's real-time video models: sessions and tokens, the H3 provider, a playout that keeps a channel on air across session caps, and Reactor simulated in memory for offline tests",
+  "description": "Effect SDK for Reactor's real-time video models: sessions and tokens, the H3 and Vidu S2-Avatar providers, a playout that keeps a channel on air across session caps, and Reactor simulated in memory for offline tests",
   "keywords": [
     "reactor",
     "reactor.inc",
@@ -11,6 +11,8 @@
     "world models",
     "generative video",
     "h3",
+    "vidu",
+    "avatar",
     "webrtc",
     "livestream",
     "playout",
