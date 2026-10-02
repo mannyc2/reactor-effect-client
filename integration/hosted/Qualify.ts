@@ -192,10 +192,14 @@ export const execute = (input: {
         if (unable !== undefined && target.mode === "paid")
           return yield* Refused.make({ message: `showreel records with ffmpeg, and ${unable}` });
       }
-      // The avatar's call starts from a photo of a person: without one, a paid run buys nothing.
-      if (authorization.check === "avatar" && target.mode === "paid" && target.photo === undefined)
+      // A Vidu call starts from a photo of a person: without one, a paid run buys nothing.
+      if (
+        (authorization.check === "avatar" || authorization.check === "character") &&
+        target.mode === "paid" &&
+        target.photo === undefined
+      )
         return yield* Refused.make({
-          message: "avatar makes its avatar from a photo: give one with --avatar-image <file>",
+          message: `${authorization.check} makes its avatar from a photo: give one with --avatar-image <file>`,
         });
       const coordinator = yield* CoordinatorClient.CoordinatorClient;
       const rate = yield* coordinator.pricing.pipe(

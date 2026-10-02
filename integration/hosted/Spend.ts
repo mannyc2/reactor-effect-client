@@ -16,7 +16,8 @@ import * as H3 from "reactor-effect-client/H3";
  * session nothing connects to. `showreel` records footage rather than
  * qualifying anything: the playout's picture and sound, to an MP4. `avatar`
  * asks another question, of Vidu S2-Avatar: what its docs leave open about a
- * call, for the SDK's module for it.
+ * call, for the SDK's module for it. `character` qualifies that module, the
+ * `ViduS2Avatar` provider, through one call.
  */
 export const checks = [
   "vertical",
@@ -35,6 +36,7 @@ export const checks = [
   "unconnected",
   "showreel",
   "avatar",
+  "character",
 ] as const;
 export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;
@@ -108,6 +110,11 @@ export const plans: { readonly [C in Check]: Plan } = {
   // run measured; the cap leaves room for a slower avatar and call. $1.26 at most at 70 credits
   // a second, by the started minute.
   avatar: { model: vidu, sessions: 1, seconds: 180 },
+  // One call is planned to end about 28 s in at the second paid avatar run's timing, and about
+  // 59 s in at the first's, whose avatar took 26.7 s and end_call 13.2 s; a 60 s cap would leave
+  // that one no 10 s margin. $0.525 at most at 70 credits a second, and $0.84 by the started
+  // minute.
+  character: { model: vidu, sessions: 1, seconds: 75 },
 };
 
 /** How long each of a check's sessions may run: its cap, unless the check holds it longer. */

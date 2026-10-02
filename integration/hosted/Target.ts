@@ -73,7 +73,7 @@ export interface Owner extends Streaming {
   readonly kill: Effect.Effect<void>;
 }
 
-/** A photo `avatar` makes its avatar from, as its first bytes show it. */
+/** A photo `avatar` and `character` make their avatar from, as its first bytes show it. */
 export interface Photo {
   readonly bytes: Uint8Array;
   readonly type: "png" | "jpeg" | "webp";
@@ -110,8 +110,8 @@ export class Target extends Context.Service<
      */
     readonly moderationPrompt: Redacted.Redacted<string> | undefined;
     /**
-     * The photo `avatar` makes its avatar from, read from a file the operator
-     * names; a paid `avatar` run refuses without one, and a rehearsal uses a
+     * The photo `avatar` and `character` make their avatar from, read from a
+     * file the operator names; a paid run of either refuses without one, and a rehearsal uses a
      * black 64x64 PNG unless one is given. Never logged or saved.
      */
     readonly photo: Photo | undefined;
@@ -455,7 +455,7 @@ export const rehearsal = (input: {
   readonly candidate: "host" | "relay";
   readonly adoptAfterMs?: number | undefined;
   readonly moderationPrompt?: Redacted.Redacted<string> | undefined;
-  /** The photo `avatar` makes its avatar from; a black 64x64 PNG unless one is given. */
+  /** The photo `avatar` and `character` make their avatar from; a black 64x64 PNG unless one is given. */
   readonly photo?: Photo | undefined;
   /**
    * Whether the simulated deployment records, so a clip request gets a

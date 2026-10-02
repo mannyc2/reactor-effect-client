@@ -271,6 +271,8 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
   if (showreel !== undefined) lines.push(...showreelLines(showreel));
   const avatar = evidence.avatar;
   if (avatar !== undefined) lines.push(...avatarLines(avatar));
+  const character = evidence.character;
+  if (character !== undefined) lines.push(...characterLines(character));
   return lines;
 };
 
@@ -531,6 +533,35 @@ const avatarAnswers = (avatar: AvatarRecord): ReadonlyArray<string> => {
 };
 
 /** `showreel`'s scenes, its seams on air, and its reel and the files made from it. */
+/** `character`'s call through the provider: its operations, phases, picture, sound and transcripts. */
+const characterLines = (character: NonNullable<Evidence["character"]>): ReadonlyArray<string> => {
+  const lines = [
+    `**Photo:** ${character.photo.type}, ${character.photo.bytes} bytes`,
+    // The session's own step starts before its allocation.
+    `**Operations:** ${character.steps.map((step) => `${step.name} ${step.outcome} in ${seconds(step.endedMs - step.startedMs)} at ${step.startedMs < 0 ? `A-${seconds(-step.startedMs)}` : fromAllocation(step.startedMs)}`).join("; ") || "none"}`,
+    `**Phases:** ${character.phases.map((entry) => `${entry.phase} ${fromAllocation(entry.atMs)}`).join(" › ") || "none seen"}`,
+  ];
+  const call = character.call;
+  if (call !== undefined)
+    lines.push(
+      `**Call:** live at ${fromAllocation(call.liveMs)}${call.callMaxSeconds === undefined ? "" : `, call_max_seconds ${call.callMaxSeconds}`}; the first frame ${call.firstFrameMs === undefined ? "never came" : `${seconds(call.firstFrameMs)} after live`}; the greeting's sound ${call.greetingOnsetMs === undefined ? "never came" : `${seconds(call.greetingOnsetMs)} after live`}${call.greetingSilenceMs === undefined ? "" : `, silent ${seconds(call.greetingSilenceMs)} after live`}; ${call.video.frames} frames of ${listed(call.video.sizes)}${call.video.fps === undefined ? "" : ` at ${call.video.fps} fps`} (${call.video.lit} lit, ${call.video.distinct} distinct, ${call.video.lost} lost); ${call.audio.blocks} blocks at ${listed(call.audio.sampleRates.map(String))} Hz, peak RMS ${call.audio.peakRms}`,
+    );
+  const say = character.say;
+  if (say !== undefined)
+    lines.push(
+      `**Say:** sent at ${fromAllocation(say.sentMs)}; the user's transcript ${say.userTranscriptMs === undefined ? "never came" : `${seconds(say.userTranscriptMs)} after`}; the answer's sound ${say.onsetMs === undefined ? "never came" : `${seconds(say.onsetMs)} after`}; the character's transcript ${say.characterTranscriptMs === undefined ? "never came" : `${seconds(say.characterTranscriptMs)} after`}`,
+    );
+  const end = character.end;
+  if (end !== undefined)
+    lines.push(`**End:** ${end.endReason}, the call live ${end.durationSeconds} s`);
+  const finals = character.transcripts.filter((entry) => entry.final);
+  lines.push(
+    `**Transcripts:** ${character.transcripts.length}: ${finals.filter((entry) => entry.speaker === "user").length} final from the user, ${finals.filter((entry) => entry.speaker === "character").length} from the character`,
+    `**Provider events:** command errors ${character.commandErrors.map((entry) => `${entry.command} ${entry.code} at ${fromAllocation(entry.atMs)}`).join(", ") || "none"}; diagnostics ${character.diagnostics.map((entry) => `${entry.reason} at ${fromAllocation(entry.atMs)}`).join(", ") || "none"}`,
+  );
+  return lines;
+};
+
 const showreelLines = (showreel: NonNullable<Evidence["showreel"]>): ReadonlyArray<string> => {
   const lines = [
     `**Scenes:** ${showreel.scenes.map((scene) => `${scene.key} ${scene.seconds} s`).join(", ")}; gaps on air ${showreel.gaps.map((gap) => `${Math.round(gap.toMs - gap.fromMs)} ms`).join(", ") || "none measured"}`,

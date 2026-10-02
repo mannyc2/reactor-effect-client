@@ -1025,6 +1025,25 @@ rehearse("avatar fails without the character's picture, and still ends its sessi
   },
 });
 
+// With no picture, the provider's call still goes live, is answered and ends: only the picture's
+// criterion fails, the session still ends, and the record keeps lengths, never what was said.
+rehearse("character fails without the character's picture, and keeps no text", {
+  check: "character",
+  faults: [{ _tag: "Video", video: "absent" }],
+  judge: (evidence) => {
+    assert.strictEqual(evidence.verdict, "fail");
+    assert.deepStrictEqual(
+      evidence.criteria.filter((criterion) => !criterion.passed).map((criterion) => criterion.name),
+      ["the character's picture came after live"],
+    );
+    assert.isTrue(evidence.sessions[0]?.close?.confirmed);
+    assert.isNotEmpty(evidence.character?.transcripts);
+    const kept = JSON.stringify(evidence);
+    for (const text of ["You are Probe", "Say hello", "about the sea", "Greeting 1"])
+      assert.notInclude(kept, text);
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {

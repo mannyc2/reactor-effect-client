@@ -48,9 +48,12 @@ export class Run extends Context.Service<
 
 const round = (value: number) => Math.round(value * 10) / 10;
 
-/** The client's spans the evidence keeps: its operations, a command's execution and a source's. */
+/**
+ * The client's spans the evidence keeps: its operations, a command's execution, a source's, and
+ * the Vidu S2-Avatar provider's.
+ */
 const clientSpans =
-  /^(?:Reactor\.|Session\.|CoordinatorClient\.|H3\.(?:enqueue|reconcile)$|H3Source\.(?:open|resume)$)/;
+  /^(?:Reactor\.|Session\.|CoordinatorClient\.|H3\.(?:enqueue|reconcile)$|H3Source\.(?:open|resume)$|ViduS2Avatar\.)/;
 
 export const make = Effect.fnUntraced(function* (initial: Evidence, file: string) {
   const origin = yield* Clock.currentTimeMillis;

@@ -1251,6 +1251,76 @@ export const AvatarRecord = Schema.Struct({
 });
 export type AvatarRecord = typeof AvatarRecord.Type;
 
+/**
+ * `character`: one call through the SDK's `ViduS2Avatar` provider. Its times
+ * count from the session's allocation, in milliseconds on the run's clock,
+ * unless a field says otherwise. It keeps codes, numbers and lengths: never a
+ * transcript, a persona, a reason, or the photo's bytes or path.
+ */
+export const CharacterRecord = Schema.Struct({
+  photo: Schema.Struct({ bytes: Schema.Int, type: Schema.Literals(["png", "jpeg", "webp"]) }),
+  /** The allocation on the run's timeline, as `sessions` has it. */
+  allocatedMs: Schema.optionalKey(Ms),
+  /** Each operation in order: when it started and settled, and `ok` or its failure as the library states it. */
+  steps: Schema.Array(
+    Schema.Struct({ name: Schema.String, startedMs: Ms, endedMs: Ms, outcome: Schema.String }),
+  ),
+  /** Each phase the provider's snapshots moved to, as it was seen. */
+  phases: Schema.Array(Schema.Struct({ phase: Schema.String, atMs: Ms })),
+  /** The call: when `startCall` returned it live, and its picture and sound until `endCall` was called. */
+  call: Schema.optionalKey(
+    Schema.Struct({
+      liveMs: Ms,
+      /** The live snapshot's `call_max_seconds`. */
+      callMaxSeconds: Schema.optionalKey(Schema.Finite),
+      /** From live: the first frame, the greeting's first sound, and the silence after it. */
+      firstFrameMs: Schema.optionalKey(Ms),
+      greetingOnsetMs: Schema.optionalKey(Ms),
+      greetingSilenceMs: Schema.optionalKey(Ms),
+      video: VideoSummary,
+      audio: AudioSummary,
+    }),
+  ),
+  /** The `say`: when it was sent, and from then the user's transcript, the answer's sound and the character's transcript. */
+  say: Schema.optionalKey(
+    Schema.Struct({
+      sentMs: Ms,
+      userTranscriptMs: Schema.optionalKey(Ms),
+      onsetMs: Schema.optionalKey(Ms),
+      characterTranscriptMs: Schema.optionalKey(Ms),
+    }),
+  ),
+  /** What `endCall` returned: the end's reason as a code, and how long the call was live. */
+  end: Schema.optionalKey(
+    Schema.Struct({ endReason: Schema.String, durationSeconds: Schema.Finite }),
+  ),
+  /** Every transcript the provider gave: who spoke, whether it was final, and its length, never its text. */
+  transcripts: Schema.Array(
+    Schema.Struct({
+      atMs: Ms,
+      speaker: Schema.Literals(["user", "character"]),
+      final: Schema.Boolean,
+      length: Schema.Int,
+    }),
+  ),
+  /** Every `command_error` the provider gave, by its codes. */
+  commandErrors: Schema.Array(
+    Schema.Struct({
+      atMs: Ms,
+      command: Schema.String,
+      origin: Schema.String,
+      code: Schema.String,
+      retryable: Schema.Boolean,
+    }),
+  ),
+  /** The provider's diagnostics, by their reason's tag. */
+  diagnostics: Schema.Array(Schema.Struct({ atMs: Ms, reason: Schema.String })),
+  /** The session's picture and sound, from its connection to its close. */
+  video: Schema.optionalKey(VideoSummary),
+  audio: Schema.optionalKey(AudioSummary),
+});
+export type CharacterRecord = typeof CharacterRecord.Type;
+
 export const Evidence = Schema.Struct({
   format: Schema.Literal(format),
   runId: Schema.String,
@@ -1454,6 +1524,7 @@ export const Evidence = Schema.Struct({
   unconnected: Schema.optionalKey(UnconnectedRecord),
   showreel: Schema.optionalKey(ShowreelRecord),
   avatar: Schema.optionalKey(AvatarRecord),
+  character: Schema.optionalKey(CharacterRecord),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -1480,6 +1551,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   unconnected: ["unconnected"],
   showreel: ["playout", "showreel"],
   avatar: ["server", "network", "avatar"],
+  character: ["network", "character"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */
