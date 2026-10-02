@@ -319,16 +319,24 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2>(
    * interruption is not one: Effect runs no handler for it.
    */
   const guard = <X, Y, Z>(effect: Effect.Effect<X, Y, Z>) => Effect.catchCause(effect, lose);
-  /** Runs `loop` until it is interrupted; a failure in it, a hook's defect included, loses the session. */
+  /**
+   * Runs `loop` until the source stops; a failure in it, a hook's defect included, loses the
+   * session. A presentation stops with its playback.
+   */
   const keep = <X>(loop: Effect.Effect<void, X, R | R2>) =>
-    loop.pipe(Effect.forever, guard, Effect.forkIn(owned));
+    loop.pipe(
+      Effect.forever,
+      guard,
+      Effect.raceFirst(Deferred.await(stopped)),
+      Effect.forkIn(owned),
+    );
   const without =
     (clipId: string) =>
     <C extends LocalClip>(values: ReadonlyArray<C>): ReadonlyArray<C> =>
       values.filter((value) => value.clipId !== clipId);
 
   // One build slot: the head of the building queue builds, then waits Ready unless it was removed.
-  const building = yield* keep(
+  yield* keep(
     Effect.gen(function* () {
       const next = yield* first((local) => local.building[0]);
       const scope = yield* Scope.fork(clips);
@@ -374,7 +382,7 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2>(
   );
 
   // Playback: a clip plays once nothing else does, as `nextToPlay` picks it.
-  const playback = yield* keep(
+  yield* keep(
     Effect.gen(function* () {
       yield* first(nextToPlay);
       const stop = yield* Deferred.make<void>();
@@ -423,14 +431,6 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2>(
       yield* modify((local) => [undefined, { ...local, playing: undefined }, [ended]]);
       yield* release(clip.scope, presented);
     }),
-  );
-  // Once the source stops, the build slot and playback end, and a presentation stops with its
-  // playback. The fibers are interrupted rather than raced against the signal: in Effect
-  // 4.0.0-rc.117, a race whose own fiber is interrupted while that fiber is running can leave the
-  // losing side running, unwaited.
-  yield* Deferred.await(stopped).pipe(
-    Effect.andThen(Fiber.interruptAll([building, playback])),
-    Effect.forkIn(owned),
   );
   // Made last, so it runs first as the source closes: a `stop` waiting on playback returns.
   yield* Scope.addFinalizer(owned, Deferred.succeed(stopped, undefined));
