@@ -5,7 +5,8 @@
  * command with the evidence of what answered it.
  *
  * `make(session)` observes a session it neither allocates nor closes. The
- * character arrives on the `main_video` and `main_audio` tracks; the caller
+ * character arrives on the `main_video` and `main_audio` tracks, which the
+ * provider resumes on the connection each time a call goes live; the caller
  * speaks on `mic`, which a browser publishes through `session.tracks`, or
  * types with `say`. Reactor bills the whole session, time between calls
  * included, so close it once the caller is done.
