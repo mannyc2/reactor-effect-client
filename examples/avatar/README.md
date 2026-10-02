@@ -51,8 +51,8 @@ On the second run:
 - the avatar was ready 2.1 s after `create_avatar`, against 26.7 s on the first, from the same
   photo;
 - the call was live about 4 s after `start_call`;
-- the picture came 0.20 s after the character's tracks were resumed at live, at 928x1088 and 24.9
-  fps (640x360 before a call);
+- the picture came 0.20 s after the character's tracks were resumed at live, at 24.9 fps, in
+  frames of 928x1088 and of 640x360;
 - `end_call` was answered in 6.9 s and 7.4 s.
 
 The frames are decoded by the native addon. An npm install of `reactor-effect-native` brings it

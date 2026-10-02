@@ -1,18 +1,18 @@
 ---
 name: reactor-effect
-description: Build Reactor real-time video applications with reactor-effect, the Effect (effect-ts v4) SDK. Use when code imports `reactor-effect-client`, `reactor-effect-browser` or `reactor-effect-native`; when writing Effect code that opens Reactor sessions, drives the H3 model, keeps a channel on air with `Playout`, reads decoded frames in Node or Bun, or tests against `ReactorTest`. SKIP for Reactor's official `@reactor-team/js-sdk` or Python `reactor-sdk` without Effect.
+description: Build Reactor real-time video applications with reactor-effect, the Effect (effect-ts v4) SDK. Use when code imports `reactor-effect-client`, `reactor-effect-browser` or `reactor-effect-native`; when writing Effect code that opens Reactor sessions, drives the H3 model or a Vidu S2-Avatar character, keeps a channel on air with `Playout`, reads decoded frames in Node or Bun, or tests against `ReactorTest`. SKIP for Reactor's official `@reactor-team/js-sdk` or Python `reactor-sdk` without Effect.
 ---
 
 # reactor-effect
 
 reactor-effect is an independent Effect SDK for [Reactor](https://reactor.inc)'s real-time video
-models. A session is a scoped Effect resource; the H3 model is a provider over it; `Playout` keeps
-H3 on air across sessions; `ReactorTest` is Reactor simulated in memory for offline runs and tests.
+models. A session is a scoped Effect resource; H3 and Vidu S2-Avatar are providers over it;
+`Playout` keeps H3 on air across sessions; `ReactorTest` is Reactor simulated in memory for offline runs and tests.
 
 **Packages** (one version for all, published to npm):
 
-- `reactor-effect-client`: `Reactor`, `Session`, `CoordinatorClient`, `H3`, `H3Source`,
-  `LocalSource`, `Playout`, `Media`, `Peer`, `ReactorError`, `ReactorTest`. Portable: Node, Bun and
+- `reactor-effect-client`: `Reactor`, `Session`, `CoordinatorClient`, `H3`, `ViduS2Avatar`,
+  `H3Source`, `LocalSource`, `Playout`, `Media`, `Peer`, `ReactorError`, `ReactorTest`. Portable: Node, Bun and
   browsers.
 - `reactor-effect-browser`: `BrowserPeer.layer` on `RTCPeerConnection`, `BrowserMedia` for tracks.
 - `reactor-effect-native`: `NativePeer.layer()`, or `NativePeer.layerIsolated()` under Node, on a
@@ -111,6 +111,18 @@ terminal `Unknown`, which is never replayed). `renewal: { lead }` opens the next
 before the cap and switches at a clip boundary. Read
 https://mannyc2.github.io/reactor-effect-client/concepts/playout/ before designing a schedule.
 
+## A talking character: `ViduS2Avatar`
+
+Vidu S2-Avatar (`ViduS2Avatar.modelName`, `reactor/vidu-s2-avatar`) makes a character from one photo
+that talks with a caller in a live call. `ViduS2Avatar.make(session)`, then
+`createAvatar({ bytes, type })` or `{ url }`, `startCall({ persona, greeting? })` (returns once live,
+with the character's `main_video`/`main_audio` resumed), `say(text)`, `interrupt`, `updateCall`,
+`endCall`. Commands go out one at a time; a refusal fails with reason `Refused` and the model's
+`code`. Reactor bills the whole session, time between calls included. On Node and Bun the caller
+speaks only through `say` (the native host can't publish a microphone); a browser publishes `mic`
+with `BrowserMedia.tracks`. Its hosted runs used the raw `Session`; the provider has run on
+`ReactorTest` only. Guide: https://mannyc2.github.io/reactor-effect-client/guides/avatar/
+
 ## Testing
 
 Use `@effect/vitest` with the simulated layer and `TestClock`. Fork `ReactorTest.flow("20 millis")`
@@ -122,6 +134,7 @@ https://mannyc2.github.io/reactor-effect-client/guides/testing-offline/
 ## Examples to copy from
 
 https://github.com/mannyc2/reactor-effect-client/tree/main/examples: `quickstart` (one clip,
-offline or live), `terminal` (frames drawn in a terminal), `livestream` (a 24/7 channel for many
-viewers), and the package examples: `packages/browser/examples` (a page with its own session),
-`packages/native/examples` (an MP4 capture), `packages/client/examples` (an offline-tested service).
+offline or live), `terminal` (frames drawn in a terminal), `avatar` (a Vidu S2-Avatar call),
+`livestream` (a 24/7 channel for many viewers), and the package examples:
+`packages/browser/examples` (a page with its own session), `packages/native/examples` (an MP4
+capture), `packages/client/examples` (an offline-tested service).

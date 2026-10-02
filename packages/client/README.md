@@ -1,11 +1,12 @@
 # reactor-effect-client
 
 The portable core of [reactor-effect](https://github.com/mannyc2/reactor-effect-client), an
-[Effect](https://effect.website) SDK for [Reactor](https://reactor.inc)'s real-time video models.
-It opens and owns Reactor sessions, drives the H3 model, keeps a channel on air across session caps
-with `Playout`, and simulates Reactor in memory with `ReactorTest`, so an application runs offline
-before it spends anything. It loads no native code and runs on Node, Bun and browsers; a transport
-comes from [`reactor-effect-browser`](https://www.npmjs.com/package/reactor-effect-browser) or
+[Effect](https://effect.website) SDK for [Reactor](https://reactor.inc)'s real-time video models. It
+opens and owns Reactor sessions, drives the H3 model and Vidu S2-Avatar's talking character, keeps a
+channel on air across session caps with `Playout`, and simulates Reactor in memory with
+`ReactorTest`, so an application runs offline before it spends anything. It loads no native code and
+runs on Node, Bun and browsers; a transport comes from
+[`reactor-effect-browser`](https://www.npmjs.com/package/reactor-effect-browser) or
 [`reactor-effect-native`](https://www.npmjs.com/package/reactor-effect-native).
 
 **[Documentation](https://mannyc2.github.io/reactor-effect-client/)** ·
@@ -74,6 +75,28 @@ For hosted H3, provide `Reactor.layer()` with `CoordinatorClient.layerConfig` (t
 `REACTOR_API_KEY`), a host's peer layer and an `HttpClient` instead; the program does not change.
 [Going live](https://mannyc2.github.io/reactor-effect-client/start/going-live/) walks through it.
 
+## A talking character
+
+`ViduS2Avatar` drives Vidu S2-Avatar (`reactor/vidu-s2-avatar`), which turns one photo of a person
+into a character that talks with a caller in a live call:
+
+```ts
+const avatar = yield * ViduS2Avatar.make(session);
+yield * avatar.createAvatar({ bytes, type: "image/jpeg" });
+// It returns once the call is live, with the character's picture and voice resumed.
+yield * avatar.startCall({ persona: "You are Tina, a museum guide.", greeting: "Say hello." });
+yield * avatar.say("What lives in the deepest tank?");
+const ended = yield * avatar.endCall;
+```
+
+A refused command fails with the `Refused` reason, carrying the model's own `code`. On Node and
+Bun the caller speaks only through `say`: the native host can't publish a microphone track; a
+browser publishes one on `mic`. The provider has run only on `ReactorTest`; two paid probes drove
+the same commands through the raw `Session` on hosted Reactor.
+[A talking character](https://mannyc2.github.io/reactor-effect-client/guides/avatar/) and the
+[avatar example](https://github.com/mannyc2/reactor-effect-client/tree/main/examples/avatar) cover
+the rest.
+
 ## Modules
 
 Each module is its own subpath, `reactor-effect-client/<Module>`, and the root exports every one as
@@ -85,13 +108,14 @@ a namespace. Nothing under `internal/` is reachable.
 | [`Session`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)           | One session: status, events, commands, uploads, recordings, media, reconnects and its close report |
 | [`CoordinatorClient`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/) | Reactor's HTTP API: pricing, tokens (`tokens`, `fixedTokens`), inspection, termination, recordings |
 | [`H3`](https://mannyc2.github.io/reactor-effect-client/concepts/h3/)                      | The H3 provider over a session: its state and queue, commands, acceptance and reference validation |
+| [`ViduS2Avatar`](https://mannyc2.github.io/reactor-effect-client/guides/avatar/)          | The Vidu S2-Avatar provider over a session: an avatar from a photo, its calls and transcripts      |
 | [`Playout`](https://mannyc2.github.io/reactor-effect-client/concepts/playout/)            | Airs keyed items in priority lanes across sessions it renews, and reports what aired               |
 | [`H3Source`](https://mannyc2.github.io/reactor-effect-client/concepts/sources/)           | A paid H3 session as a playout source: `open`, `resume` and the owner record `Allocation`          |
 | [`LocalSource`](https://mannyc2.github.io/reactor-effect-client/concepts/sources/)        | A playout source rendered in this process by the application's hooks                               |
 | [`Media`](https://mannyc2.github.io/reactor-effect-client/concepts/media/)                | Decoded frames and platform tracks of one connection generation, and `recorder`                    |
 | [`Peer`](https://mannyc2.github.io/reactor-effect-client/reference/modules/)              | The transport port a host implements, and the `PeerFactory` service                                |
 | [`ReactorError`](https://mannyc2.github.io/reactor-effect-client/concepts/errors/)        | Every failure the client raises, its tagged reason and its dispatch outcome                        |
-| [`ReactorTest`](https://mannyc2.github.io/reactor-effect-client/guides/testing-offline/)  | Reactor simulated in memory: the coordinator, peers and an H3 model, driven by the Effect clock    |
+| [`ReactorTest`](https://mannyc2.github.io/reactor-effect-client/guides/testing-offline/)  | Reactor simulated in memory: the coordinator, peers, H3 and Vidu S2-Avatar, on the Effect clock    |
 
 Each module's doc comments state its options' defaults and bounds.
 
@@ -125,7 +149,8 @@ Each module's doc comments state its options' defaults and bounds.
 [`examples/`](https://github.com/mannyc2/reactor-effect-client/tree/main/packages/client/examples)
 is an application service written against `Playout`, run offline on `ReactorTest` and tested on
 Effect's test clock. The repository's [other examples](https://github.com/mannyc2/reactor-effect-client/tree/main/examples)
-include a terminal viewer and a 24/7 channel broadcast to many browsers.
+include a terminal viewer, a call with a Vidu S2-Avatar character and a 24/7 channel broadcast to
+many browsers.
 
 ## Development
 

@@ -1,24 +1,25 @@
 # Examples
 
-Six Effect applications built on reactor-effect. Each is its own private workspace that declares
+Seven Effect applications built on reactor-effect. Each is its own private workspace that declares
 exactly what it uses and runs from its TypeScript sources on Node 22.18 or newer, or Bun. Most run
 offline on `ReactorTest`, Reactor simulated in memory, with no API key. All but the rundown are
-written to run on hosted H3 with `REACTOR_API_KEY` set, where only the layer changes. No example has
-run there yet, though paid checks ran most of the SDK they use
+written to run on hosted Reactor with `REACTOR_API_KEY` set, where only the layer changes. No
+example has run there yet, though paid checks ran most of the SDK they use
 ([hosted evidence](https://mannyc2.github.io/reactor-effect-client/reference/hosted-evidence/)).
 
 ```sh
 bun install && bun run build      # once, at the repository root
 ```
 
-| Example                                   | What it shows                                                                                                                                        | Without a key         |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| [Quickstart](./quickstart)                | One H3 clip from prompt to its end, with its frames decoded in your process, in one file                                                             | runs on `ReactorTest` |
-| [Terminal viewer](./terminal)             | H3 drawn in your terminal as 24-bit colour text from decoded frames, with every clip followed to its end: no browser anywhere                        | runs on `ReactorTest` |
-| [Live channel](./livestream)              | Your own 24/7 AI channel: viewers prompt it, a house rotation fills the gaps, sessions renew with no dark air, many browsers watch, RTMP restreaming | runs on `ReactorTest` |
-| [H3 Studio](../packages/browser/examples) | A page that runs its own session: H3's queue live, references, each clip's lifecycle, failures with their dispatch outcome                           | runs in the browser   |
-| [Capture](../packages/native/examples)    | A command line that writes one clip's decoded frames and audio to an MP4                                                                             | live only             |
-| [Rundown](../packages/client/examples)    | An application service over `Playout`, run and tested offline on the test clock                                                                      | runs on `ReactorTest` |
+| Example                                   | What it shows                                                                                                                                               | Without a key         |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| [Quickstart](./quickstart)                | One H3 clip from prompt to its end, with its frames decoded in your process, in one file                                                                    | runs on `ReactorTest` |
+| [Terminal viewer](./terminal)             | H3 drawn in your terminal as 24-bit colour text from decoded frames, with every clip followed to its end: no browser anywhere                               | runs on `ReactorTest` |
+| [Avatar](./avatar)                        | A Vidu S2-Avatar character made from a photo: one call with a greeting and an answer to `say`, its picture decoded in your process, both sides' transcripts | runs on `ReactorTest` |
+| [Live channel](./livestream)              | Your own 24/7 AI channel: viewers prompt it, a house rotation fills the gaps, sessions renew with no dark air, many browsers watch, RTMP restreaming        | runs on `ReactorTest` |
+| [H3 Studio](../packages/browser/examples) | A page that runs its own session: H3's queue live, references, each clip's lifecycle, failures with their dispatch outcome                                  | runs in the browser   |
+| [Capture](../packages/native/examples)    | A command line that writes one clip's decoded frames and audio to an MP4                                                                                    | live only             |
+| [Rundown](../packages/client/examples)    | An application service over `Playout`, run and tested offline on the test clock                                                                             | runs on `ReactorTest` |
 
 Offline, the simulated H3 sends a flat colour per clip, so what you see is the SDK at work rather
 than the model's picture. H3 Studio's offline build runs in the

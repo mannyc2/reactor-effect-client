@@ -8,7 +8,8 @@ import { Aside } from "@astrojs/starlight/components";
 Every claim on this site about hosted Reactor rests on a paid run listed here. Each run is one
 check of the [hosted harness](https://github.com/mannyc2/reactor-effect-client/tree/main/integration/hosted),
 an Effect program over the public API, run by the maintainer against hosted H3 Reference Turbo
-Realtime (`reactor/h3-reference-to-video-turbo-realtime`). Its evidence file and summary are
+Realtime (`reactor/h3-reference-to-video-turbo-realtime`), and the `avatar` check against Vidu
+S2-Avatar (`reactor/vidu-s2-avatar`). Its evidence file and summary are
 committed under `integration/hosted/evidence/`, with the session ids, so Reactor can find its side
 of each run.
 
@@ -23,7 +24,7 @@ its worst case in a ledger before any token exists, and a ledger's total is capp
 
 ## Every run
 
-22 runs, 28 sessions, from 2026-09-24 to 2026-10-01. Every session ended with its termination
+24 runs, 30 sessions, from 2026-09-24 to 2026-10-02. Every session ended with its termination
 confirmed by an independent read.
 
 | Started (UTC)    | Code                 | Check               | Sessions | Estimate | Result                                                       |
@@ -50,6 +51,8 @@ confirmed by an independent read.
 | 2026-09-29 14:00 | checkout `c9f3f96`   | `unconnected`       | 2        | $0.900   | Pass                                                         |
 | 2026-09-29 14:03 | checkout `c9f3f96`   | `show`              | 3        | $1.413   | Pass, every criterion                                        |
 | 2026-10-01 02:01 | checkout `d013d00`   | `showreel`          | 1        | $1.680   | Pass, every criterion; footage on the `media` release        |
+| 2026-10-01 15:05 | checkout `becfca5`   | `avatar`            | 1        | $1.155   | Fail: no picture without a resume at live; `end_call` past 10 s |
+| 2026-10-02 12:07 | checkout `b7ce932`   | `avatar`            | 1        | $0.406   | Pass, every criterion                                        |
 
 The summaries, one per ledger:
 [0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md),
@@ -58,18 +61,22 @@ The summaries, one per ledger:
 [0.7.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.7.0/summary.md),
 [0.8.0-dev](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dev/summary.md),
 [0.8.0-api](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-api/summary.md),
-[0.8.0-probe](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-probe/summary.md)
-and [0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-rc/summary.md).
+[0.8.0-probe](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-probe/summary.md),
+[0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-rc/summary.md)
+and [0.9.2-avatar](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.9.2-avatar/summary.md).
 
 - **Estimates** are the evidence's own, at the rate Reactor's pricing stated then: 125 credits a
   second, $0.0125. Up to 0.7.0 they count every started minute whole, so they are upper bounds;
   from 0.8.0 they count seconds. On 2026-09-30 the pricing lists 350 credits a second, so the same
-  sessions would cost 2.8 times the per-second estimates today.
+  sessions would cost 2.8 times the per-second estimates today. The `avatar` runs are at Vidu
+  S2-Avatar's 70 credits a second, $0.007, counted by the second.
 - **Failures.** Each found cause was fixed before the check ran again to qualify. Most were the
   library's: 0.3.0-rc.0's acceptance, ICE pair and attach, 0.7.0's misplaced continued insert and
   doubled `stop`, and an `INACTIVE` session read as ended. Two were criteria of the checks' own
   making. The third 0.3.0-rc.0 vertical repeated the first on the same bytes, to settle billing and
   H3's reply order. Position zero, listed below, is H3's own ordering and is still unexplained.
+  The first `avatar` run resumed no track at live and waited 10 s for an `end_call` that took
+  13.2 s; the reconnect it then tried for the picture hung 82 s, past its own deadline.
 - **Commits.** The 0.8.0-dev commits were renamed when the branch's messages were reworded, with no
   change to any tree; the ledger's summary maps each to its new name. The second `show`'s checkout,
   `c9f3f96`, matches the 0.8.0 release's library source except for its version string.
@@ -136,7 +143,7 @@ and [0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integr
   passing `edits` and `show` runs, the picture at a continued seam changed 2.3–5.8 times the clip's
   own motion, and at their independent seams 11–20 times; a cut seam elsewhere measured 6.5 times.
 
-**Termination**: every one of the 28 sessions confirmed ended; where timed, `CLOSED` read
+**Termination**: every one of the 30 sessions confirmed ended; where timed, `CLOSED` read
 0.63–0.86 s after the `DELETE`.
 
 **The showreel** ([0.9.0-showreel](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.9.0-showreel/summary.md),
@@ -145,6 +152,17 @@ and the decoded frames and audio were recorded in-process under Bun as they arri
 1344×768 and 24 fps, the reader never behind, seams of 89–120 ms with no dark frame, gaps on air of
 2–67 ms between scenes, about $1.68. The footage is on the
 [`media` release](https://github.com/mannyc2/reactor-effect-client/releases/tag/media).
+
+**Vidu S2-Avatar** ([0.9.2-avatar](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.9.2-avatar/summary.md), 2026-10-01 and 10-02): the
+`avatar` probe drove the model through the raw `Session` under Bun, in one session per run.
+
+- The second run's picture came 0.20 s after both tracks were resumed at live, at 24.9 fps in frames
+  of 928×1088 and of 640×360, none lost; its voice came as 48 kHz mono PCM.
+- An avatar was ready 26.7 s after `create_avatar` on the first run and 2.1 s on the second, from
+  the same photo. A call was live 2.7–4.5 s after `start_call`.
+- The character's first transcript came 2.5–2.6 s after live, and the sound of its answer 3.1–3.4 s
+  after a `say`. An `interrupt` 1.5 s into an answer silenced it 0.40 s later.
+- `update_call` to another voice answered `call_updated` in 0.24 s.
 
 ## What the runs found about the platform
 
@@ -176,6 +194,16 @@ use:
 - A session allocated and never connected read `ACTIVE` throughout and was ended by Reactor at its
   60-second cap, 60.09 s after allocation; a second create on a spent single-session token was
   refused with 403 (0.8.0-probe).
+- Vidu S2-Avatar sent a call's picture only once `main_video` was resumed after the call went live;
+  on the same connection, the next call's picture came with nothing done. Its voice came without
+  that resume (0.9.2-avatar).
+- Vidu S2-Avatar acknowledged a refused command, and its `command_error`, which names the command
+  but no request, came first. A command carrying an explicit `null` and a `say` with no text got an
+  `invalid_command` error frame (0.9.2-avatar).
+- Vidu S2-Avatar answered `end_call` 6.9–13.2 s after it was sent, past the SDK's 10-second reply
+  deadline on the first run (0.9.2-avatar).
+- Vidu S2-Avatar declares `clone_voice` and refused it with `CLONING_DISABLED`; `list_voices` listed
+  56 voices, and `call_max_seconds` read 7200 (0.9.2-avatar).
 
 ## Not yet run on hosted Reactor
 
@@ -191,5 +219,8 @@ use:
 - **macOS arm64.** Every paid run was on Linux x64.
 - **Long sessions.** The longest paid run lasted under two minutes; no multi-hour renewal soak has
   run.
+- **The `ViduS2Avatar` provider and the avatar example.** The `avatar` probe drove the model through
+  the raw `Session`. A caller's microphone or webcam, reference images and a reconnect during a call
+  have not run, nor whether Reactor ends a Vidu S2-Avatar session at its cap.
 - **Restreaming and native publication.** No run has sent native media on to a browser, to RTMP or
   to LiveKit.

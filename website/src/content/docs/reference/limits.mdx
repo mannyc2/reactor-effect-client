@@ -27,7 +27,9 @@ commands, moderation, and `Playout` over three sessions, with one planned renewa
 replacement of an ended session. They ran from Linux x64, through the native host in process under
 Bun and isolated under Node, over a direct network path. On 0.9.0 only the one-session `showreel` check (2026-10-01) has run;
 0.9.0's other checks, its published client packages, the browser host and the in-process native host
-under Node have not run on hosted Reactor yet.
+under Node have not run on hosted Reactor yet. Vidu S2-Avatar's avatar, calls, picture, voice and
+refusals ran through the raw `Session` in two `avatar` probes (2026-10-01 and 10-02); its
+provider has not run there.
 
 **Locally and in CI only:**
 
@@ -37,27 +39,32 @@ under Node have not run on hosted Reactor yet.
   on 2026-09-22, before the current API;
 - the native media path under load, against a local libwebrtc sender: see
   [measured performance](/reactor-effect-client/guides/native/#measured-performance);
-- 0.9.0's `Playout.place` and `follows`, on `ReactorTest`.
+- 0.9.0's `Playout.place` and `follows`, on `ReactorTest`;
+- the `ViduS2Avatar` provider and the avatar example, on `ReactorTest`.
 
 **Not yet exercised anywhere:** TURN relays with hosted credentials, native media published on to a
 browser or a stream ingest, sessions longer than a few minutes on hosted Reactor, and dedicated
 physical machines: the native performance figures come from a 4-vCPU container and GitHub's
 runners.
 
-`ReactorTest` models what H3 does, with delays drawn from paid runs. It does not model hosted
+`ReactorTest` models what H3 and Vidu S2-Avatar do, with delays drawn from paid runs. It does not model hosted
 latency as a real network varies it, billing as Reactor charges it, TURN relays or interop. A
 rehearsal on it is never evidence of hosted behaviour.
 
 ## Models
 
 The SDK targets H3 Reference Turbo Realtime (`reactor/h3-reference-to-video-turbo-realtime`),
-against its documented 0.5.5 schema. `H3.make` reads the deployment's schema and fails any command
+against its documented 0.5.5 schema, and Vidu S2-Avatar (`reactor/vidu-s2-avatar`) through
+`ViduS2Avatar`. `H3.make` reads the deployment's schema and fails any command
 the deployment lacks with `UnsupportedCapability` before sending it; the hosted deployment reports
 its version as `v0.0.0`.
 
 `Reactor`, `Session` and the hosts are not specific to H3: `reactor.create` takes any model name,
-and `session.command(name, data)` sends any command. But only H3 has a provider, a playout source
-and hosted runs. FastH3 and Reactor's other models are not supported yet.
+and `session.command(name, data)` sends any command. H3 and Vidu S2-Avatar have providers and
+paid runs on hosted Reactor, Vidu S2-Avatar's through the raw `Session` so far; only H3 has a
+playout source. FastH3 and Reactor's other models are not supported yet.
+On Node and Bun, a Vidu S2-Avatar caller speaks only through `say`: the native host can't publish a
+microphone track.
 
 ## The native peer
 

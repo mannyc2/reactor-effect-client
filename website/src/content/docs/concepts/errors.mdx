@@ -70,6 +70,7 @@ The others carry fields of their own:
 | ---------------------------- | ------------------------------------------------------------------------- |
 | `Http`                       | `status` (absent when no response arrived), `retryAfter`, `body`          |
 | `Remote`, `RecorderDisabled` | `remoteCode`, `body`: the model's own refusal                             |
+| `Refused`                    | `code`, `origin`, `retryable`, `traceId`, `body`: a model's documented refusal, such as Vidu S2-Avatar's `command_error` |
 | `Native`                     | `backendMessage`: libwebrtc's text                                        |
 | `IceFailed`                  | `pairs`, `candidateTypes`: no ICE candidate pair worked                   |
 | `TransportFailed`            | `pairs`: ICE worked, and the DTLS or SCTP transport above it failed       |
@@ -196,7 +197,7 @@ an `Aborted` failure that keeps the error in `context.detail`.
 
 A failure's `message` is written by the library and never holds provider or payload text, so logs
 and spans that record it stay free of prompts, refusals and SDP. Text from outside lives only in
-`Redacted` fields: `body` on `Http` and `Remote`, `remoteCode` on `Remote`, `backendMessage` on
+`Redacted` fields: `body` on `Http`, `Remote` and `Refused`, `remoteCode` on `Remote`, `backendMessage` on
 `Native`, and `context.detail`. They print as `<redacted>` in logs, spans and `toJSON`, and stay out
 of the cause chain that exporters such as `OtlpTracer` render. Read one only on purpose:
 
