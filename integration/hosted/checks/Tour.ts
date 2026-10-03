@@ -380,6 +380,9 @@ export const tour = (pieces: Pieces) =>
                   tokens: sessionTokens,
                   onAllocated: (allocated) =>
                     Effect.gen(function* () {
+                      yield* pieces
+                        .recordSessionEvents(allocated)
+                        .pipe(Effect.forkScoped({ startImmediately: true }));
                       if (created === undefined)
                         return yield* ReactorError.fromCode(
                           "InvalidState",

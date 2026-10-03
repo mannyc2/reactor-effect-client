@@ -67,8 +67,25 @@ const rehearse = (
     ),
   );
 
-const passes = (evidence: Evidence) =>
+const passes = (evidence: Evidence) => {
   assert.strictEqual(evidence.verdict, "pass", evidence.reasons.join("; "));
+  if (evidence.check === "character") {
+    assert.isTrue(
+      evidence.sessionEvents?.some(
+        (event) => event.tag === "Decoded" && event.detail === "video main_video",
+      ),
+      "the allocation-time video event was kept",
+    );
+    assert.isTrue(
+      evidence.sessionEvents.some((event) => event.tag === "Status" && event.detail === "ready"),
+      "the session reader lived through connection",
+    );
+  }
+  assert.isTrue(
+    evidence.liveness !== undefined && evidence.liveness.samples.length > 0,
+    "the runner's timer was sampled",
+  );
+};
 const failed = (criterion: string) => (evidence: Evidence) => {
   assert.strictEqual(evidence.verdict, "fail");
   assert.isFalse(
@@ -1038,6 +1055,16 @@ rehearse("character fails without the character's picture, and keeps no text", {
     );
     assert.isTrue(evidence.sessions[0]?.close?.confirmed);
     assert.isNotEmpty(evidence.character?.transcripts);
+    assert.isTrue(
+      evidence.sessionEvents?.some(
+        (event) => event.tag === "Decoded" && event.detail === "audio main_audio",
+      ),
+      "the allocation-time audio event was kept",
+    );
+    assert.isTrue(
+      evidence.sessionEvents.some((event) => event.tag === "Status" && event.detail === "ready"),
+      "the session reader lived through connection",
+    );
     const kept = JSON.stringify(evidence);
     for (const text of ["You are Probe", "Say hello", "about the sea", "Greeting 1"])
       assert.notInclude(kept, text);

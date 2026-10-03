@@ -313,6 +313,9 @@ export const character = Effect.fnUntraced(function* (pieces: Pieces) {
                 tokens: CoordinatorClient.fixedTokens(grant),
                 onAllocated: (allocation) =>
                   Effect.gen(function* () {
+                    yield* pieces
+                      .recordSessionEvents(allocation)
+                      .pipe(Effect.forkScoped({ startImmediately: true }));
                     deadline = yield* pieces.allocated(allocation.id, grant);
                     grants.set(allocation.id, grant);
                     allocatedMs =
