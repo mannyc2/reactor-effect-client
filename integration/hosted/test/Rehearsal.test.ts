@@ -1213,6 +1213,16 @@ rehearse("fasth3 records every answer and keeps no prompt or reason text", {
   faults: [{ _tag: "FailBuild", nth: 2, reason: "Private provider reason for the FastH3 probe" }],
   judge: (evidence, ledger) => {
     passes(evidence);
+    assert.isTrue(
+      evidence.sessionEvents?.some(
+        (event) => event.tag === "Decoded" && event.detail === "video main_video",
+      ),
+      "the allocation-time video event was kept",
+    );
+    assert.isTrue(
+      evidence.sessionEvents.some((event) => event.tag === "Status" && event.detail === "ready"),
+      "the session reader lived through connection",
+    );
     const probe = evidence.fasth3;
     assert.isDefined(probe);
     assert.isTrue(evidence.criteria.every((criterion) => criterion.passed));

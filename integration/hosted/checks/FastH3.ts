@@ -241,6 +241,12 @@ export const fastH3 = Effect.fnUntraced(function* (pieces: Pieces) {
                 deadline = yield* pieces.allocated(allocation.id, grant);
                 stepDeadline = Math.min(stepDeadline, deadline);
                 grants.set(allocation.id, grant);
+                yield* pieces
+                  .recordSessionEvents(allocation)
+                  .pipe(
+                    Effect.provideService(Scope.Scope, outer),
+                    Effect.forkIn(outer, { startImmediately: true }),
+                  );
                 // Both the subscription and the reader outlive the step that connects the session.
                 const observation = yield* allocation
                   .observe({ capacity: maxHeard })
