@@ -17,6 +17,7 @@ import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import { isReactorFailure, type ReactorFailure } from "reactor-effect-client/ReactorError";
 import type { Evidence, Outcome, Span } from "./Evidence.js";
+import { ConnectPhase } from "./Evidence.js";
 import { SaveFailed, writer } from "./Ledger.js";
 import { Refused } from "./Spend.js";
 
@@ -87,6 +88,9 @@ export const make = Effect.fnUntraced(function* (initial: Evidence, file: string
           : {}),
         status: status._tag === "Started" ? "open" : Exit.isSuccess(status.exit) ? "ok" : "error",
         attributes,
+        events: span.events.flatMap(([name, time]) =>
+          Schema.is(ConnectPhase)(name) ? [{ name, atMs: ms(time) }] : [],
+        ),
       };
     });
   const now = Effect.map(Clock.currentTimeMillis, (at) => round(at - origin));
