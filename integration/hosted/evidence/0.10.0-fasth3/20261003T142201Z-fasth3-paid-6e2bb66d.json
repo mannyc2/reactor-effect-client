@@ -1,0 +1,2156 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "6e2bb66d",
+  "check": "fasth3",
+  "mode": "paid",
+  "startedAt": "2026-10-03T14:22:01.297Z",
+  "finishedAt": "2026-10-03T14:22:16.619Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "ca3917595ef9f9cd31d004df04c8f1a028edd36c",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.10.0",
+      "reactor-effect-native": "0.10.0",
+      "effect": "4.0.0",
+      "@effect/platform-node": "4.0.0"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "9390d1775d66cd0307c90b1db89c969d7adfd2592086ec1b07a5f7acdd614da4",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "Linux workstation, no VPN, outbound UDP open",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 2.1,
+    "totalUsd": 2.1,
+    "reservedBeforeUsd": 0,
+    "rate": {
+      "creditsPerSecond": 350,
+      "creditsPerDollar": 10000,
+      "per": "second"
+    },
+    "worstCaseUsd": 1.75,
+    "estimatedUsd": 0.525
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 50,
+      "expiresAt": 1791037431
+    }
+  ],
+  "sessions": [
+    {
+      "id": "611c1269-a905-42c0-96db-dc656080b0e1",
+      "allocatedMs": 350,
+      "capEndsAt": "2026-10-03T14:22:51.658Z",
+      "close": {
+        "requestedMs": 14890,
+        "reportedMs": 15205,
+        "confirmed": true,
+        "report": {
+          "localClosed": true,
+          "allocation": "known",
+          "ownership": "owned",
+          "sessionId": "611c1269-a905-42c0-96db-dc656080b0e1",
+          "remote": {
+            "attempted": true,
+            "responseReceived": true,
+            "confirmed": true,
+            "evidence": "terminal",
+            "deleteStatus": 200,
+            "state": "CLOSED"
+          },
+          "unpublishSubmitted": [],
+          "unresolvedPublications": [],
+          "localErrors": []
+        }
+      },
+      "trail": [
+        {
+          "atMs": 15310,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 15310
+    }
+  ],
+  "milestones": [
+    {
+      "atMs": 2,
+      "step": "admitted",
+      "detail": "worst case $1.7500"
+    },
+    {
+      "atMs": 86,
+      "step": "minted"
+    },
+    {
+      "atMs": 351,
+      "step": "allocated",
+      "detail": "611c1269-a905-42c0-96db-dc656080b0e1"
+    },
+    {
+      "atMs": 2692,
+      "step": "connected"
+    },
+    {
+      "atMs": 2819,
+      "step": "contract read"
+    },
+    {
+      "atMs": 3041,
+      "step": "length answered",
+      "detail": "Remote"
+    },
+    {
+      "atMs": 3069,
+      "step": "length answered",
+      "detail": "Remote"
+    },
+    {
+      "atMs": 3098,
+      "step": "length answered",
+      "detail": "clip_length_accepted"
+    },
+    {
+      "atMs": 3130,
+      "step": "length answered",
+      "detail": "clip_length_accepted"
+    },
+    {
+      "atMs": 3158,
+      "step": "length answered",
+      "detail": "clip_length_accepted"
+    },
+    {
+      "atMs": 3186,
+      "step": "length answered",
+      "detail": "clip_length_accepted"
+    },
+    {
+      "atMs": 3214,
+      "step": "length answered",
+      "detail": "clip_length_accepted"
+    },
+    {
+      "atMs": 3242,
+      "step": "set_flush_on_clip_end answered",
+      "detail": "flush_accepted"
+    },
+    {
+      "atMs": 3270,
+      "step": "set_autoplay answered",
+      "detail": "autoplay_accepted"
+    },
+    {
+      "atMs": 3309,
+      "step": "plain answered",
+      "detail": "clip_queued"
+    },
+    {
+      "atMs": 3398,
+      "step": "reference_images answered",
+      "detail": "command_error"
+    },
+    {
+      "atMs": 3427,
+      "step": "second answered",
+      "detail": "clip_queued"
+    },
+    {
+      "atMs": 3455,
+      "step": "ahead of its anchor answered",
+      "detail": "clip_queued"
+    },
+    {
+      "atMs": 3537,
+      "step": "unknown source answered",
+      "detail": "ack"
+    },
+    {
+      "atMs": 13256,
+      "step": "from history answered",
+      "detail": "clip_queued"
+    },
+    {
+      "atMs": 13285,
+      "step": "pop answered",
+      "detail": "clip_popped"
+    },
+    {
+      "atMs": 14725,
+      "step": "stop answered",
+      "detail": "ack"
+    },
+    {
+      "atMs": 14887,
+      "step": "fasth3 recorded"
+    },
+    {
+      "atMs": 15205,
+      "step": "closed",
+      "detail": "611c1269-a905-42c0-96db-dc656080b0e1 confirmed"
+    },
+    {
+      "atMs": 15310,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [],
+  "criteria": [
+    {
+      "name": "the deployment's document was read",
+      "passed": true
+    },
+    {
+      "name": "the first state and queue were read",
+      "passed": true
+    },
+    {
+      "name": "state and queue counts were read in pairs at least three times, once with an unbuilt clip",
+      "passed": true
+    },
+    {
+      "name": "every length was answered",
+      "passed": true
+    },
+    {
+      "name": "every enqueue was answered",
+      "passed": true
+    },
+    {
+      "name": "after a clip finished, the queue was read",
+      "passed": true
+    },
+    {
+      "name": "stop was answered",
+      "passed": true
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "spans": [
+    {
+      "name": "CoordinatorClient.mintToken",
+      "startMs": 3.5,
+      "durationMs": 82.3,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 88.3,
+      "durationMs": 2603.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.model.name": "reactor/fast-h3",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 353.1,
+      "durationMs": 2338.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1"
+      },
+      "events": [
+        {
+          "name": "reactor.connect.described",
+          "atMs": 665.1
+        },
+        {
+          "name": "reactor.connect.prepared",
+          "atMs": 770.2
+        },
+        {
+          "name": "reactor.connect.registered",
+          "atMs": 895
+        },
+        {
+          "name": "reactor.connect.offered",
+          "atMs": 1360.6
+        },
+        {
+          "name": "reactor.connect.answered",
+          "atMs": 1741.8
+        },
+        {
+          "name": "reactor.connect.ready",
+          "atMs": 2689.6
+        }
+      ]
+    },
+    {
+      "name": "Session.control",
+      "startMs": 2694.8,
+      "durationMs": 123.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_schema",
+        "reactor.request.id": "ctrl_be2670d39bf0339443242146e1b6732f_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "CoordinatorClient.inspect",
+      "startMs": 2819.8,
+      "durationMs": 99.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 2920.5,
+      "durationMs": 59.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 2981.6,
+      "durationMs": 30.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_2",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3013.1,
+      "durationMs": 27.4,
+      "status": "error",
+      "attributes": {
+        "reactor.operation": "set_clip_seconds",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_3",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied",
+        "error.type": "Remote"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3042.1,
+      "durationMs": 26.2,
+      "status": "error",
+      "attributes": {
+        "reactor.operation": "set_clip_seconds",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_4",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied",
+        "error.type": "Remote"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3069.9,
+      "durationMs": 28.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_clip_seconds",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_5",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3099.4,
+      "durationMs": 30.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_clip_seconds",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_6",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3131.1,
+      "durationMs": 27,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_clip_seconds",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_7",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3159.1,
+      "durationMs": 27,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_clip_seconds",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_8",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3187.1,
+      "durationMs": 27,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_clip_seconds",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_9",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3215.2,
+      "durationMs": 26.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_flush_on_clip_end",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_10",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3242.8,
+      "durationMs": 27.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_11",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3280.4,
+      "durationMs": 28.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_12",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3310.5,
+      "durationMs": 31.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_13",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3342.8,
+      "durationMs": 27.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_14",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3371.1,
+      "durationMs": 27.1,
+      "status": "error",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_15",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied",
+        "error.type": "Remote"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3399.6,
+      "durationMs": 27,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_16",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3427.8,
+      "durationMs": 26.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_17",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3455.6,
+      "durationMs": 26.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_18",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3482.7,
+      "durationMs": 25.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_19",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3509.3,
+      "durationMs": 27.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_20",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 13160.9,
+      "durationMs": 40.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_21",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 13202.4,
+      "durationMs": 25.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_22",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 13228.9,
+      "durationMs": 27.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_23",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 13257.9,
+      "durationMs": 27.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "pop",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_24",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 14698,
+      "durationMs": 27.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "stop",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_25",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 14828,
+      "durationMs": 27.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_26",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 14855.8,
+      "durationMs": 25.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_be2670d39bf0339443242146e1b6732f_27",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.close",
+      "startMs": 14890.3,
+      "durationMs": 314.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      },
+      "events": []
+    },
+    {
+      "name": "CoordinatorClient.terminate",
+      "startMs": 14903,
+      "durationMs": 301.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      },
+      "events": []
+    },
+    {
+      "name": "CoordinatorClient.inspect",
+      "startMs": 15207.4,
+      "durationMs": 103,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "611c1269-a905-42c0-96db-dc656080b0e1"
+      },
+      "events": []
+    }
+  ],
+  "liveness": {
+    "samples": [
+      {
+        "atMs": 1005,
+        "lateMs": 0.2
+      },
+      {
+        "atMs": 2005,
+        "lateMs": 0.2
+      },
+      {
+        "atMs": 3005,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 4005,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 5006,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 6006,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 7006,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 8006,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 9006,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 10006,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 11006,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 12007,
+        "lateMs": 0.2
+      },
+      {
+        "atMs": 13007,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 14007,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 15007,
+        "lateMs": 0.2
+      }
+    ],
+    "maxLateMs": 0.2
+  },
+  "sessionEvents": [
+    {
+      "atMs": 359,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "connecting"
+    },
+    {
+      "atMs": 359,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "waiting"
+    },
+    {
+      "atMs": 1742,
+      "generation": 1,
+      "tag": "Track",
+      "detail": "main_video"
+    },
+    {
+      "atMs": 1742,
+      "generation": 1,
+      "tag": "Decoded",
+      "detail": "video main_video"
+    },
+    {
+      "atMs": 1742,
+      "generation": 1,
+      "tag": "Track",
+      "detail": "main_audio"
+    },
+    {
+      "atMs": 1742,
+      "generation": 1,
+      "tag": "Decoded",
+      "detail": "audio main_audio"
+    },
+    {
+      "atMs": 2692,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "ready"
+    },
+    {
+      "atMs": 2819,
+      "generation": 1,
+      "tag": "Control",
+      "detail": "ModelSchema"
+    },
+    {
+      "atMs": 2980,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update matched"
+    },
+    {
+      "atMs": 3012,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update matched"
+    },
+    {
+      "atMs": 3041,
+      "generation": 1,
+      "tag": "CommandError",
+      "detail": "Remote"
+    },
+    {
+      "atMs": 3068,
+      "generation": 1,
+      "tag": "CommandError",
+      "detail": "Remote"
+    },
+    {
+      "atMs": 3098,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 3098,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_length_accepted matched"
+    },
+    {
+      "atMs": 3128,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 3130,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_length_accepted matched"
+    },
+    {
+      "atMs": 3158,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 3158,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_length_accepted matched"
+    },
+    {
+      "atMs": 3186,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 3186,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_length_accepted matched"
+    },
+    {
+      "atMs": 3214,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 3214,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_length_accepted matched"
+    },
+    {
+      "atMs": 3242,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 3242,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message flush_accepted matched"
+    },
+    {
+      "atMs": 3270,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 3270,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message autoplay_accepted matched"
+    },
+    {
+      "atMs": 3308,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 3308,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 3309,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 3342,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update matched"
+    },
+    {
+      "atMs": 3370,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update matched"
+    },
+    {
+      "atMs": 3398,
+      "generation": 1,
+      "tag": "CommandError",
+      "detail": "Remote"
+    },
+    {
+      "atMs": 3426,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 3426,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 3426,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 3454,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 3454,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 3454,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 3482,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update matched"
+    },
+    {
+      "atMs": 3508,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update matched"
+    },
+    {
+      "atMs": 3536,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message command_error unsolicited"
+    },
+    {
+      "atMs": 3536,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "ack matched"
+    },
+    {
+      "atMs": 7404,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 7404,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 7404,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 7406,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 7406,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 7406,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 7406,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 11430,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 11432,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 11432,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 13160,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 13162,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 13162,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 13162,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 13197,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 13198,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 13202,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update matched"
+    },
+    {
+      "atMs": 13228,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update matched"
+    },
+    {
+      "atMs": 13256,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 13256,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 13256,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 13285,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 13285,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 13285,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_popped matched"
+    },
+    {
+      "atMs": 14725,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "ack matched"
+    },
+    {
+      "atMs": 14827,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_stopped unsolicited"
+    },
+    {
+      "atMs": 14828,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 14855,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update matched"
+    },
+    {
+      "atMs": 14881,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update matched"
+    },
+    {
+      "atMs": 14893,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "closing"
+    },
+    {
+      "atMs": 15206,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "closed"
+    }
+  ],
+  "server": {
+    "cluster": "5a004973-4a49-4f0e-96ac-6cd7637f61eb",
+    "zone": "us-east",
+    "serverVersion": "1.20260930.52",
+    "transport": "webrtc/1.0"
+  },
+  "network": {
+    "samples": [
+      {
+        "atMs": 2697,
+        "status": "ready",
+        "generation": 1,
+        "local": "relay",
+        "rttMs": 26
+      },
+      {
+        "atMs": 3698,
+        "status": "ready",
+        "generation": 1,
+        "local": "relay",
+        "rttMs": 30,
+        "receivedKbps": 342.4,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 4708,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 25,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 5710,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 29.2,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 6711,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 29.2,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 7712,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 893.6,
+        "fps": 40,
+        "jitterMs": 9,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 8713,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 5940.7,
+        "fps": 23,
+        "jitterMs": 5,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 9714,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 7149.1,
+        "fps": 24,
+        "jitterMs": 3,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 10716,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 5652,
+        "fps": 24,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 11719,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 6457.7,
+        "fps": 25,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 12720,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 8204.3,
+        "fps": 23,
+        "jitterMs": 7,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 13721,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 8322.2,
+        "fps": 24,
+        "jitterMs": 6,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 14722,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 9871.2,
+        "fps": 24,
+        "jitterMs": 15,
+        "lossRatio": 0
+      }
+    ],
+    "pair": "prflx"
+  },
+  "fasth3": {
+    "model": "reactor/fast-h3",
+    "contract": {
+      "title": "fast-h3",
+      "version": "v0.0.0",
+      "commands": [
+        "play",
+        "reset",
+        "set_seed",
+        "get_queue",
+        "enqueue",
+        "set_flush_on_clip_end",
+        "set_clip_seconds",
+        "stop",
+        "set_autoplay",
+        "move",
+        "get_state",
+        "pop",
+        "set_canvas"
+      ],
+      "enqueue": [
+        "position",
+        "seconds",
+        "starting_frame",
+        "seed",
+        "ending_frame",
+        "metadata",
+        "continue_from_clip_id",
+        "ending_from_clip_id",
+        "prompt"
+      ]
+    },
+    "state": {
+      "keys": [
+        "clips_played",
+        "aspect",
+        "playing",
+        "playing_clip_id",
+        "height",
+        "clip_seconds_max",
+        "clip_seconds",
+        "playout_capacity",
+        "seconds_sent",
+        "autoplay",
+        "playout_queued",
+        "valid_commands",
+        "width",
+        "generation_queued",
+        "seed",
+        "generation_capacity",
+        "flush_on_clip_end",
+        "clip_seconds_min"
+      ],
+      "missing": [],
+      "extra": [],
+      "values": {
+        "clips_played": 0,
+        "aspect": "16:9",
+        "playing": false,
+        "height": 768,
+        "clip_seconds_max": 14.375,
+        "clip_seconds": 14.375,
+        "playout_capacity": 10,
+        "seconds_sent": 0,
+        "autoplay": false,
+        "playout_queued": 0,
+        "width": 1344,
+        "generation_queued": 0,
+        "seed": 1000,
+        "generation_capacity": 20,
+        "flush_on_clip_end": true,
+        "clip_seconds_min": 5.167
+      }
+    },
+    "counts": [
+      {
+        "atMs": 2981,
+        "from": "state_update",
+        "read": true,
+        "generation": 0,
+        "playout": 0,
+        "building": false,
+        "pair": 1,
+        "comparable": true
+      },
+      {
+        "atMs": 3012,
+        "from": "queue_update",
+        "read": true,
+        "generation": 0,
+        "playout": 0,
+        "history": 0,
+        "building": false,
+        "pair": 1,
+        "comparable": true
+      },
+      {
+        "atMs": 3098,
+        "from": "state_update",
+        "read": false,
+        "generation": 0,
+        "playout": 0,
+        "building": false
+      },
+      {
+        "atMs": 3128,
+        "from": "state_update",
+        "read": false,
+        "generation": 0,
+        "playout": 0,
+        "building": false
+      },
+      {
+        "atMs": 3158,
+        "from": "state_update",
+        "read": false,
+        "generation": 0,
+        "playout": 0,
+        "building": false
+      },
+      {
+        "atMs": 3186,
+        "from": "state_update",
+        "read": false,
+        "generation": 0,
+        "playout": 0,
+        "building": false
+      },
+      {
+        "atMs": 3214,
+        "from": "state_update",
+        "read": false,
+        "generation": 0,
+        "playout": 0,
+        "building": false
+      },
+      {
+        "atMs": 3242,
+        "from": "state_update",
+        "read": false,
+        "generation": 0,
+        "playout": 0,
+        "building": false
+      },
+      {
+        "atMs": 3270,
+        "from": "state_update",
+        "read": false,
+        "generation": 0,
+        "playout": 0,
+        "building": false
+      },
+      {
+        "atMs": 3308,
+        "from": "queue_update",
+        "read": false,
+        "generation": 1,
+        "playout": 0,
+        "history": 0,
+        "building": false
+      },
+      {
+        "atMs": 3308,
+        "from": "state_update",
+        "read": false,
+        "generation": 1,
+        "playout": 0,
+        "building": false
+      },
+      {
+        "atMs": 3342,
+        "from": "state_update",
+        "read": true,
+        "generation": 1,
+        "playout": 0,
+        "building": true,
+        "pair": 2,
+        "comparable": true
+      },
+      {
+        "atMs": 3370,
+        "from": "queue_update",
+        "read": true,
+        "generation": 1,
+        "playout": 0,
+        "history": 0,
+        "building": true,
+        "pair": 2,
+        "comparable": true
+      },
+      {
+        "atMs": 3426,
+        "from": "queue_update",
+        "read": false,
+        "generation": 2,
+        "playout": 0,
+        "history": 0,
+        "building": true
+      },
+      {
+        "atMs": 3426,
+        "from": "state_update",
+        "read": false,
+        "generation": 2,
+        "playout": 0,
+        "building": true
+      },
+      {
+        "atMs": 3454,
+        "from": "queue_update",
+        "read": false,
+        "generation": 3,
+        "playout": 0,
+        "history": 0,
+        "building": true
+      },
+      {
+        "atMs": 3454,
+        "from": "state_update",
+        "read": false,
+        "generation": 3,
+        "playout": 0,
+        "building": true
+      },
+      {
+        "atMs": 3482,
+        "from": "state_update",
+        "read": true,
+        "generation": 3,
+        "playout": 0,
+        "building": true,
+        "pair": 3,
+        "comparable": true
+      },
+      {
+        "atMs": 3508,
+        "from": "queue_update",
+        "read": true,
+        "generation": 3,
+        "playout": 0,
+        "history": 0,
+        "building": true,
+        "pair": 3,
+        "comparable": true
+      },
+      {
+        "atMs": 7404,
+        "from": "queue_update",
+        "read": false,
+        "generation": 2,
+        "playout": 1,
+        "history": 0,
+        "building": true
+      },
+      {
+        "atMs": 7404,
+        "from": "state_update",
+        "read": false,
+        "generation": 2,
+        "playout": 1,
+        "building": true
+      },
+      {
+        "atMs": 7406,
+        "from": "queue_update",
+        "read": false,
+        "generation": 2,
+        "playout": 0,
+        "history": 0,
+        "building": true
+      },
+      {
+        "atMs": 7406,
+        "from": "state_update",
+        "read": false,
+        "generation": 2,
+        "playout": 0,
+        "building": true
+      },
+      {
+        "atMs": 7406,
+        "from": "state_update",
+        "read": false,
+        "generation": 2,
+        "playout": 0,
+        "building": true
+      },
+      {
+        "atMs": 11432,
+        "from": "queue_update",
+        "read": false,
+        "generation": 1,
+        "playout": 1,
+        "history": 0,
+        "building": true
+      },
+      {
+        "atMs": 11432,
+        "from": "state_update",
+        "read": false,
+        "generation": 1,
+        "playout": 1,
+        "building": true
+      },
+      {
+        "atMs": 13162,
+        "from": "state_update",
+        "read": false,
+        "generation": 1,
+        "playout": 1,
+        "building": true
+      },
+      {
+        "atMs": 13162,
+        "from": "queue_update",
+        "read": false,
+        "generation": 1,
+        "playout": 0,
+        "history": 1,
+        "building": true
+      },
+      {
+        "atMs": 13162,
+        "from": "state_update",
+        "read": false,
+        "generation": 1,
+        "playout": 0,
+        "building": true
+      },
+      {
+        "atMs": 13198,
+        "from": "state_update",
+        "read": false,
+        "generation": 1,
+        "playout": 0,
+        "building": true
+      },
+      {
+        "atMs": 13202,
+        "from": "state_update",
+        "read": true,
+        "generation": 1,
+        "playout": 0,
+        "building": true,
+        "pair": 4,
+        "comparable": true
+      },
+      {
+        "atMs": 13228,
+        "from": "queue_update",
+        "read": true,
+        "generation": 1,
+        "playout": 0,
+        "history": 1,
+        "building": true,
+        "pair": 4,
+        "comparable": true
+      },
+      {
+        "atMs": 13256,
+        "from": "queue_update",
+        "read": false,
+        "generation": 2,
+        "playout": 0,
+        "history": 1,
+        "building": true
+      },
+      {
+        "atMs": 13256,
+        "from": "state_update",
+        "read": false,
+        "generation": 2,
+        "playout": 0,
+        "building": true
+      },
+      {
+        "atMs": 13285,
+        "from": "queue_update",
+        "read": false,
+        "generation": 1,
+        "playout": 0,
+        "history": 1,
+        "building": true
+      },
+      {
+        "atMs": 13285,
+        "from": "state_update",
+        "read": false,
+        "generation": 1,
+        "playout": 0,
+        "building": true
+      },
+      {
+        "atMs": 14828,
+        "from": "state_update",
+        "read": false,
+        "generation": 1,
+        "playout": 0,
+        "building": true
+      },
+      {
+        "atMs": 14855,
+        "from": "state_update",
+        "read": true,
+        "generation": 1,
+        "playout": 0,
+        "building": true,
+        "pair": 5,
+        "comparable": true
+      },
+      {
+        "atMs": 14881,
+        "from": "queue_update",
+        "read": true,
+        "generation": 1,
+        "playout": 0,
+        "history": 2,
+        "building": true,
+        "pair": 5,
+        "comparable": true
+      }
+    ],
+    "readPairs": [
+      {
+        "pair": 1,
+        "stateAnswered": true,
+        "queueAnswered": true,
+        "comparable": true
+      },
+      {
+        "pair": 2,
+        "stateAnswered": true,
+        "queueAnswered": true,
+        "comparable": true
+      },
+      {
+        "pair": 3,
+        "stateAnswered": true,
+        "queueAnswered": true,
+        "comparable": true
+      },
+      {
+        "pair": 4,
+        "stateAnswered": true,
+        "queueAnswered": true,
+        "comparable": true
+      },
+      {
+        "pair": 5,
+        "stateAnswered": true,
+        "queueAnswered": true,
+        "comparable": true
+      }
+    ],
+    "lengths": [
+      {
+        "requested": 15,
+        "answer": "Remote",
+        "outcome": "replied"
+      },
+      {
+        "requested": 5,
+        "answer": "Remote",
+        "outcome": "replied"
+      },
+      {
+        "requested": 5.167,
+        "answer": "clip_length_accepted",
+        "outcome": "replied",
+        "clipSeconds": 5.167,
+        "frames": 124
+      },
+      {
+        "requested": 6,
+        "answer": "clip_length_accepted",
+        "outcome": "replied",
+        "clipSeconds": 6.583,
+        "frames": 158
+      },
+      {
+        "requested": 10,
+        "answer": "clip_length_accepted",
+        "outcome": "replied",
+        "clipSeconds": 10.125,
+        "frames": 243
+      },
+      {
+        "requested": 14.375,
+        "answer": "clip_length_accepted",
+        "outcome": "replied",
+        "clipSeconds": 14.375,
+        "frames": 345
+      },
+      {
+        "requested": 5.5,
+        "answer": "clip_length_accepted",
+        "outcome": "replied",
+        "clipSeconds": 5.875,
+        "frames": 141
+      }
+    ],
+    "enqueues": [
+      {
+        "label": "plain",
+        "sentMs": 3271,
+        "answeredMs": 3308,
+        "answer": "clip_queued",
+        "outcome": "replied",
+        "clipSeconds": 5.875,
+        "frames": 141,
+        "clipKeys": [
+          "has_ending_frame",
+          "clip_id",
+          "frames",
+          "seconds",
+          "ready",
+          "seed",
+          "has_starting_frame",
+          "metadata",
+          "continue_from_clip_id",
+          "ending_from_clip_id",
+          "prompt"
+        ],
+        "clipAttribution": "reply",
+        "commandErrors": []
+      },
+      {
+        "label": "reference_images",
+        "sentMs": 3371,
+        "answeredMs": 3398,
+        "answer": "command_error",
+        "outcome": "replied",
+        "commandErrors": []
+      },
+      {
+        "label": "second",
+        "sentMs": 3399,
+        "answeredMs": 3426,
+        "answer": "clip_queued",
+        "outcome": "replied",
+        "clipSeconds": 5.875,
+        "frames": 141,
+        "clipKeys": [
+          "has_ending_frame",
+          "clip_id",
+          "frames",
+          "seconds",
+          "ready",
+          "seed",
+          "has_starting_frame",
+          "metadata",
+          "continue_from_clip_id",
+          "ending_from_clip_id",
+          "prompt"
+        ],
+        "clipAttribution": "reply",
+        "commandErrors": []
+      },
+      {
+        "label": "ahead of its anchor",
+        "sentMs": 3427,
+        "answeredMs": 3454,
+        "answer": "clip_queued",
+        "outcome": "replied",
+        "clipSeconds": 5.875,
+        "frames": 141,
+        "clipKeys": [
+          "has_ending_frame",
+          "clip_id",
+          "frames",
+          "seconds",
+          "ready",
+          "seed",
+          "has_starting_frame",
+          "metadata",
+          "continue_from_clip_id",
+          "ending_from_clip_id",
+          "prompt"
+        ],
+        "clipAttribution": "reply",
+        "commandErrors": []
+      },
+      {
+        "label": "unknown source",
+        "sentMs": 3509,
+        "answeredMs": 3536,
+        "answer": "ack",
+        "outcome": "replied",
+        "commandErrors": [
+          {
+            "atMs": 3536,
+            "command": "enqueue",
+            "reasonLength": 174,
+            "attribution": "temporal",
+            "beforeAnswer": true
+          }
+        ]
+      },
+      {
+        "label": "from history",
+        "sentMs": 13228,
+        "answeredMs": 13256,
+        "answer": "clip_queued",
+        "outcome": "replied",
+        "clipSeconds": 5.875,
+        "frames": 141,
+        "clipKeys": [
+          "has_ending_frame",
+          "clip_id",
+          "frames",
+          "seconds",
+          "ready",
+          "seed",
+          "has_starting_frame",
+          "metadata",
+          "continue_from_clip_id",
+          "ending_from_clip_id",
+          "prompt"
+        ],
+        "clipAttribution": "reply",
+        "commandErrors": []
+      }
+    ],
+    "clips": [
+      {
+        "label": "plain",
+        "queuedMs": 3309,
+        "generatedMs": 7404,
+        "startedMs": 7406,
+        "endedMs": 13160,
+        "ended": "finished"
+      },
+      {
+        "label": "second",
+        "queuedMs": 3426,
+        "generatedMs": 11430,
+        "startedMs": 13197,
+        "endedMs": 14827,
+        "ended": "stopped"
+      },
+      {
+        "label": "ahead of its anchor",
+        "queuedMs": 3454
+      },
+      {
+        "label": "from history",
+        "queuedMs": 13256,
+        "endedMs": 13285,
+        "ended": "popped"
+      }
+    ],
+    "generatedOrder": [
+      "plain",
+      "second"
+    ],
+    "history": [
+      {
+        "atMs": 3012,
+        "length": 0,
+        "clipKeys": []
+      },
+      {
+        "atMs": 3370,
+        "length": 0,
+        "clipKeys": []
+      },
+      {
+        "atMs": 3508,
+        "length": 0,
+        "clipKeys": []
+      },
+      {
+        "atMs": 13228,
+        "length": 1,
+        "clipKeys": [
+          "has_ending_frame",
+          "clip_id",
+          "frames",
+          "seconds",
+          "ready",
+          "seed",
+          "has_starting_frame",
+          "metadata",
+          "continue_from_clip_id",
+          "ending_from_clip_id",
+          "prompt"
+        ]
+      },
+      {
+        "atMs": 14881,
+        "length": 2,
+        "clipKeys": [
+          "has_ending_frame",
+          "clip_id",
+          "frames",
+          "seconds",
+          "ready",
+          "seed",
+          "has_starting_frame",
+          "metadata",
+          "continue_from_clip_id",
+          "ending_from_clip_id",
+          "prompt"
+        ]
+      }
+    ],
+    "ahead": {
+      "checked": true,
+      "observed": true
+    },
+    "stop": {
+      "sentMs": 14697,
+      "answer": "ack",
+      "outcome": "replied",
+      "stoppedMs": 14827,
+      "frozen": "unmeasured"
+    },
+    "seams": [
+      {
+        "toLabel": "second",
+        "pauseMs": 62
+      }
+    ],
+    "messages": {
+      "state_update": 25,
+      "queue_update": 14,
+      "clip_length_accepted": 5,
+      "flush_accepted": 1,
+      "autoplay_accepted": 1,
+      "clip_queued": 4,
+      "command_error": 1,
+      "ack": 2,
+      "clip_generated": 2,
+      "clip_started": 2,
+      "clip_finished": 1,
+      "clip_popped": 1,
+      "clip_stopped": 1
+    },
+    "unknown": {},
+    "observerLost": false,
+    "video": {
+      "frames": 178,
+      "formats": [
+        "BGRA"
+      ],
+      "sizes": [
+        "1344x768"
+      ],
+      "firstFrameMs": 7543,
+      "fps": 24.1,
+      "interval": {
+        "p50": 42,
+        "p95": 47,
+        "max": 81
+      },
+      "lit": 178,
+      "distinct": 178,
+      "lost": 0,
+      "gaps": 0
+    }
+  },
+  "verdict": "pass",
+  "reasons": [],
+  "missing": []
+}
