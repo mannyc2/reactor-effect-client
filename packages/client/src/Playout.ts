@@ -587,6 +587,31 @@ export type SourceEvent =
       readonly pressure: MediaPressure;
     };
 
+/** What any model's request has in common for the playout: its requested length, if it names one. */
+export interface ClipRequest {
+  readonly seconds?: number | undefined;
+}
+
+/**
+ * A model as the playout plans for it: what a clip may ask for and how long it
+ * is counted at. A source states the model it runs, and the playout refuses a
+ * source whose model has another name than its own.
+ */
+export interface ClipModel<Req extends ClipRequest = Request> {
+  /** Names the model in refusals; two different models must not share a name. */
+  readonly name: string;
+  /** The lengths a request may ask for, in seconds: filler's default `lengths` and `place`'s bounds. */
+  readonly lengths: { readonly min: number; readonly max: number };
+  /** The length a request without `seconds` is sent and planned at. */
+  readonly defaultSeconds: number;
+  /**
+   * Where a request for the clip `tag` falls outside the model's limits: one
+   * entry per field, naming the field and the limit, never the value, which may
+   * be a prompt. Empty when the request is within them.
+   */
+  readonly check: (request: Req, tag: ClipTag) => ReadonlyArray<string>;
+}
+
 /**
  * One session as the playout drives it: its evidence, its commands and its
  * media. What the playout relies on:
