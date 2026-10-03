@@ -29,12 +29,18 @@ What they found:
 - The one-second liveness timer's maximum lateness was **0.4 ms** in `vertical`,
   **5.7 ms** in `tour` and **1.0 ms** in `edits`. These runs did not reproduce the earlier
   82 s reconnect hang or native `Protocol` failure.
-- `tour` recorded one `ChannelClosed` diagnostic at 37.141 s during termination,
-  followed by a generation-3 reconnect attempt that ended with an error after 187 ms.
-  Both the API key and the session's own close confirmed `CLOSED`; there were no local
-  cleanup errors. No Diagnostic was recorded in the other two checks. The `edits` check
+- `tour` ends its session with the API key before its own close. Reactor closing the
+  channel showed as one `ChannelClosed` diagnostic at 37.141 s. The session can't know an
+  outside DELETE ended it, so it began its own reconnect (generation 3) until the check's
+  `session.close` ended that attempt 187 ms later, with an error. That is the expected
+  order, not a fault. Both the API key and the session's own close confirmed `CLOSED`;
+  there were no local cleanup errors. No Diagnostic was recorded in the other two checks. The `edits` check
   does not expose its playout's sessions for the raw event observer, so it has liveness
   evidence but no raw session-event records.
+- `tour` again records, without judging it, what the 0.8.0-api tour found. A clip request
+  came back `ClipReady` in 2.6 s, but downloading the clip timed out after 16.6 s, and a
+  whole-recording request timed out too. Whether the download or the check's window is at
+  fault is still open.
 
 The scratch project rehearsed all three checks before spending. Free preflight initially
 refused its isolated Node owner because `npm init` selected CommonJS. Setting `type` to
