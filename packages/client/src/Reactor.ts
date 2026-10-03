@@ -40,10 +40,10 @@ export interface Options {
   readonly connectTimeout?: Duration.Input | undefined;
   /**
    * How long a reconnect may take, a session's own counted from the drop that began it, through the
-   * drops of connections that did not stay up 10 seconds; 30 seconds by default, the time Reactor
-   * keeps a session that has lost its last connection before it ends it. A connection a session's
-   * own reconnect made ready as the time ran out is left up, and the session stops trying if it
-   * drops before it has been ready 10 seconds. The deadline cuts the negotiation, not the host's
+   * drops of connections that did not stay up 10 seconds; 30 seconds by default. Hosted reconnects
+   * were ready within about 2 s, leaving time for retries. A connection a session's own reconnect
+   * made ready as the time ran out is left up, and the session stops trying if it drops before it
+   * has been ready 10 seconds. The deadline cuts the negotiation, not the host's
    * work on either side of it: making the connection's peer, which every shipped host does at once,
    * and shutting down the peer it replaces, or its own after a failed attempt, which the native
    * peer bounds by its `shutdownTimeout` (10 seconds by default) and the browser's does at once.
@@ -75,8 +75,11 @@ export interface Options {
    * `Session.reconnect` span begins a trace of its own, linked to the acquisition's. Reconnecting
    * keeps a session alive, and billed, through its drops: an owned session its application never
    * closed, or one a viewer holds after its owner has gone, runs on for as long as the process
-   * holding it does, to its cap if it has one. `false` leaves a dropped connection dropped until
-   * `session.reconnect`, so that Reactor ends a session 30 seconds after its last connection drops.
+   * holding it does, to its cap if it has one. `false` leaves a dropped connection down until
+   * `session.reconnect`. Reactor documents a 30 s end after the last connection drops, but a
+   * hosted session was still `INACTIVE` 60 s after its owner was killed and billed until the API
+   * key ended it. The session may keep billing until it is terminated or its cap ends it: close
+   * owned sessions explicitly and cap them.
    */
   readonly reconnect?: Schedule.Schedule<unknown, ReactorError> | false | undefined;
   /** How long the peer and both channels may take after the answer; 30 seconds by default. */

@@ -178,10 +178,15 @@ third session, the records round-tripped, and every recorded session read `CLOSE
 - **Cap everything, short where people wander off.** A page's session ends with the page only if
   the page gets to close it; the cap bounds the rest. The browser guide's token server caps
   sessions at five minutes.
-- **A dropped connection keeps billing.** Reactor holds a session for 30 seconds after its last
-  connection drops, billed, and the SDK reconnects within that window and keeps the session for as
-  long as the process holding it runs. `Reactor.layer({ reconnect: false })` leaves a drop down, so
-  Reactor ends the session 30 seconds later.
+- **A dropped connection keeps billing.** Reactor's
+  [session docs](https://docs.reactor.inc/concepts/sessions) say it ends 30 seconds after its last
+  connection drops. In a paid probe on 2026-09-30, a connected session whose owner was killed still
+  read `INACTIVE` 60 seconds later. The API key ended it, and the dashboard billed 1m 3s, including
+  the disconnected time
+  ([0.8.0-dropped](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dropped/summary.md)).
+  `Reactor.layer({ reconnect: false })` leaves a drop down until `session.reconnect`; the session
+  may keep billing until terminated or capped. End owned sessions with `session.close`, or use the
+  key's `coordinator.terminate(sessionId)` after a crash, and cap them.
 - **A session nothing connects to bills to its cap.** In a paid probe on 2026-09-29, a session
   allocated and never connected read `ACTIVE` for its whole minute and was ended by Reactor at its
   60-second cap, 60.09 s after allocation; the dashboard listed it at 1m 0s. A creator that crashes

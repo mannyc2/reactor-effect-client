@@ -13,6 +13,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `H3Source.model`, the H3 clip model and its documented request limits.
 - `Playout.Service<Req>` for application services that plan another model's requests.
 
+### Changed
+
+- `ReactorTest` keeps a dropped session `INACTIVE` until it is terminated, reconnects or reaches its cap, matching hosted behaviour. It previously ended the session after 30 seconds. Tests that need Reactor's documented disconnect deadline can use `DisconnectEnds { after }`.
+
+### Documentation
+
+- The session and cost-control guidance no longer promises that Reactor ends a dropped session after 30 seconds. Reactor documents that deadline, but a hosted session whose owner was killed stayed live past 60 seconds and was billed until the API key ended it. End sessions explicitly and cap them.
+
 ## [0.10.0] - 2026-10-02
 
 0.10.0 moves the SDK to Effect 4.0.0 and adds `ViduS2Avatar`, a provider for Reactor's Vidu S2-Avatar, a character made from one photo who talks with a caller in a live call. Every package now peers on Effect `~4.0.0`, so a project on Effect 4.0.0 or a later 4.0.x patch can add it; a project on `4.0.0-rc.117` moves to Effect 4.0.0 first, including its own `effect/unstable/*` imports. The native Rust sources are unchanged since 0.9.2.

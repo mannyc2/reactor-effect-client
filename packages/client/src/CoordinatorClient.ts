@@ -84,10 +84,10 @@ export type Descriptor = typeof Descriptor.Type;
 
 /**
  * Whether a session state is final. Only `CLOSED` is: hosted Reactor reads
- * `INACTIVE` for a session whose last connection dropped, and that session still
- * runs (and bills) for the documented 30 s reconnect window. A paid run adopted
- * one 9 s after its owner was killed, then ended it with a DELETE that
- * answered 200 and moved it to `CLOSED`.
+ * `INACTIVE` for a session whose last connection dropped. Reactor documents a 30 s
+ * end, but a hosted session was still `INACTIVE` 60 s after its owner was killed
+ * and billed until the API key ended it. Only termination, including its cap,
+ * stops the session's bill.
  */
 export const isTerminal = (state: string): boolean => state === "CLOSED";
 

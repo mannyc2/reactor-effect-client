@@ -78,8 +78,6 @@ interface Recording {
   readonly readyAt: number;
   readonly segments: number;
 }
-/** How long Reactor keeps a session that lost its last connection. */
-const reconnectWindowMs = 30_000;
 /** Sessions an account may create back to back before the per-minute rate applies. */
 const burst = 3;
 
@@ -115,7 +113,7 @@ export interface Slot {
 
 interface State {
   readonly phase: Phase;
-  /** Times the session lost its last open connection, so a 30 s window closes on the latest. */
+  /** Times the last connection dropped, so an optional disconnect deadline owns only its drop. */
   readonly drops: number;
   readonly activeAt: number | undefined;
   readonly endedAt: number | undefined;
@@ -337,8 +335,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
       yield* log({ sessionId: session.id, kind: "session", name: reason });
       yield* link.drop(reason);
       if (reason !== "disconnected") return;
-      // Reactor ends a session 30 s after its last connection drops, unless one returns.
-      // Meanwhile hosted Reactor reads it INACTIVE (paid run tokens 83d17eb7), still billing.
+      // Hosted Reactor kept a dropped session INACTIVE past 60 s, still billing until terminated.
       const drops = yield* Ref.modify(session.state, (state) => {
         if (anyOpen(state)) return [undefined, state] as const;
         const next = {
@@ -349,8 +346,10 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         return [next.drops, next] as const;
       });
       if (drops === undefined) return;
+      const disconnectEnds = yield* faults.standing((fault) => fault._tag === "DisconnectEnds");
+      if (disconnectEnds?._tag !== "DisconnectEnds") return;
       yield* later(
-        reconnectWindowMs,
+        Duration.toMillis(disconnectEnds.after),
         Effect.flatMap(Ref.get(session.state), (state) =>
           !anyOpen(state) && state.drops === drops ? end(session, "abandoned") : Effect.void,
         ),

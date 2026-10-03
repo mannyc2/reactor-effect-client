@@ -21,8 +21,8 @@ It simulates, at the network edge:
 - **The coordinator's HTTP API.** Tokens bound to sessions; expired tokens refused with 401 and
   unbound ones with 403; the API key accepted as a bearer only to read and end sessions; uploads,
   recordings (off by default) and pricing.
-- **Sessions.** Several connections per session, a session that reads `INACTIVE` for 30 seconds
-  after its last connection drops and then ends, caps, and billing per second.
+- **Sessions.** Several connections per session; after its last connection drops, a session reads
+  `INACTIVE` until it is terminated, a connection returns or its cap ends it; billing per second.
 - **The account's limits.** Five sessions at once, and ten created a minute with at most three back
   to back, refused with `429`.
 - **H3 over the real wire protocol.** Its request, reference and metadata limits; autoplay off at
@@ -57,10 +57,16 @@ built. A fault's `nth` counts the occurrences it matches from 1; without it, eve
 | Connections           | `RefuseConnect`, `RefuseReconnect` (`status`, `retryAfter`), `Disconnect` (`after`), `Expire` (`after`)              |
 | Commands              | `DropReply` (`command`, `applied`), `LateReply` (`command`, `after`)                                                 |
 | Builds                | `StallBuild`, `FailBuild` (`reason`), `InvalidImage`                                                                 |
-| Ending a session      | `IgnoreCap`, `SlowDelete` (`for`), `IgnoreDelete`, `MissingSession` (404 for a session still running)                |
+| Ending a session      | `DisconnectEnds` (`after`), `IgnoreCap`, `SlowDelete` (`for`), `IgnoreDelete`, `MissingSession` (404 for a session still running) |
 | Media                 | `Video` (`absent`, `black` or `frozen`), `NoAudio`                                                                   |
 | Tokens and recordings | `OverGrant` (`longer`, `uncapped`, `bound`, `expired`, `silent`), `LateRecording` (`by`)                             |
 | Moderation            | `Moderate` (`prompt`, `action`, and `verdict: false` to end the session with no verdict)                             |
+
+`{ _tag: "DisconnectEnds", after: Duration.seconds(30) }` simulates Reactor's documented end 30 seconds
+after the last connection drops. The default follows the hosted observation: a connected session
+whose owner was killed still read `INACTIVE` 60 seconds later. It billed until the API key ended it
+([0.8.0-dropped](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dropped/summary.md),
+2026-09-30).
 
 **Inspection.** The `ReactorTest` service has `apiKey`, `sessions` (each session's state, whether
 it is connected, the `DELETE`s it received, its grant and the SDK that created it), `billing`

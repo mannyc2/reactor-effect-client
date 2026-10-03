@@ -99,11 +99,13 @@ export const Fault = Schema.Union([
   Schema.TaggedStruct("FailBuild", { ...nth, reason: Schema.optionalKey(Schema.String) }),
   /** A connection drops this long after its channels open; the session goes on. */
   Schema.TaggedStruct("Disconnect", { ...nth, after: Schema.Duration }),
+  /** Ends a session this long after its last connection drops, unless one returns. */
+  Schema.TaggedStruct("DisconnectEnds", { after: Schema.Duration }),
   /** Sessions end this long after they become ready, when that is sooner than their grant. */
   Schema.TaggedStruct("Expire", { after: Schema.Duration }),
   /**
    * No session ends at its grant's cap: each runs until it is terminated, or
-   * until 30 s after its last connection drops. Whether hosted Reactor ends a
+   * until a DisconnectEnds fault ends it. Whether hosted Reactor ends a
    * session nothing ever connected to at its cap is unobserved.
    */
   Schema.TaggedStruct("IgnoreCap", {}),
@@ -387,7 +389,7 @@ export type Options = typeof Options.Type;
 
 export interface SessionInfo {
   readonly id: string;
-  /** INACTIVE: its last connection dropped; it ends 30 s later unless one returns. */
+  /** INACTIVE: its last connection dropped; it stays live until terminated, reconnected or capped. */
   readonly state: "PENDING" | "ACTIVE" | "INACTIVE" | "STOPPING" | "CLOSED";
   /** One of its connections at least is connected with both channels open. */
   readonly connected: boolean;

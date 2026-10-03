@@ -320,7 +320,9 @@ export const tour = (pieces: Pieces) =>
                             granted: grant.granted,
                           });
                   yield* acceptGrant({ check: "tour", granted });
-                  return granted;
+                  if (granted.maxSessionSeconds === "unlimited")
+                    return yield* Refused.make({ message: "the tour requires a capped session" });
+                  return { ...granted, maxSessionSeconds: granted.maxSessionSeconds };
                 }),
               );
               const named = grant.granted?.bound ?? [];

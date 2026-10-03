@@ -36,6 +36,7 @@ export const checks = [
   "adoption",
   "show",
   "unconnected",
+  "dropped",
   "showreel",
   "avatar",
   "character",
@@ -77,13 +78,11 @@ const vidu: Model = {
  * each one's cap in seconds, which its token sets server-side. A check that
  * renews rests its timing on full grants, so a shorter grant cannot qualify it.
  */
-export interface Plan {
+interface Capped {
   readonly model: Model;
   readonly sessions: number;
   readonly seconds: number;
   readonly renews?: true;
-  /** The stand-in a rehearsal uses until ReactorTest simulates this model. */
-  readonly rehearsedAs?: Model;
   /**
    * How long each session may run, in seconds, when the check does not count
    * on its cap to end it: what it may be billed for in place of `seconds`.
@@ -91,11 +90,24 @@ export interface Plan {
   readonly holds?: ReadonlyArray<number>;
 }
 
+/** An uncapped session needs an explicit hold to bound what the check reserves. */
+interface Uncapped {
+  readonly model: Model;
+  readonly sessions: number;
+  readonly seconds: "unlimited";
+  readonly holds: ReadonlyArray<number>;
+}
+
+export type Plan = (Capped | Uncapped) & {
+  /** The stand-in a rehearsal uses until ReactorTest simulates this model. */
+  readonly rehearsedAs?: Model;
+};
+
 /** One 50-second session, which every check held before the longer runs. */
 export const sessionSeconds = 50;
-const single: Plan = { model: h3, sessions: 1, seconds: sessionSeconds };
+const single = { model: h3, sessions: 1, seconds: sessionSeconds } satisfies Plan;
 
-export const plans: { readonly [C in Check]: Plan } = {
+export const plans = {
   vertical: single,
   takeover: single,
   turn: single,
@@ -114,6 +126,9 @@ export const plans: { readonly [C in Check]: Plan } = {
   // 59 s of its request, and a third if that token's second create allocates again, ended
   // within 56 s of that create. Each short one stays within a started minute.
   unconnected: { model: h3, sessions: 3, seconds: 60, holds: [155, 59, 56] },
+  // One uncapped session, watched at most 67 s after allocation, with 13 s left for its
+  // owner's report, the last read and the key's first two termination attempts.
+  dropped: { model: h3, sessions: 1, seconds: "unlimited", holds: [80] },
   // Five 8 s scenes air from about 7 s in and end about 47 s in; the cap leaves room for a
   // slower build and the close. $2.45 at most at 350 credits a second.
   showreel: { model: h3, sessions: 1, seconds: 70 },
@@ -127,24 +142,32 @@ export const plans: { readonly [C in Check]: Plan } = {
   // minute.
   character: { model: vidu, sessions: 1, seconds: 75 },
   fasth3: { model: fastH3, sessions: 1, seconds: sessionSeconds, rehearsedAs: h3 },
-};
+} satisfies { readonly [C in Check]: Plan };
 
 /** The model the check actually runs, including a rehearsal's stand-in. */
 export const modelFor: {
   (mode: "paid" | "rehearsal"): (check: Check) => Model;
   (check: Check, mode: "paid" | "rehearsal"): Model;
-} = dual(2, (check: Check, mode: "paid" | "rehearsal"): Model =>
-  mode === "rehearsal" ? (plans[check].rehearsedAs ?? plans[check].model) : plans[check].model,
-);
+} = dual(2, (check: Check, mode: "paid" | "rehearsal"): Model => {
+  const plan: Plan = plans[check];
+  return mode === "rehearsal" ? (plan.rehearsedAs ?? plan.model) : plan.model;
+});
 
 /** How long each of a check's sessions may run: its cap, unless the check holds it longer. */
-export const holdsFor = (check: Check): ReadonlyArray<number> =>
-  plans[check].holds ?? Array.from({ length: plans[check].sessions }, () => plans[check].seconds);
+export const holdsFor = (check: Check): ReadonlyArray<number> => {
+  const plan: Plan = plans[check];
+  if (plan.seconds === "unlimited") return plan.holds;
+  const cap = plan.seconds;
+  return plan.holds ?? Array.from({ length: plan.sessions }, () => cap);
+};
 
 /** A check's tokens outlive its sessions by a minute, so cleanup still holds a valid one. */
 export const tokenSecondsFor = (check: Check): number => Math.max(...holdsFor(check)) + 60;
 /** A check's work ends this long after allocation, so a slow step fails it before the cap does. */
-export const workSecondsFor = (check: Check): number => plans[check].seconds - 10;
+export const workSecondsFor = (check: Check): number => {
+  const plan: Plan = plans[check];
+  return (plan.seconds === "unlimited" ? Math.max(...plan.holds) : plan.seconds) - 10;
+};
 
 /**
  * The most a check may spend: every started minute of each of its sessions,
@@ -255,7 +278,7 @@ const Claims = Schema.StringFromBase64Url.pipe(
           Schema.Struct({
             constraints: Schema.Struct({
               max_sessions: Schema.Int,
-              max_session_duration_seconds: Schema.Int,
+              max_session_duration_seconds: Schema.optionalKey(Schema.Int),
             }),
           }),
         ]),
@@ -278,11 +301,11 @@ export const provenGrant = (grant: {
       }
     | undefined;
 }): Effect.Effect<
-  { readonly maxSessions: number; readonly maxSessionSeconds: number },
+  { readonly maxSessions: number; readonly maxSessionSeconds: number | "unlimited" },
   Refused
 > => {
   const echoed = grant.granted;
-  if (echoed?.maxSessions !== undefined && typeof echoed.maxSessionSeconds === "number")
+  if (echoed?.maxSessions !== undefined && echoed.maxSessionSeconds !== undefined)
     return Effect.succeed({
       maxSessions: echoed.maxSessions,
       maxSessionSeconds: echoed.maxSessionSeconds,
@@ -291,7 +314,7 @@ export const provenGrant = (grant: {
   return Schema.decodeEffect(Claims)(payload).pipe(
     Effect.map(({ authorization_details: [entry] }) => ({
       maxSessions: entry.constraints.max_sessions,
-      maxSessionSeconds: entry.constraints.max_session_duration_seconds,
+      maxSessionSeconds: entry.constraints.max_session_duration_seconds ?? ("unlimited" as const),
     })),
     Effect.catch(() => refuse("the token proves neither its session count nor its cap")),
   );
@@ -328,11 +351,22 @@ export const provenBind = (input: {
 /** Refuses a token granting more than one session, or a longer one than a check may hold. */
 export const acceptGrant = (input: {
   readonly check: Check;
-  readonly granted: { readonly maxSessions: number; readonly maxSessionSeconds: number };
+  readonly granted: {
+    readonly maxSessions: number;
+    readonly maxSessionSeconds: number | "unlimited";
+  };
 }): Effect.Effect<void, Refused> => {
   const { check, granted } = input;
-  const plan = plans[check];
-  if (granted.maxSessions !== 1 || granted.maxSessionSeconds > plan.seconds)
+  const plan: Plan = plans[check];
+  if (plan.seconds === "unlimited")
+    return granted.maxSessions === 1 && granted.maxSessionSeconds === "unlimited"
+      ? Effect.void
+      : refuse(`${check} needs a token for one uncapped session`);
+  if (
+    granted.maxSessions !== 1 ||
+    granted.maxSessionSeconds === "unlimited" ||
+    granted.maxSessionSeconds > plan.seconds
+  )
     return refuse("the token grants more than one session of at most the capped length");
   if (plan.renews === true && granted.maxSessionSeconds !== plan.seconds)
     return refuse(`${check} needs the full ${plan.seconds}-second grant`);

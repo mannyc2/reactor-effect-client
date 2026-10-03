@@ -129,8 +129,8 @@ rehearse("showreel records its reel, poster and loop when ffmpeg can", {
   },
 });
 
-// Paid run tokens 83d17eb7: hosted Reactor read INACTIVE 9 s after the owner was killed, and the
-// session was still there. Reactor ends a session 30 s after its last connection drops.
+// A dropped hosted session stayed INACTIVE until explicitly ended; the fault below exercises
+// Reactor's documented end, so a late adopter still sees a terminal session in that rehearsal.
 for (const check of ["takeover", "resume", "tokens"] as const) {
   rehearse(`${check} adopts a session left without a connection for 9 s`, {
     check,
@@ -144,6 +144,7 @@ for (const check of ["takeover", "resume", "tokens"] as const) {
   rehearse(`${check} fails cleanly when its adopter comes 31 s after the owner died`, {
     check,
     adoptAfterMs: 31_000,
+    faults: [{ _tag: "DisconnectEnds", after: Duration.seconds(30) }],
     judge: (evidence) => {
       assert.strictEqual(evidence.verdict, "fail");
       // A bind must name an open session (authentication), so the adopter's mint is refused.
@@ -1068,6 +1069,80 @@ rehearse("character fails without the character's picture, and keeps no text", {
     const kept = JSON.stringify(evidence);
     for (const text of ["You are Probe", "Say hello", "about the sea", "Greeting 1"])
       assert.notInclude(kept, text);
+  },
+});
+
+/** Where a `dropped` run left its session: allocated, killed, and closed, from the run's start. */
+const droppedTimes = (evidence: Evidence) => {
+  const session = evidence.sessions[0];
+  return {
+    allocatedMs: session?.allocatedMs ?? Infinity,
+    killedMs: evidence.dropped?.killedMs ?? Infinity,
+    reportedMs: session?.close?.reportedMs ?? Infinity,
+  };
+};
+
+// A fault opts into Reactor's documented 30 s end; the default keeps a dropped session live.
+rehearse("dropped credits Reactor with ending an uncapped session 30 s after its owner died", {
+  check: "dropped",
+  faults: [{ _tag: "DisconnectEnds", after: Duration.seconds(30) }],
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.dropped;
+    const { killedMs } = droppedTimes(evidence);
+    assert.deepStrictEqual(evidence.grants[0]?.maxSessionSeconds, "unlimited");
+    assert.isUndefined(evidence.sessions[0]?.capEndsAt);
+    assert.deepStrictEqual(
+      probe?.states.map((entry) => entry.state),
+      ["INACTIVE", "CLOSED"],
+    );
+    assert.strictEqual(probe?.ended?.by, "reactor");
+    const endedAfter = (probe?.ended?.atMs ?? Infinity) - killedMs;
+    assert.isAtLeast(endedAfter, 30_000);
+    assert.isAtMost(endedAfter, 32_500);
+    assert.strictEqual(probe?.read?.state, "CLOSED");
+    assert.match(
+      summarize([evidence]),
+      /^- \*\*Answer:\*\* ended by Reactor between \d+\.\d\d s and \d+\.\d\d s after the kill; the first read that found it INACTIVE came \d+\.\d\d s after the kill$/m,
+    );
+  },
+});
+
+// With nothing ending it, the key does once the window closes, 60 s after the kill, and within the
+// hold the session is reserved for.
+rehearse("dropped ends with the key an uncapped session Reactor keeps", {
+  check: "dropped",
+  judge: (evidence) => {
+    passes(evidence);
+    const probe = evidence.dropped;
+    const { allocatedMs, killedMs, reportedMs } = droppedTimes(evidence);
+    assert.strictEqual(probe?.states.at(-1)?.state, "INACTIVE");
+    assert.strictEqual(probe?.ended?.by, "key");
+    assert.strictEqual((probe?.windowEndsMs ?? 0) - killedMs, 60_000);
+    assert.isAtMost(reportedMs - allocatedMs, (holdsFor("dropped")[0] ?? 0) * 1000);
+    assert.include(summarize([evidence]), "not ended by Reactor within 60.00 s of the kill");
+  },
+});
+
+rehearse("dropped ends with the key the session of an owner that cannot connect", {
+  check: "dropped",
+  faults: [{ _tag: "RefuseConnect" }],
+  judge: (evidence) => {
+    failed("the owner connected")(evidence);
+    assert.lengthOf(evidence.sessions, 1);
+    assert.isTrue(evidence.sessions[0]?.close?.confirmed, evidence.reasons.join("; "));
+  },
+});
+
+// Nothing caps the session, so a run that cannot end it says to end it now.
+rehearse("dropped fails, and says to end the session now, when the key cannot end it", {
+  check: "dropped",
+  faults: [{ _tag: "IgnoreDelete" }],
+  judge: (evidence) => {
+    failed("confirmed termination")(evidence);
+    const instructions = cleanupInstructions(evidence);
+    assert.lengthOf(instructions, 1);
+    assert.include(instructions[0] ?? "", "nothing caps it");
   },
 });
 

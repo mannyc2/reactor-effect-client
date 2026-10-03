@@ -33,8 +33,14 @@ Reactor's pricing API states H3's rate per second, while its
 [billing page](https://docs.reactor.inc/resources/billing) still says billing is per
 session-minute. The meter runs from `ready` until the session is terminated, and in the paid runs
 the dashboard listed each session to the second. `connecting` and `waiting`, the wait for a GPU,
-are free. Idle time is billed, and so is the 30-second window in which a session waits for a
-dropped connection to come back ([sessions](https://docs.reactor.inc/concepts/sessions)).
+are free. Idle time and recoverable disconnects are billed until termination. Reactor's
+[session docs](https://docs.reactor.inc/concepts/sessions) say it ends a session 30 seconds after
+its last connection drops. In a paid probe on 2026-09-30, a connected session whose owner was
+killed still read `INACTIVE` 60 seconds later; the API key ended it and the dashboard billed
+1m 3s, including the disconnected time
+([0.8.0-dropped](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dropped/summary.md)).
+End owned sessions with `session.close`, use the key's `coordinator.terminate(sessionId)` after a
+crash, and cap sessions to bound their bill.
 
 On 2026-09-30, `GET https://api.reactor.inc/pricing` listed H3 Reference Turbo Realtime
 (`h3-reference-to-video-turbo-realtime`) at 350 credits a second, at 10,000 credits a dollar:
@@ -183,8 +189,11 @@ to do then.
 - **`INACTIVE` is not ended.** A session whose last connection dropped reads `INACTIVE` and is still
   live and billed. Only `CLOSED` is terminal (`CoordinatorClient.isTerminal`).
 - **Reconnecting keeps billing.** A session reconnects a dropped connection on its own and runs on
-  for as long as the process holding it does. `Reactor.layer({ reconnect: false })` leaves a drop
-  down, so Reactor ends the session 30 seconds later.
+  for as long as the process holding it does, to its cap if it has one.
+  `Reactor.layer({ reconnect: false })` leaves a drop down until `session.reconnect`. Reactor
+  documents a 30-second end, but a hosted session stayed `INACTIVE` past 60 seconds and billed
+  until the API key ended it. Close owned sessions explicitly and cap them; see
+  [Cost control](/reactor-effect-client/guides/cost-control/).
 - **A renewal holds two sessions.** A playout's replacement session opens before the retiring one
   ends, so leave room under the five-session limit.
 - **Pin exact versions.** The SDK peers on Effect 4.0.x, and your lockfile should hold one release

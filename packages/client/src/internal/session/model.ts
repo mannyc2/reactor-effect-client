@@ -36,8 +36,9 @@ export interface Settings {
   readonly uploadTimeout: Duration.Duration;
   readonly connectTimeout: Duration.Duration;
   /**
-   * A reconnect's deadline, the session's own counted from the drop that began it: Reactor ends a
-   * session 30 s after it loses its last connection.
+   * A reconnect's SDK deadline, counted from the drop that began it. Reactor documents a 30 s end
+   * after the last connection drops, but a hosted session was still INACTIVE 60 s after its owner
+   * was killed and billed until the API key ended it; this deadline bounds SDK reconnect attempts.
    */
   readonly reconnectTimeout: Duration.Duration;
   /** When the session tries a dropped connection again; none leaves it dropped. */

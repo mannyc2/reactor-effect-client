@@ -14,8 +14,9 @@
  * API key reads the watched session every 2 s until a read finds it ended, or
  * until its window closes, past every end Reactor plausibly gives it: the cap
  * counted from allocation, from `ACTIVE` or from ready, and the 30 s after
- * each that Reactor gives a connected session after its last connection
- * drops. The key then ends it either way.
+ * each that Reactor documents for a connected session after its last
+ * connection drops. Hosted Reactor kept a dropped session past 60 s; the key
+ * ends this session either way.
  *
  * Beside the watch, as soon as the watched session is allocated, the second
  * token allocates a session, which spends it, and at once sends a second
@@ -60,7 +61,7 @@ const readEveryMs = 2_000;
 const startsWithinMs = 15_000;
 /** The cap the token asks for, which bounds the one it is granted. */
 const capMs = plans.unconnected.seconds * 1000;
-/** How long Reactor gives a connected session after its last connection drops. */
+/** How long Reactor documents for a connected session after its last connection drops. */
 const graceMs = 30_000;
 /** How far the window runs past the latest end it allows for, for Reactor's own timers. */
 const spareMs = 15_000;

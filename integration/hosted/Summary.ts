@@ -1,12 +1,31 @@
 /** A ledger's runs as Markdown, for `summary.md` and the release notes. */
 import { isTerminal } from "reactor-effect-client/CoordinatorClient";
-import type { AvatarWire, Evidence } from "./Evidence.js";
+import type { AvatarWire, Evidence, StateReads } from "./Evidence.js";
 import { cleanupInstructions } from "./Evidence.js";
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(2)} s`;
 const usd = (value: number | undefined) => (value === undefined ? "–" : `$${value.toFixed(3)}`);
 
 const listed = (names: ReadonlyArray<string>) => names.join(", ") || "none";
+
+/** A read's state that says the session ran: a failed read, or one that found it gone, says nothing. */
+const running = (state: string) =>
+  !isTerminal(state) && state !== "gone" && !/^(?:http|error):/.test(state);
+
+/** Each state a session's reads found, with its first and last read timed by `from`. */
+const readsOf = (states: StateReads, from: (atMs: number) => string) =>
+  states
+    .map(
+      (entry) =>
+        `${entry.state} from ${from(entry.firstMs)} to ${from(entry.lastMs)} (${entry.reads} ${entry.reads === 1 ? "read" : "reads"})`,
+    )
+    .join(" > ") || "none";
+
+/** A reply's codes, as a line gives them. */
+const codesOf = (value: Readonly<Record<string, string>> | undefined) =>
+  Object.entries(value ?? {})
+    .map(([key, code]) => `${key} ${code}`)
+    .join(", ") || "none";
 
 /** `tour`'s phases, a line each. */
 const tourLines = (tour: NonNullable<Evidence["tour"]>): ReadonlyArray<string> => {
@@ -267,6 +286,8 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
   }
   const unconnected = evidence.unconnected;
   if (unconnected !== undefined) lines.push(...unconnectedLines(evidence, unconnected));
+  const dropped = evidence.dropped;
+  if (dropped !== undefined) lines.push(...droppedLines(evidence, dropped));
   const showreel = evidence.showreel;
   if (showreel !== undefined) lines.push(...showreelLines(showreel));
   const avatar = evidence.avatar;
@@ -594,10 +615,6 @@ const unconnectedLines = (
   evidence: Evidence,
   probe: NonNullable<Evidence["unconnected"]>,
 ): ReadonlyArray<string> => {
-  const codes = (value: Readonly<Record<string, string>> | undefined) =>
-    Object.entries(value ?? {})
-      .map(([key, code]) => `${key} ${code}`)
-      .join(", ") || "none";
   const failure = (answer: {
     readonly answer: string;
     readonly status?: number;
@@ -609,7 +626,7 @@ const unconnectedLines = (
     return [
       create === undefined
         ? `**Unconnected:** requested ${probe.requestedAt}; no answer to its create was recorded`
-        : `**Unconnected:** no session named; its create failed with ${failure(create)}; keys ${create.keys.join(", ") || "none"}; codes ${codes(create.codes)}`,
+        : `**Unconnected:** no session named; its create failed with ${failure(create)}; keys ${create.keys.join(", ") || "none"}; codes ${codesOf(create.codes)}`,
     ];
   // A time from a session's allocation, where the evidence has it.
   const afterAllocation = (sessionId: string) => {
@@ -621,13 +638,6 @@ const unconnectedLines = (
     (session) => session.id === probe.sessionId,
   )?.allocatedMs;
   const since = afterAllocation(probe.sessionId);
-  const readsOf = (states: typeof probe.states, from: (atMs: number) => string) =>
-    states
-      .map(
-        (entry) =>
-          `${entry.state} from ${from(entry.firstMs)} to ${from(entry.lastMs)} (${entry.reads} ${entry.reads === 1 ? "read" : "reads"})`,
-      )
-      .join(" > ") || "none";
   const ended = probe.ended;
   const spent = probe.spentToken;
   const read = probe.read;
@@ -639,7 +649,7 @@ const unconnectedLines = (
         ? `its first create allocated ${token.sessionId}`
         : first === undefined
           ? "no answer to its first create was recorded"
-          : `its first create failed with ${failure(first)}; keys ${first.keys.join(", ") || "none"}; codes ${codes(first.codes)}`;
+          : `its first create failed with ${failure(first)}; keys ${first.keys.join(", ") || "none"}; codes ${codesOf(first.codes)}`;
     const second = token.second;
     if (second === undefined)
       return `**Spent token:** ${opening}${token.sessionId === undefined ? "" : "; no answer to a second create was recorded"}`;
@@ -650,11 +660,12 @@ const unconnectedLines = (
         : second.answer === "the same session"
           ? `answered with ${token.sessionId ?? "?"}, the session it made, in ${took}`
           : `failed in ${took} with ${failure(second)}`;
-    return `**Spent token:** ${opening}; a second create ${answered}; keys ${second.keys.join(", ") || "none"}; codes ${codes(second.codes)}`;
+    return `**Spent token:** ${opening}; a second create ${answered}; keys ${second.keys.join(", ") || "none"}; codes ${codesOf(second.codes)}`;
   };
   const windowEndsMs = probe.windowEndsMs;
   // How far the window ran past the cap and the 30 s after it, counted from `from`.
-  const capMs = (evidence.grants[0]?.maxSessionSeconds ?? 0) * 1000;
+  const cap = evidence.grants[0]?.maxSessionSeconds;
+  const capMs = typeof cap === "number" ? cap * 1000 : 0;
   const past = (startMs: number | undefined, from: string) => {
     if (startMs === undefined || windowEndsMs === undefined) return `${from} never read`;
     const spare = windowEndsMs - startMs - capMs - 30_000;
@@ -680,7 +691,7 @@ const unconnectedLines = (
     ...(read === undefined
       ? []
       : [
-          `**Read at the end:** ${read.status} ${read.state ?? "no state"}; keys ${read.keys.join(", ") || "none"}; codes ${codes(read.codes)}`,
+          `**Read at the end:** ${read.status} ${read.state ?? "no state"}; keys ${read.keys.join(", ") || "none"}; codes ${codesOf(read.codes)}`,
         ]),
   ];
 };
@@ -723,9 +734,6 @@ const billing = (
       requestedMs: spent?.second?.sentMs,
     },
   ];
-  // A failed read, or one that found it gone, says nothing of whether the session ran.
-  const running = (state: string) =>
-    !isTerminal(state) && state !== "gone" && !/^(?:http|error):/.test(state);
   const heldOf = (session: Evidence["sessions"][number]) =>
     spent?.held?.find((held) => held.sessionId === session.id);
   // The reads of a session, the watch's or the ones after the second create.
@@ -781,6 +789,104 @@ const billing = (
   ];
 };
 
+/**
+ * When `dropped`'s session ended, and by whom: for Reactor's end, between the
+ * last read that found it running and the first that found it ended; for the
+ * key's, between its DELETE and the read that confirmed it; and for a DELETE
+ * that found no session, between the last read that found it running and that
+ * DELETE.
+ */
+const droppedEnd = (evidence: Evidence, probe: NonNullable<Evidence["dropped"]>) => {
+  const session = evidence.sessions.find((held) => held.id === probe.sessionId);
+  if (session === undefined) return undefined;
+  const runningUntil = (beforeMs: number) =>
+    probe.states
+      .filter((entry) => entry.lastMs < beforeMs && running(entry.state))
+      .reduce((latest, entry) => Math.max(latest, entry.lastMs), probe.killedMs ?? 0);
+  const ended = probe.ended;
+  if (ended?.by === "reactor")
+    return { by: "Reactor", fromMs: runningUntil(ended.atMs), toMs: ended.atMs };
+  const close = session.close;
+  if (close?.confirmed !== true) return undefined;
+  return close.termination?.deleteStatus === 404
+    ? {
+        by: "before the key's DELETE",
+        fromMs: runningUntil(close.requestedMs),
+        toMs: close.requestedMs,
+      }
+    : { by: "the key", fromMs: close.requestedMs, toMs: close.reportedMs };
+};
+
+/** `dropped`'s owner, its reads from the kill, and its session's end, a line each. */
+const droppedLines = (
+  evidence: Evidence,
+  probe: NonNullable<Evidence["dropped"]>,
+): ReadonlyArray<string> => {
+  const allocatedMs = evidence.sessions.find(
+    (session) => session.id === probe.sessionId,
+  )?.allocatedMs;
+  if (probe.sessionId === undefined || allocatedMs === undefined)
+    return [`**Dropped:** the owner started ${probe.startedAt} and reported no session`];
+  const killedMs = probe.killedMs;
+  const opening = `**Owner:** ${probe.ownerHost ?? "host not reported"}; ${probe.sessionId} allocated ${probe.allocatedAt ?? "?"}${probe.connectedMs === undefined ? ", never connected" : `, connected ${seconds(probe.connectedMs - allocatedMs)} later`}${killedMs === undefined ? "" : `, killed ${seconds(killedMs - allocatedMs)} after allocation, ${probe.killedAt ?? "?"}`}`;
+  if (killedMs === undefined) return [opening];
+  const sinceKill = (atMs: number) => seconds(atMs - killedMs);
+  const inactive = probe.states.find((entry) => entry.state === "INACTIVE")?.firstMs;
+  const end = droppedEnd(evidence, probe);
+  const windowMs = probe.windowEndsMs === undefined ? undefined : probe.windowEndsMs - killedMs;
+  const answer =
+    probe.ended?.by === "key"
+      ? `not ended by Reactor within ${windowMs === undefined ? "the window" : seconds(windowMs)} of the kill; the key ended it`
+      : end === undefined
+        ? "its end is unconfirmed"
+        : `ended by ${end.by} between ${sinceKill(end.fromMs)} and ${sinceKill(end.toMs)} after the kill`;
+  const read = probe.read;
+  return [
+    opening,
+    `**Answer:** ${answer}; the first read that found it INACTIVE came ${inactive === undefined ? "never" : `${sinceKill(inactive)} after the kill`}`,
+    ...(windowMs === undefined
+      ? []
+      : [
+          `**Window:** reads until ${seconds(windowMs)} after the kill, ${seconds((probe.windowEndsMs ?? 0) - allocatedMs)} after allocation`,
+        ]),
+    `**Reads from the kill:** ${readsOf(probe.states, sinceKill)}`,
+    ...(read === undefined
+      ? []
+      : [
+          `**Read at the end:** ${read.status} ${read.state ?? "no state"}; keys ${read.keys.join(", ") || "none"}; codes ${codesOf(read.codes)}`,
+        ]),
+  ];
+};
+
+/**
+ * `dropped`'s session as a table row for the Reactor dashboard: its times
+ * from its allocation, and from the kill, beside the duration and charge the
+ * maintainer reads there.
+ */
+const droppedBilling = (
+  evidence: Evidence,
+  probe: NonNullable<Evidence["dropped"]>,
+): ReadonlyArray<string> => {
+  const session = evidence.sessions.find((held) => held.id === probe.sessionId);
+  if (session === undefined) return [];
+  const since = (atMs: number | undefined) =>
+    atMs === undefined ? "–" : seconds(atMs - session.allocatedMs);
+  const end = droppedEnd(evidence, probe);
+  const between = (startMs: number | undefined) =>
+    end === undefined || startMs === undefined
+      ? "–"
+      : `${(Math.max(0, end.fromMs - startMs) / 1000).toFixed(2)}–${seconds(end.toMs - startMs)}`;
+  const inactive = probe.states.find((entry) => entry.state === "INACTIVE")?.firstMs;
+  return [
+    "",
+    `**Billing, for the dashboard:** seconds from the session's allocation, ${probe.allocatedAt ?? "?"}. Its end lies between the two times given: for Reactor's, the last read that found the session running and the first that found it ended; for the key's, its DELETE and the read that confirmed it; and before a DELETE that found no session, the last read that found it running and that DELETE. Fill in the last two columns from the Reactor dashboard.`,
+    "",
+    "| Session | Connected | Killed | First INACTIVE read | Window closed | Ended by | Ended | Killed to ended | Dashboard duration | Dashboard charge |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    `| ${session.id} | ${since(probe.connectedMs)} | ${since(probe.killedMs)} | ${since(inactive)} | ${since(probe.windowEndsMs)} | ${end?.by ?? "unconfirmed"} | ${between(session.allocatedMs)} | ${between(probe.killedMs)} |  |  |`,
+  ];
+};
+
 /** One run as a section. */
 const section = (evidence: Evidence): string => {
   const environment = evidence.environment;
@@ -813,6 +919,7 @@ const section = (evidence: Evidence): string => {
     ...evidence.reasons.map((reason) => `  - ${reason}`),
     ...cleanupInstructions(evidence).map((line) => `- **Cleanup:** ${line}`),
     ...(evidence.unconnected === undefined ? [] : billing(evidence, evidence.unconnected)),
+    ...(evidence.dropped === undefined ? [] : droppedBilling(evidence, evidence.dropped)),
     ...(evidence.avatar === undefined ? [] : avatarAnswers(evidence.avatar)),
   ].join("\n");
 };
