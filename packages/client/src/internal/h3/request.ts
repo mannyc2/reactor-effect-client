@@ -1,5 +1,7 @@
 /** An H3 clip request, and its projection onto the `enqueue` command's arguments. */
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { ReactorError } from "../../ReactorError.js";
 import type { UploadReference } from "../../Session.js";
 import type { CommandArgs } from "./commands.js";
 import {
@@ -13,6 +15,8 @@ import {
   Reference,
   ValidatedAudioReferenceSchema,
   ValidatedReferenceSchema,
+  validateAudioReference,
+  validateReference,
 } from "./references.js";
 
 const isWellFormed = (text: string): boolean => {
@@ -95,6 +99,27 @@ export interface Captured extends Omit<Request, "references" | "audio"> {
   readonly references: ReadonlyArray<ValidatedReference>;
   readonly audio: ReadonlyArray<ValidatedAudioReference>;
 }
+
+/** The caller's request, decoded with its references validated and copied. */
+export const capture = Effect.fnUntraced(function* (input: Request) {
+  const request = yield* Schema.decodeEffect(Request)(input).pipe(
+    Effect.mapError((cause) =>
+      ReactorError.fromCode("InvalidInput", "Invalid H3 request", {
+        operation: "enqueue",
+        outcome: "not-submitted",
+        detail: cause,
+      }),
+    ),
+  );
+  const references = yield* Effect.forEach(request.references ?? [], (reference) =>
+    Effect.fromResult(validateReference(reference)),
+  );
+  const audio = yield* Effect.forEach(request.audio ?? [], (reference) =>
+    Effect.fromResult(validateAudioReference(reference)),
+  );
+  const captured: Captured = { ...request, references, audio };
+  return captured;
+});
 
 const wireUpload = (file: UploadReference) => ({
   upload_id: file.uploadId,

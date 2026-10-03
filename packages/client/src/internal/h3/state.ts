@@ -42,6 +42,7 @@ export type ProviderSnapshot<C extends Clip = Clip> = SnapshotBase<C> &
   );
 
 export interface Model<C extends Clip = Clip> {
+  readonly coherent: (state: State, queue: Queue<C>) => boolean;
   readonly sessionId: string;
   readonly generation: bigint;
   readonly revision: bigint;
@@ -61,16 +62,19 @@ export interface Model<C extends Clip = Clip> {
 type Disposition = "applied" | "duplicate" | "stale";
 
 export const initial = <C extends Clip = Clip>({
+  coherent,
   sessionId,
   generation,
   revision,
   maxClips,
 }: {
+  readonly coherent: Model<C>["coherent"];
   readonly sessionId: string;
   readonly generation: bigint;
   readonly revision: bigint;
   readonly maxClips: number;
 }): Model<C> => ({
+  coherent,
   sessionId,
   generation,
   revision,
@@ -112,11 +116,7 @@ const coherent = <C extends Clip>(model: Model<C>): model is Model<C> & Facts<C>
   model.queue !== undefined &&
   !model.stateDirty &&
   !model.queueDirty &&
-  model.state.generation_queued === model.queue.generation.length &&
-  model.state.playout_queued === model.queue.playout.length &&
-  ![...model.queue.generation, ...model.queue.playout.slice(1)].some(
-    (clip) => clip.clip_id === model.state?.playing_clip_id,
-  );
+  model.coherent(model.state, model.queue);
 
 export const availability = <C extends Clip>(model: Model<C>): ProviderSnapshot<C>["_tag"] => {
   if (model.cause !== undefined) return "Unavailable";

@@ -20,6 +20,7 @@ import type { Contract } from "./internal/h3/commands.js";
 import type { DecodedMessage, Message, MessageType, Payload } from "./internal/h3/messages.js";
 import type { ClipOperation } from "./internal/h3/operations.js";
 import * as Provider_ from "./internal/h3/provider.js";
+import { h3 } from "./internal/h3/family.js";
 import { validateAudioReferenceEffect, validateReferenceEffect } from "./internal/h3/references.js";
 import type { Reference } from "./internal/h3/references.js";
 import type { Request } from "./internal/h3/request.js";
@@ -198,7 +199,7 @@ export const make: {
   ): Effect.Effect<Provider, ReactorError | CommandFailure, Crypto.Crypto | Scope.Scope>;
 } = dual(
   (args) => Predicate.hasProperty(args[0], "command"),
-  (session: Session, options?: Options) => Provider_.make(session, options),
+  (session: Session, options?: Options) => Provider_.make("H3.make")(session, h3, options),
 );
 
 /** Validates an image reference once, so requests reuse it without checking it again. */
