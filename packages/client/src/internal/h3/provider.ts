@@ -846,7 +846,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           awaiting: true,
           held: undefined,
         };
-        return { args: staged.args, entry, waiters: yield* Operations.makeWaiters };
+        return { args: staged.args, entry, waiters: yield* Operations.makeWaiters() };
       }),
       commit: ({ entry, waiters }) =>
         Effect.gen(function* () {

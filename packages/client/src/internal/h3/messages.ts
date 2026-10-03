@@ -34,26 +34,32 @@ const repeated = (clips: readonly Clip[], seen = new Set<string>()): number => {
  * describe a clip that is still in playout, but duplicate positions within the
  * queues, or within the history, are ambiguous.
  */
-export const Queue = Schema.Struct({
-  generation: Schema.Array(Clip),
-  playout: Schema.Array(Clip),
-  history: Schema.Array(Clip),
-}).check(
-  Schema.makeFilter((queue) => {
-    const queued = new Set<string>();
-    const generation = repeated(queue.generation, queued);
-    if (generation >= 0)
-      return { path: ["generation", generation, "clip_id"], issue: "clip is queued twice" };
-    const playout = repeated(queue.playout, queued);
-    if (playout >= 0)
-      return { path: ["playout", playout, "clip_id"], issue: "clip is queued twice" };
-    const history = repeated(queue.history);
-    if (history >= 0)
-      return { path: ["history", history, "clip_id"], issue: "clip is in history twice" };
-    return undefined;
-  }),
-);
-export type Queue = typeof Queue.Type;
+const queueFor = <S extends Schema.Codec<Clip, unknown>>(clip: S) =>
+  Schema.Struct({
+    generation: Schema.Array(clip),
+    playout: Schema.Array(clip),
+    history: Schema.Array(clip),
+  }).check(
+    Schema.makeFilter((queue) => {
+      const queued = new Set<string>();
+      const generation = repeated(queue.generation, queued);
+      if (generation >= 0)
+        return { path: ["generation", generation, "clip_id"], issue: "clip is queued twice" };
+      const playout = repeated(queue.playout, queued);
+      if (playout >= 0)
+        return { path: ["playout", playout, "clip_id"], issue: "clip is queued twice" };
+      const history = repeated(queue.history);
+      if (history >= 0)
+        return { path: ["history", history, "clip_id"], issue: "clip is in history twice" };
+      return undefined;
+    }),
+  );
+export const Queue = queueFor(Clip);
+export interface Queue<C extends Clip = Clip> {
+  readonly generation: ReadonlyArray<C>;
+  readonly playout: ReadonlyArray<C>;
+  readonly history: ReadonlyArray<C>;
+}
 
 export const State = Schema.Struct({
   clip_seconds: Schema.Finite,
@@ -89,20 +95,20 @@ export const State = Schema.Struct({
 );
 export type State = typeof State.Type;
 
-export const Payloads = {
-  clip_queued: Schema.Struct({ clip: Clip }),
+export const payloadsFor = <S extends Schema.Codec<Clip, unknown>>(clip: S) => ({
+  clip_queued: Schema.Struct({ clip }),
   clip_moved: Schema.Struct({
-    clip: Clip,
+    clip,
     queue: Schema.Literals(["generation", "playout"]),
     position: Schema.Natural,
   }),
-  clip_popped: Schema.Struct({ clip: Clip }),
-  clip_generated: Schema.Struct({ clip: Clip }),
-  clip_failed: Schema.Struct({ clip: Clip, reason: Schema.String }),
-  clip_started: Schema.Struct({ clip: Clip }),
-  clip_finished: Schema.Struct({ clip: Clip, seconds_sent: Schema.Finite }),
-  clip_stopped: Schema.Struct({ clip: Clip, seconds_sent: Schema.Finite }),
-  queue_update: Queue,
+  clip_popped: Schema.Struct({ clip }),
+  clip_generated: Schema.Struct({ clip }),
+  clip_failed: Schema.Struct({ clip, reason: Schema.String }),
+  clip_started: Schema.Struct({ clip }),
+  clip_finished: Schema.Struct({ clip, seconds_sent: Schema.Finite }),
+  clip_stopped: Schema.Struct({ clip, seconds_sent: Schema.Finite }),
+  queue_update: queueFor(clip),
   state_update: State,
   command_error: Schema.Struct({ command: Schema.String, reason: Schema.String }),
   seed_accepted: Schema.Struct({ seed: Schema.Natural }),
@@ -111,14 +117,18 @@ export const Payloads = {
   autoplay_accepted: Schema.Struct({ enabled: Schema.Boolean }),
   flush_accepted: Schema.Struct({ enabled: Schema.Boolean }),
   session_reset: Schema.Struct({ cleared_clips: Schema.Natural, was_playing: Schema.Boolean }),
-} as const;
+});
+export const Payloads = payloadsFor(Clip);
+export type PayloadTable<C extends Clip = Clip> = ReturnType<
+  typeof payloadsFor<Schema.Codec<C, unknown>>
+>;
 export type MessageType = keyof typeof Payloads;
-export type Payload<K extends MessageType> = (typeof Payloads)[K]["Type"];
-export type Message<K extends MessageType = MessageType> = {
-  [P in K]: { readonly type: P; readonly data: Payload<P> };
+export type Payload<K extends MessageType, C extends Clip = Clip> = PayloadTable<C>[K]["Type"];
+export type Message<K extends MessageType = MessageType, C extends Clip = Clip> = {
+  [P in K]: { readonly type: P; readonly data: Payload<P, C> };
 }[K];
-export type DecodedMessage =
-  | Message
+export type DecodedMessage<C extends Clip = Clip> =
+  | Message<MessageType, C>
   | {
       readonly type: "unknown";
       readonly name: string;
@@ -131,28 +141,32 @@ export type DecodedMessage =
  * and the `SchemaError`, which names the path but no input value, stays in
  * the error's detail.
  */
-export const decodeMessage = ({
-  type,
-  data,
-}: {
-  readonly type: string;
-  readonly data?: Schema.JsonObject | undefined;
-}): Result.Result<DecodedMessage, ReactorError> => {
-  if (!isMessageType(type)) return Result.succeed({ type: "unknown", name: type, data });
-  return decodeKnown(type, data);
-};
+export const decodeMessageFor =
+  <C extends Clip>(payloads: PayloadTable<C>) =>
+  ({
+    type,
+    data,
+  }: {
+    readonly type: string;
+    readonly data?: Schema.JsonObject | undefined;
+  }): Result.Result<DecodedMessage<C>, ReactorError> => {
+    if (!isMessageType(type)) return Result.succeed({ type: "unknown", name: type, data });
+    return decodeKnown(payloads, type, data);
+  };
+export const decodeMessage = decodeMessageFor(Payloads);
 
-const decodeKnown = <K extends MessageType>(
+const decodeKnown = <C extends Clip, K extends MessageType>(
+  payloads: PayloadTable<C>,
   type: K,
   data: Schema.JsonObject | undefined,
-): Result.Result<Message<K>, ReactorError> =>
-  Result.mapBoth(Schema.decodeUnknownResult(Payloads[type])(data), {
+): Result.Result<Message<K, C>, ReactorError> =>
+  Result.mapBoth(Schema.decodeUnknownResult(payloads[type])(data), {
     onFailure: (cause) =>
       ReactorError.fromCode("Protocol", `H3 ${type} payload is malformed`, {
         operation: "H3 observation",
         detail: cause,
       }),
-    onSuccess: (decoded): Message<K> => ({ type, data: decoded }),
+    onSuccess: (decoded): Message<K, C> => ({ type, data: decoded }),
   });
 
 const isMessageType = (type: string): type is MessageType => Object.hasOwn(Payloads, type);
