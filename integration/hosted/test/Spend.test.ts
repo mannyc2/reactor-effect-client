@@ -115,6 +115,20 @@ describe("the spending gates", () => {
     }),
   );
 
+  // The requested spend seam keeps FastH3's paid cap separate from its rehearsal stand-in.
+  it.effect("fasth3 reserves one FastH3 session and rehearses on H3", () =>
+    Effect.sync(() => {
+      assert.strictEqual(Spend.plans.fasth3.model.name, "reactor/fast-h3");
+      assert.strictEqual(Spend.plans.fasth3.sessions, 1);
+      assert.strictEqual(Spend.plans.fasth3.seconds, 50);
+      assert.strictEqual(Spend.ceilingFor("fasth3"), 2.1);
+      assert.strictEqual(
+        Spend.modelFor("fasth3", "rehearsal").name,
+        "reactor/h3-reference-to-video-turbo-realtime",
+      );
+    }),
+  );
+
   it("a reservation rounds up to four decimals, and a started unit of the rate bills whole", () => {
     assert.strictEqual(Spend.reservationUsd(0.7500000000000001), 0.75);
     assert.strictEqual(Spend.reservationUsd(0.75001), 0.7501);

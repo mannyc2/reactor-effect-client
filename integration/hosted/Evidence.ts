@@ -1336,6 +1336,124 @@ export const CharacterRecord = Schema.Struct({
 });
 export type CharacterRecord = typeof CharacterRecord.Type;
 
+/**
+ * `fasth3`: one FastH3 session through the raw Session, to record what its docs leave open.
+ * Times count from the run's start, in milliseconds. It keeps codes, key names, numbers and
+ * booleans, never a prompt, a reason or provider text.
+ */
+export const FastH3Record = Schema.Struct({
+  /** The paid model, or the model standing in for it in rehearsal. */
+  model: Schema.String,
+  contract: Schema.optionalKey(
+    Schema.Struct({
+      title: Schema.optionalKey(Schema.String),
+      version: Schema.optionalKey(Schema.String),
+      commands: Schema.Array(Schema.String),
+      enqueue: Schema.Array(Schema.String),
+    }),
+  ),
+  state: Schema.optionalKey(
+    Schema.Struct({
+      keys: Schema.Array(Schema.String),
+      missing: Schema.Array(Schema.String),
+      extra: Schema.Array(Schema.String),
+      values: Schema.String.pipe((key) =>
+        Schema.Record(key, Schema.Union([Schema.String, Schema.Finite, Schema.Boolean])),
+      ),
+    }),
+  ),
+  counts: Schema.Array(
+    Schema.Struct({
+      atMs: Ms,
+      from: Schema.Literals(["state_update", "queue_update"]),
+      read: Schema.Boolean,
+      generation: Schema.Int,
+      playout: Schema.Int,
+      history: Schema.optionalKey(Schema.Int),
+      /** Queued without a generated event yet: an unbuilt clip, not proof of GPU activity. */
+      building: Schema.Boolean,
+      /** The explicit get_state → get_queue attempt, including attempts that cannot be compared. */
+      pair: Schema.optionalKey(Schema.Int),
+      comparable: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+  readPairs: Schema.Array(
+    Schema.Struct({
+      pair: Schema.Int,
+      stateAnswered: Schema.Boolean,
+      queueAnswered: Schema.Boolean,
+      comparable: Schema.Boolean,
+    }),
+  ),
+  lengths: Schema.Array(
+    Schema.Struct({
+      requested: Schema.Finite,
+      answer: Schema.String,
+      outcome: Schema.optionalKey(Outcome),
+      clipSeconds: Schema.optionalKey(Schema.Finite),
+      frames: Schema.optionalKey(Schema.Int),
+    }),
+  ),
+  enqueues: Schema.Array(
+    Schema.Struct({
+      label: Schema.String,
+      sentMs: Ms,
+      answeredMs: Schema.optionalKey(Ms),
+      answer: Schema.String,
+      outcome: Schema.optionalKey(Outcome),
+      clipSeconds: Schema.optionalKey(Schema.Finite),
+      frames: Schema.optionalKey(Schema.Int),
+      clipKeys: Schema.String.pipe(Schema.Array, Schema.optionalKey),
+      clipAttribution: Schema.optionalKey(Schema.Literals(["reply", "request", "metadata"])),
+      commandError: Schema.optionalKey(
+        Schema.Struct({ command: Schema.String, reasonLength: Schema.Int }),
+      ),
+      /** A separate broadcast is only a temporal observation unless its request id matched. */
+      commandErrors: Schema.Array(
+        Schema.Struct({
+          atMs: Ms,
+          command: Schema.String,
+          reasonLength: Schema.Int,
+          attribution: Schema.Literals(["exact", "temporal"]),
+          beforeAnswer: Schema.Boolean,
+        }),
+      ),
+    }),
+  ),
+  clips: Schema.Array(
+    Schema.Struct({
+      label: Schema.String,
+      queuedMs: Ms,
+      generatedMs: Schema.optionalKey(Ms),
+      startedMs: Schema.optionalKey(Ms),
+      endedMs: Schema.optionalKey(Ms),
+      ended: Schema.optionalKey(Schema.Literals(["finished", "stopped", "failed", "popped"])),
+    }),
+  ),
+  generatedOrder: Schema.Array(Schema.String),
+  history: Schema.Array(
+    Schema.Struct({ atMs: Ms, length: Schema.Int, clipKeys: Schema.Array(Schema.String) }),
+  ),
+  /** Whether the returned generation queue really put the dependent ahead of its unbuilt anchor. */
+  ahead: Schema.optionalKey(Schema.Struct({ checked: Schema.Boolean, observed: Schema.Boolean })),
+  stop: Schema.optionalKey(
+    Schema.Struct({
+      sentMs: Ms,
+      answer: Schema.String,
+      outcome: Schema.optionalKey(Outcome),
+      stoppedMs: Schema.optionalKey(Ms),
+      /** A gap bounded by another changing frame cannot measure a frozen tail. */
+      frozen: Schema.Literal("unmeasured"),
+    }),
+  ),
+  seams: Schema.Array(Schema.Struct({ toLabel: Schema.String, pauseMs: Schema.Finite })),
+  messages: Counts,
+  unknown: Counts,
+  observerLost: Schema.Boolean,
+  video: Schema.optionalKey(VideoSummary),
+});
+export type FastH3Record = typeof FastH3Record.Type;
+
 export const Evidence = Schema.Struct({
   format: Schema.Literal(format),
   runId: Schema.String,
@@ -1564,6 +1682,7 @@ export const Evidence = Schema.Struct({
   showreel: Schema.optionalKey(ShowreelRecord),
   avatar: Schema.optionalKey(AvatarRecord),
   character: Schema.optionalKey(CharacterRecord),
+  fasth3: Schema.optionalKey(FastH3Record),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -1591,6 +1710,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   showreel: ["playout", "showreel"],
   avatar: ["server", "network", "avatar"],
   character: ["network", "character"],
+  fasth3: ["server", "network", "fasth3"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */

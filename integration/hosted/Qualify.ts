@@ -22,7 +22,7 @@ import { format, judged } from "./Evidence.js";
 import * as Ledger from "./Ledger.js";
 import * as Run from "./Run.js";
 import type { Authorization } from "./Spend.js";
-import { admit, admitRelay, plans, Refused } from "./Spend.js";
+import { admit, admitRelay, modelFor, Refused } from "./Spend.js";
 import { Target } from "./Target.js";
 
 const Manifest = Schema.fromJsonString(
@@ -210,7 +210,7 @@ export const execute = (input: {
       const coordinator = yield* CoordinatorClient.CoordinatorClient;
       const rate = yield* coordinator.pricing.pipe(
         Effect.flatMap((pricing) =>
-          CoordinatorClient.modelRate(pricing, plans[authorization.check].model.name),
+          CoordinatorClient.modelRate(pricing, modelFor(authorization.check, target.mode).name),
         ),
         Effect.mapError((error) => Refused.make({ message: `pricing: ${error.message}` })),
       );

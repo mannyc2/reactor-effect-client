@@ -34,6 +34,7 @@ import type * as Path from "effect/Path";
 import { adoption } from "./checks/Adoption.js";
 import { avatar } from "./checks/Avatar.js";
 import { character } from "./checks/Character.js";
+import { fastH3 } from "./checks/FastH3.js";
 import { tour } from "./checks/Tour.js";
 import { show } from "./checks/Show.js";
 import { showreel } from "./checks/Showreel.js";
@@ -49,6 +50,7 @@ import {
   acceptGrant,
   billedUsd,
   provenGrant,
+  modelFor,
   plans,
   sessionSeconds,
   tokenSecondsFor,
@@ -217,7 +219,7 @@ const mint = Effect.fnUntraced(function* (
   const coordinator = yield* CoordinatorClient.CoordinatorClient;
   const grant = yield* coordinator.mintToken({
     apiKey: target.apiKey,
-    modelName: plans[check].model.name,
+    modelName: modelFor(check, target.mode).name,
     maxSessionDuration: `${plans[check].seconds} seconds`,
     expiresAfter: `${expiresAfterSeconds} seconds`,
   });
@@ -248,7 +250,7 @@ const binder = Effect.fnUntraced(function* (
     const sentAt = yield* Clock.currentTimeMillis;
     const token = yield* coordinator.mintToken({
       apiKey: target.apiKey,
-      modelName: plans[run.check].model.name,
+      modelName: modelFor(run.check, target.mode).name,
       bind: [sessionId],
       expiresAfter: `${expiresAfterSeconds} seconds`,
     });
@@ -2371,6 +2373,7 @@ const all = {
   showreel: showreel(pieces),
   avatar: avatar(pieces),
   character: character(pieces),
+  fasth3: fastH3(pieces),
 };
 /** What a check can fail with, and what it needs. */
 export type CheckError = Effect.Error<(typeof all)[Check]>;

@@ -7,7 +7,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off
 import { spawnSync } from "node:child_process";
 // @effect-diagnostics-next-line nodeBuiltinImport:off
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off
 import { join } from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -1204,4 +1204,48 @@ layer(NodeServices.layer)("a build older than its sources", (it) => {
         }),
       ),
   );
+});
+
+// The requested probe seam exercises a private failure reason through the real ReactorTest layer;
+// the saved file, rather than only the returned object, must keep neither that text nor the prompt.
+rehearse("fasth3 records every answer and keeps no prompt or reason text", {
+  check: "fasth3",
+  faults: [{ _tag: "FailBuild", nth: 2, reason: "Private provider reason for the FastH3 probe" }],
+  judge: (evidence, ledger) => {
+    passes(evidence);
+    assert.isTrue(
+      evidence.sessionEvents?.some(
+        (event) => event.tag === "Decoded" && event.detail === "video main_video",
+      ),
+      "the allocation-time video event was kept",
+    );
+    assert.isTrue(
+      evidence.sessionEvents.some((event) => event.tag === "Status" && event.detail === "ready"),
+      "the session reader lived through connection",
+    );
+    const probe = evidence.fasth3;
+    assert.isDefined(probe);
+    assert.isTrue(evidence.criteria.every((criterion) => criterion.passed));
+    const pairs = probe.readPairs.filter((pair) => pair.comparable);
+    assert.isAtLeast(pairs.length, 3);
+    assert.isTrue(pairs.every((pair) => pair.stateAnswered && pair.queueAnswered));
+    assert.strictEqual(probe.lengths.length, 7);
+    assert.isTrue(probe.enqueues.every((entry) => entry.outcome === "replied"));
+    assert.isTrue(
+      probe.clips.some((clip) => clip.ended === "failed"),
+      "the private provider reason arrived",
+    );
+    const file = readdirSync(ledger).find((name) => name.endsWith(`-${evidence.runId}.json`));
+    assert.isDefined(file);
+    const kept = readFileSync(join(ledger, file), "utf8");
+    for (const text of [
+      "A slow aerial shot over a calm green valley at dawn.",
+      "Private provider reason for the FastH3 probe",
+      "seconds out of range",
+      "invalid arguments",
+      "nothing is playing",
+      "continue_from_clip_id names no clip the session holds",
+    ])
+      assert.notInclude(kept, text);
+  },
 });
