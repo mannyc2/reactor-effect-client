@@ -4,6 +4,7 @@
  */
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { dual } from "effect/Function";
 import * as H3 from "reactor-effect-client/H3";
 
 /**
@@ -17,7 +18,8 @@ import * as H3 from "reactor-effect-client/H3";
  * qualifying anything: the playout's picture and sound, to an MP4. `avatar`
  * asks another question, of Vidu S2-Avatar: what its docs leave open about a
  * call, for the SDK's module for it. `character` qualifies that module, the
- * `ViduS2Avatar` provider, through one call.
+ * `ViduS2Avatar` provider, through one call. `fasth3` asks what FastH3's docs
+ * leave open before its provider is built.
  */
 export const checks = [
   "vertical",
@@ -37,6 +39,7 @@ export const checks = [
   "showreel",
   "avatar",
   "character",
+  "fasth3",
 ] as const;
 export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;
@@ -57,6 +60,12 @@ const h3: Model = {
   reviewed: { creditsPerSecond: 350, creditsPerDollar: 10_000, per: "minute" },
 };
 
+/** FastH3: 350 credits a second at 10,000 a dollar, $2.10 a minute, on October 3, 2026. */
+const fastH3: Model = {
+  name: "reactor/fast-h3",
+  reviewed: { creditsPerSecond: 350, creditsPerDollar: 10_000, per: "minute" },
+};
+
 /** Vidu S2-Avatar: 70 credits a second at 10,000 a dollar, $0.42 a minute, on October 1, 2026. */
 const vidu: Model = {
   name: "reactor/vidu-s2-avatar",
@@ -73,6 +82,8 @@ export interface Plan {
   readonly sessions: number;
   readonly seconds: number;
   readonly renews?: true;
+  /** The stand-in a rehearsal uses until ReactorTest simulates this model. */
+  readonly rehearsedAs?: Model;
   /**
    * How long each session may run, in seconds, when the check does not count
    * on its cap to end it: what it may be billed for in place of `seconds`.
@@ -115,7 +126,16 @@ export const plans: { readonly [C in Check]: Plan } = {
   // that one no 10 s margin. $0.525 at most at 70 credits a second, and $0.84 by the started
   // minute.
   character: { model: vidu, sessions: 1, seconds: 75 },
+  fasth3: { model: fastH3, sessions: 1, seconds: sessionSeconds, rehearsedAs: h3 },
 };
+
+/** The model the check actually runs, including a rehearsal's stand-in. */
+export const modelFor: {
+  (mode: "paid" | "rehearsal"): (check: Check) => Model;
+  (check: Check, mode: "paid" | "rehearsal"): Model;
+} = dual(2, (check: Check, mode: "paid" | "rehearsal"): Model =>
+  mode === "rehearsal" ? (plans[check].rehearsedAs ?? plans[check].model) : plans[check].model,
+);
 
 /** How long each of a check's sessions may run: its cap, unless the check holds it longer. */
 export const holdsFor = (check: Check): ReadonlyArray<number> =>

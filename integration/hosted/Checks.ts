@@ -49,6 +49,7 @@ import {
   acceptGrant,
   billedUsd,
   provenGrant,
+  modelFor,
   plans,
   sessionSeconds,
   tokenSecondsFor,
@@ -217,7 +218,7 @@ const mint = Effect.fnUntraced(function* (
   const coordinator = yield* CoordinatorClient.CoordinatorClient;
   const grant = yield* coordinator.mintToken({
     apiKey: target.apiKey,
-    modelName: plans[check].model.name,
+    modelName: modelFor(check, target.mode).name,
     maxSessionDuration: `${plans[check].seconds} seconds`,
     expiresAfter: `${expiresAfterSeconds} seconds`,
   });
@@ -248,7 +249,7 @@ const binder = Effect.fnUntraced(function* (
     const sentAt = yield* Clock.currentTimeMillis;
     const token = yield* coordinator.mintToken({
       apiKey: target.apiKey,
-      modelName: plans[run.check].model.name,
+      modelName: modelFor(run.check, target.mode).name,
       bind: [sessionId],
       expiresAfter: `${expiresAfterSeconds} seconds`,
     });
