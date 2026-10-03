@@ -20,16 +20,13 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
-import * as SchemaIssue from "effect/SchemaIssue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Tracer from "effect/Tracer";
 import type * as Playout from "../../Playout.js";
-import { metadataMaxChars, requestSeconds } from "../h3/profile.js";
-import { validateAudioReference, validateReference } from "../h3/references.js";
-import { Request } from "../h3/request.js";
+import { clipModel } from "../h3/clipModel.js";
+import { requestSeconds } from "../h3/profile.js";
 import { currentParent, spanOptions } from "../trace.js";
 import { AcquisitionFailure, CommandFailure, ReactorError } from "../../ReactorError.js";
 import type { ReactorFailure } from "../../ReactorError.js";
@@ -46,7 +43,6 @@ import {
 } from "./errors.js";
 import type { SubmitError } from "./errors.js";
 import * as Policy from "./policy.js";
-import * as Tag from "./tag.js";
 
 type Handle = {
   readonly started: Deferred.Deferred<Effect.Success<Playout.ItemHandle["started"]>>;
@@ -109,52 +105,6 @@ const closeScope = (
   exit: Exit.Exit<unknown, unknown>,
 ): Effect.Effect<void> => Scope.close(scope, exit).pipe(Effect.catchCause(reportDefects));
 
-/**
- * Where a request for the clip `tag` names falls outside H3's documented
- * limits, field by field, or undefined within them: its metadata counted as
- * sent, wrapped with the tag and H3's own identity. Each issue names its field
- * and the limit, never the value, which may be a prompt.
- */
-const requestIssues = (request: Request, tag: Playout.ClipTag): string | undefined => {
-  const decoded = Schema.decodeResult(Request)(request, { errors: "all" });
-  const refused = (field: string, index: number) => (error: ReactorError) => [
-    { path: [field, String(index)], message: error.message },
-  ];
-  const issues = Result.isFailure(decoded)
-    ? SchemaIssue.makeFormatterStandardSchemaV1()(decoded.failure.issue).issues.map((issue) => ({
-        path: (issue.path ?? []).map((segment) =>
-          String(Predicate.isObject(segment) ? segment.key : segment),
-        ),
-        message: issue.message,
-      }))
-    : [
-        ...(decoded.success.references ?? []).flatMap((reference, index) =>
-          Result.match(validateReference(reference), {
-            onFailure: refused("references", index),
-            onSuccess: () => [],
-          }),
-        ),
-        ...(decoded.success.audio ?? []).flatMap((reference, index) =>
-          Result.match(validateAudioReference(reference), {
-            onFailure: refused("audio", index),
-            onSuccess: () => [],
-          }),
-        ),
-        ...(Tag.fits({ tag, metadata: decoded.success.metadata })
-          ? []
-          : [
-              {
-                path: ["metadata"],
-                message: `exceeds ${String(metadataMaxChars)} characters once wrapped as sent`,
-              },
-            ]),
-      ];
-  if (issues.length === 0) return undefined;
-  return issues
-    .map(({ path, message }) => (path.length === 0 ? message : `${path.join(".")}: ${message}`))
-    .join("; ");
-};
-
 /** A stable fingerprint of a spec: byte payloads by length and a checksum, never by content. */
 const fingerprint = (value: unknown): string =>
   JSON.stringify(value, (_, field: unknown) => {
@@ -182,8 +132,8 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             clip: sized(options.filler.clip),
             lengths: options.filler.lengths ?? requestSeconds,
             invalid: (request, index) => {
-              const issues = requestIssues(request, { _tag: "Filler", index });
-              return issues === undefined
+              const issues = clipModel.check(request, { _tag: "Filler", index }).join("; ");
+              return issues === ""
                 ? undefined
                 : `filler clip ${String(index)} asked for a request outside H3's documented limits: ${issues}`;
             },
@@ -716,8 +666,8 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     Effect.gen(function* () {
       const key = yield* itemKey(input.key);
       const bad = (message: string) => InvalidItem.make({ key, message });
-      const issues = requestIssues(input.request, { _tag: "Item", key });
-      if (issues !== undefined)
+      const issues = clipModel.check(input.request, { _tag: "Item", key }).join("; ");
+      if (issues !== "")
         return yield* bad(`the request is outside H3's documented limits: ${issues}`);
       const duration = (value: Duration.Input | undefined) =>
         value === undefined

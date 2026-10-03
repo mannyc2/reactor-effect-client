@@ -26,13 +26,17 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import type { TokenGrant, Tokens } from "./CoordinatorClient.js";
 import * as H3 from "./H3.js";
 import type { DecodedMedia, MediaPressure } from "./Media.js";
-import type { Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
+import type { ClipModel, Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
+import { clipModel } from "./internal/h3/clipModel.js";
 import * as Tag from "./internal/playout/tag.js";
 import { currentParent, spanOptions } from "./internal/trace.js";
 import { noAcquisition, Reactor } from "./Reactor.js";
 import type { CreateOptions } from "./Reactor.js";
 import { AcquisitionFailure, CommandFailure, ReactorError } from "./ReactorError.js";
 import type { Session, Snapshot } from "./Session.js";
+
+/** H3 Reference Turbo Realtime as the playout plans for it: its documented request limits. */
+export const model: ClipModel<H3.Request> = clipModel;
 
 /**
  * A durable owner record of an allocated session, without a token: enough to
