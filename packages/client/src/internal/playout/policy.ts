@@ -17,6 +17,7 @@ import type { Request } from "../../H3.js";
 import type { CommandFailure } from "../../ReactorError.js";
 import type {
   AsRunStatus,
+  ClipRequest,
   ClipTag,
   Event,
   FillContext,
@@ -30,16 +31,15 @@ import type {
   State as PublicState,
   WithdrawOutcome,
 } from "../../Playout.js";
-import { requestSeconds } from "../h3/profile.js";
 import { ItemKey } from "./errors.js";
 
 export type Late = "nextBoundary" | "drop" | { readonly skipAfterMs: number };
 
 /** A submission as the runtime normalized it: durations in milliseconds, lanes as indexes. */
-export interface Spec {
+export interface Spec<Req extends ClipRequest = Request> {
   readonly key: ItemKey;
   readonly lane: number;
-  readonly request: Request;
+  readonly request: Req;
   readonly seconds: number;
   readonly fingerprint: string;
   readonly cues: ReadonlyArray<{
@@ -68,28 +68,28 @@ export interface Probe {
   readonly submitInMs: number;
 }
 
-export type EditInput =
-  | { readonly _tag: "Submit"; readonly spec: Spec }
+export type EditInput<Req extends ClipRequest = Request> =
+  | { readonly _tag: "Submit"; readonly spec: Spec<Req> }
   | {
       readonly _tag: "SubmitGroup";
       readonly key: ItemKey;
       readonly lane: number;
-      readonly parts: ReadonlyArray<Spec>;
+      readonly parts: ReadonlyArray<Spec<Req>>;
       readonly fingerprint: string;
     }
   | {
       readonly _tag: "Insert";
-      readonly spec: Spec;
+      readonly spec: Spec<Req>;
       readonly anchor: ItemKey;
       readonly side: "before" | "after";
     }
-  | { readonly _tag: "Replace"; readonly key: ItemKey; readonly spec: Spec }
+  | { readonly _tag: "Replace"; readonly key: ItemKey; readonly spec: Spec<Req> }
   | { readonly _tag: "Withdraw"; readonly key: ItemKey };
 
-export type Command =
+export type Command<Req extends ClipRequest = Request> =
   | {
       readonly _tag: "Enqueue";
-      readonly request: Request;
+      readonly request: Req;
       readonly tag: ClipTag;
       readonly continueFrom?: string | undefined;
     }
@@ -124,12 +124,12 @@ const unready = (cause: CommandFailure): boolean =>
 const uncertain = (result: Exclude<CommandResult, { readonly _tag: "Done" }>): boolean =>
   result._tag === "Died" || result.cause.context.outcome === "unknown";
 
-export type Input =
+export type Input<Req extends ClipRequest = Request> =
   /** `batch`: the edits take effect together, make-before-break, as `Playout.edit` promises. */
   | {
       readonly _tag: "Edit";
       readonly id: number;
-      readonly edits: ReadonlyArray<EditInput>;
+      readonly edits: ReadonlyArray<EditInput<Req>>;
       readonly batch: boolean;
     }
   | { readonly _tag: "Release"; readonly id: number; readonly key: ItemKey }
@@ -164,12 +164,12 @@ export type EditReply =
   | { readonly _tag: "AddedGroup"; readonly key: ItemKey; readonly parts: ReadonlyArray<ItemKey> }
   | { readonly _tag: "Withdrawal" };
 
-export type Action =
+export type Action<Req extends ClipRequest = Request> =
   | {
       readonly _tag: "Command";
       readonly id: number;
       readonly sessionId: string;
-      readonly command: Command;
+      readonly command: Command<Req>;
       /** The item whose work this command executes; absent for autonomous session work. */
       readonly key?: ItemKey | undefined;
     }
@@ -209,7 +209,9 @@ export type Action =
   /** Settled keys the history bound dropped: they may be submitted afresh. */
   | { readonly _tag: "Forget"; readonly keys: ReadonlyArray<ItemKey> };
 
-export interface Config {
+export interface Config<Req extends ClipRequest = Request> {
+  /** The length a request without `seconds` is planned at: its model's default. */
+  readonly defaultSeconds: number;
   readonly lanes: ReadonlyArray<{
     readonly name: string;
     readonly conflict: "queue" | "replace" | "skip";
@@ -219,10 +221,10 @@ export interface Config {
     | {
         readonly floor: number;
         readonly target: number;
-        readonly clip: (context: FillContext) => Request;
+        readonly clip: (context: FillContext) => Req;
         readonly lengths: { readonly min: number; readonly max: number };
         /** Where the filler clip at `index` asks for more than H3 takes, or undefined. */
-        readonly invalid: (request: Request, index: number) => string | undefined;
+        readonly invalid: (request: Req, index: number) => string | undefined;
         /**
          * What goes first when an item's build would outlast the air secured: a
          * filler clip covering it, or the item.
@@ -247,8 +249,8 @@ export interface Now {
 type Phase = "Accepted" | "Building" | "Ready" | "Started" | "Settled" | "Unknown";
 type DropReason = "late" | "withdrawn" | "replaced" | "displaced";
 
-interface Item {
-  readonly spec: Spec;
+interface Item<Req extends ClipRequest = Request> {
+  readonly spec: Spec<Req>;
   readonly order: number;
   readonly generation: number;
   readonly group?: { readonly key: ItemKey; readonly index: number } | undefined;
@@ -310,7 +312,7 @@ interface Item {
   readonly followsAired?: boolean | undefined;
 }
 
-interface Session {
+interface Session<Req extends ClipRequest = Request> {
   readonly id: string;
   readonly openedAt: number;
   readonly lifetimeMs: number;
@@ -372,7 +374,7 @@ interface Session {
   /** No move goes out before it: one whose command died is asked again a second later. */
   readonly moveRetryAt: number;
   /** The command in flight on its lane, which carries its commands one at a time. */
-  readonly busy: { readonly id: number; readonly command: Command } | undefined;
+  readonly busy: { readonly id: number; readonly command: Command<Req> } | undefined;
   /** When its latest filler enqueue went out and the seconds it asked for, unless refused. */
   readonly fillerSent: { readonly at: number; readonly seconds: number } | undefined;
   /** Its filler clips by id, with the index each was asked for. */
@@ -396,15 +398,15 @@ interface Batch {
   }>;
 }
 
-export interface State {
-  readonly items: ReadonlyMap<ItemKey, Item>;
+export interface State<Req extends ClipRequest = Request> {
+  readonly items: ReadonlyMap<ItemKey, Item<Req>>;
   readonly groups: ReadonlyMap<
     ItemKey,
     { readonly fingerprint: string; readonly parts: ReadonlyArray<ItemKey> }
   >;
   readonly settled: ReadonlyArray<ItemKey>;
   readonly nextOrder: number;
-  readonly sessions: ReadonlyArray<Session>;
+  readonly sessions: ReadonlyArray<Session<Req>>;
   readonly air: string | undefined;
   readonly opening: boolean;
   /**
@@ -437,7 +439,7 @@ export interface State {
      * Clips whose enqueue did not apply, or applied only on a session since lost: each is asked
      * for again as it was, first in index order, on whichever lane is free.
      */
-    readonly retries: ReadonlyArray<{ readonly index: number; readonly request: Request }>;
+    readonly retries: ReadonlyArray<{ readonly index: number; readonly request: Req }>;
     /** Clips moderation flagged: never asked for again. */
     readonly flagged: ReadonlyArray<number>;
     readonly retryAt: number;
@@ -495,9 +497,9 @@ export interface State {
     | undefined;
 }
 
-export interface Step {
-  readonly state: State;
-  readonly actions: ReadonlyArray<Action>;
+export interface Step<Req extends ClipRequest = Request> {
+  readonly state: State<Req>;
+  readonly actions: ReadonlyArray<Action<Req>>;
   /**
    * Monotonic milliseconds at which a `Tick` is due, if nothing comes sooner. Before it
    * nothing falls due: a `Tick` then decides nothing and names the same wake.
@@ -505,7 +507,7 @@ export interface Step {
   readonly wake: number | undefined;
 }
 
-export const initial: State = {
+export const initial: State<never> = {
   items: new Map(),
   groups: new Map(),
   settled: [],
@@ -544,7 +546,7 @@ const retryDelayMs = 1_000;
  * The wait for the next open after `consecutive` failed setups in a row: a second for each, but
  * no more than for `maxSetupFailures` of them, and at least one.
  */
-const setupDelayMs = (config: Config, consecutive: number): number =>
+const setupDelayMs = <Req extends ClipRequest>(config: Config<Req>, consecutive: number): number =>
   retryDelayMs * Math.min(consecutive, Math.max(1, config.maxSetupFailures));
 const cutMarginMs = 1_000;
 const exposureMarginMs = 1_500;
@@ -586,10 +588,10 @@ const spreadOf = (samples: ReadonlyArray<number>) =>
 
 /** Records that a clip asking for `requested` seconds aired at `seconds`, newest last. */
 const airedSample = (
-  samples: State["samples"],
+  samples: State<never>["samples"],
   requested: number,
   seconds: number,
-): State["samples"] => ({
+): State<never>["samples"] => ({
   ...samples,
   aired: [
     ...samples.aired.filter((sample) => Math.abs(sample.requested - requested) > 1e-6),
@@ -602,11 +604,11 @@ const airedSample = (
  * that asked for as much, since a provider's grid maps a length to one; else at the median ratio,
  * which a length on another grid step does not carry to (`fillLength`).
  */
-const airedLengthOf = (samples: State["samples"], requested: number): number =>
+const airedLengthOf = (samples: State<never>["samples"], requested: number): number =>
   samples.aired.find((sample) => Math.abs(sample.requested - requested) <= 1e-6)?.seconds ??
   requested * estimatesOf(samples).length;
 
-const estimatesOf = (samples: State["samples"]): PublicState["estimates"] => ({
+const estimatesOf = (samples: State<never>["samples"]): PublicState["estimates"] => ({
   build: spreadOf(samples.build),
   continuedBuild: spreadOf(samples.continued),
   length: samples.length.length === 0 ? 1 : quantile(samples.length, 0.5),
@@ -625,7 +627,7 @@ const continuedBuildFactor = 2.5;
  * samples; failing those, the same of independent builds times
  * `continuedBuildFactor`. Undefined before any build was measured.
  */
-const continuedBuildRate = (samples: State["samples"]): number | undefined => {
+const continuedBuildRate = (samples: State<never>["samples"]): number | undefined => {
   const long = (values: ReadonlyArray<number>) =>
     values.length >= minimumSamples ? quantile(values, 0.95) : Math.max(...values);
   if (samples.continued.length > 0) return long(samples.continued);
@@ -638,7 +640,7 @@ const continuedBuildRate = (samples: State["samples"]): number | undefined => {
  * enqueue stayed unknown past the deadline takes none, since what it does with
  * a command can no longer be told.
  */
-const preferredOf = (sessions: ReadonlyArray<Session>): Session | undefined =>
+const preferredOf = <Req extends ClipRequest>(sessions: ReadonlyArray<Session<Req>>): Session<Req> | undefined =>
   [...sessions]
     .reverse()
     .find((value) => !value.retiring && !value.indeterminate && value.source?.available === true);
@@ -647,7 +649,7 @@ const preferredOf = (sessions: ReadonlyArray<Session>): Session | undefined =>
  * When `value`'s playing clip ends, counted from its observed start. Undefined for a clip of
  * unknown length or whose start was not seen: what is left of it does not fall with the time.
  */
-const playingEndOf = (value: Session | undefined): number | undefined => {
+const playingEndOf = (value: Session<ClipRequest> | undefined): number | undefined => {
   const playing = value?.source?.playing;
   const observed = value?.playing;
   if (playing?.seconds === undefined || observed?.clipId !== playing.clipId) return undefined;
@@ -660,7 +662,7 @@ const playingEndOf = (value: Session | undefined): number | undefined => {
  * Nothing is left of a clip seen to end, though the source may still name it: counted whole
  * again, it would put what airs next a clip too late.
  */
-const playingRestOf = (value: Session | undefined, mono: number): number => {
+const playingRestOf = (value: Session<ClipRequest> | undefined, mono: number): number => {
   const playing = value?.source?.playing;
   if (playing?.seconds === undefined || playing.clipId === value?.lastEnded?.clipId) return 0;
   const end = playingEndOf(value);
@@ -672,7 +674,7 @@ const playingRestOf = (value: Session | undefined, mono: number): number => {
  * undefined while it holds still. It counts back from the clip's end rather than on from the
  * time, so every look before then names the same instant.
  */
-const playingRestFallsTo = (value: Session | undefined, ms: number): number | undefined => {
+const playingRestFallsTo = (value: Session<ClipRequest> | undefined, ms: number): number | undefined => {
   const end = playingEndOf(value);
   return end === undefined || value?.source?.playing?.clipId === value?.lastEnded?.clipId
     ? undefined
@@ -695,11 +697,11 @@ const sameClip = (named: ClipTag, tag: ClipTag | undefined): boolean => {
  * item is Ready and airs when its turn comes (`ahead`); held, waiting on its batch or its enqueue,
  * it would not.
  */
-const followHeld = (
-  item: Item,
-  aired: (item: Item) => boolean,
-  ahead: (anchor: Item) => boolean,
-  itemOf: (key: ItemKey) => Item | undefined,
+const followHeld = <I extends PlanItem>(
+  item: I,
+  aired: (item: I) => boolean,
+  ahead: (anchor: I) => boolean,
+  itemOf: (key: ItemKey) => I | undefined,
 ): boolean => {
   const follows = item.spec.follows;
   if (follows === undefined || aired(item)) return false;
@@ -712,7 +714,7 @@ const followHeld = (
       : undefined;
   return anchor === undefined || !ahead(anchor);
 };
-const followsAiredOf = (item: Item): boolean => item.followsAired === true;
+const followsAiredOf = (item: PlanItem): boolean => item.followsAired === true;
 /** When an `At` item due at `at` goes late: never at the next boundary, else at or after its time. */
 const lateAt = (at: number, late: Late): number => {
   if (late === "nextBoundary") return Infinity;
@@ -724,7 +726,7 @@ const lateAt = (at: number, late: Late): number => {
  * at the next boundary. An `At` anchor's lateness belongs to the anchor's content: past its time
  * an insert after it airs at the next boundary. One before it keeps it, since it airs no later.
  */
-const insertStart = (anchor: Item, side: "before" | "after"): Spec["start"] => {
+const insertStart = (anchor: PlanItem, side: "before" | "after"): PlanSpec["start"] => {
   if (anchor.phase === "Started") return { _tag: "Follow" };
   const start = anchor.spec.start;
   return start._tag === "At" && side === "after" ? { ...start, late: "nextBoundary" } : start;
@@ -734,13 +736,13 @@ const insertStart = (anchor: Item, side: "before" | "after"): Spec["start"] => {
  * Whether an item's clip is queued to air in its turn: it isn't held, waiting on its batch or the
  * clip it follows, or withdrawn. An `At` item's time may still be to come.
  */
-const queuedToAir = (items: ReadonlyMap<ItemKey, Item>, item: Item): boolean =>
+const queuedToAir = (items: ReadonlyMap<ItemKey, PlanItem>, item: PlanItem): boolean =>
   item.mode !== "held" &&
   item.batch === undefined &&
   item.withdraw === undefined &&
   !followHeldOf(items, item);
 /** Whether an item's clip airs when its turn comes: it is queued to air, and its time has come. */
-const airsItem = (items: ReadonlyMap<ItemKey, Item>, item: Item, now: Now): boolean => {
+const airsItem = (items: ReadonlyMap<ItemKey, PlanItem>, item: PlanItem, now: Now): boolean => {
   const at =
     item.spec.start._tag === "At" ? now.mono + (item.spec.start.time - now.wall) : undefined;
   return (at === undefined || at <= now.mono) && queuedToAir(items, item);
@@ -749,7 +751,7 @@ const airsItem = (items: ReadonlyMap<ItemKey, Item>, item: Item, now: Now): bool
  * `followHeld` for the plan as it stands: an anchor is ahead while it is Ready and queued to air.
  * An insert takes its anchor's time, so the anchor's does not count.
  */
-const followHeldOf = (items: ReadonlyMap<ItemKey, Item>, item: Item): boolean =>
+const followHeldOf = (items: ReadonlyMap<ItemKey, PlanItem>, item: PlanItem): boolean =>
   followHeld(
     item,
     followsAiredOf,
@@ -757,7 +759,7 @@ const followHeldOf = (items: ReadonlyMap<ItemKey, Item>, item: Item): boolean =>
     (key) => items.get(key),
   );
 /** Whether a Ready clip airs when its turn comes, as `airsItem`. A clip that is no item's airs. */
-const airsOf = (items: ReadonlyMap<ItemKey, Item>, clip: SourceClip, now: Now): boolean => {
+const airsOf = (items: ReadonlyMap<ItemKey, PlanItem>, clip: SourceClip, now: Now): boolean => {
   const item = clip.tag?._tag === "Item" ? items.get(clip.tag.key) : undefined;
   return item === undefined || airsItem(items, item, now);
 };
@@ -766,7 +768,7 @@ const airsOf = (items: ReadonlyMap<ItemKey, Item>, clip: SourceClip, now: Now): 
  * A session's Ready clips but the one it plays. H3 reports the clip it holds armed through its
  * seam as playing, and may still list it Ready: counted in both, its length would count twice.
  */
-const waitingOf = (value: Session | undefined): ReadonlyArray<SourceClip> => {
+const waitingOf = (value: Session<ClipRequest> | undefined): ReadonlyArray<SourceClip> => {
   const playing = value?.source?.playing?.clipId;
   return (value?.source?.ready ?? []).filter((clip) => clip.clipId !== playing);
 };
@@ -775,10 +777,10 @@ const waitingOf = (value: Session | undefined): ReadonlyArray<SourceClip> => {
  * Seconds of air secured: the playing clip's rest, then the Ready clips that
  * air from the session on air and from its replacement once that takes over.
  */
-const securedOf = (state: Pick<State, "items" | "sessions" | "air">, now: Now): number => {
+const securedOf = (state: Pick<State<ClipRequest>, "items" | "sessions" | "air">, now: Now): number => {
   const air = state.sessions.find((value) => value.id === state.air);
   const replacement = state.sessions.find((value) => value.id !== state.air && !value.retiring);
-  const ready = (value: Session | undefined): number =>
+  const ready = (value: Session<ClipRequest> | undefined): number =>
     waitingOf(value)
       .filter((clip) => airsOf(state.items, clip, now))
       .reduce((total, clip) => total + clip.seconds, 0);
@@ -794,9 +796,9 @@ const compareRank = (a: Rank, b: Rank): number =>
  * projection, and whether the plan keeps it to air or drops it as late.
  */
 interface Memo {
-  readonly ranks: Map<Item, Rank>;
-  readonly projections: Map<Item, { readonly from: number; readonly after: number }>;
-  readonly kept: Map<Item, boolean>;
+  readonly ranks: Map<PlanItem, Rank>;
+  readonly projections: Map<PlanItem, { readonly from: number; readonly after: number }>;
+  readonly kept: Map<PlanItem, boolean>;
 }
 const emptyMemo = (): Memo => ({ ranks: new Map(), projections: new Map(), kept: new Map() });
 
@@ -807,19 +809,23 @@ const combined = (outcomes: ReadonlyArray<WithdrawOutcome>): WithdrawOutcome => 
 };
 
 /** What a withdrawal finds of an item from its record: dropped, started, or neither. */
-const fateOf = (item: Item): WithdrawOutcome => {
+const fateOf = (item: PlanItem): WithdrawOutcome => {
   if (item.status?._tag === "Dropped") return "withdrawn";
   const started =
     item.startedAt !== undefined || item.phase === "Started" || item.status?._tag === "Ended";
   return started ? "already-started" : "not-found";
 };
 
+/** The fields a projection reads, without a request it could dispatch. */
+type PlanSpec = Omit<Spec<never>, "request">;
+type PlanItem = Omit<Item<never>, "spec"> & { readonly spec: PlanSpec };
+
 /** A clip in a forward run of the plan. */
 interface Projected {
   /** Undefined for a clip this playout did not enqueue. */
   readonly tag: ClipTag | undefined;
   /** The item it is for; the probed clip's is never put in the plan. */
-  readonly item: Item | undefined;
+  readonly item: PlanItem | undefined;
   readonly sessionId: string;
   readonly clipId: string | undefined;
   /** How long it airs. */
@@ -833,7 +839,7 @@ interface Projected {
 
 /** The clip `place` asks about, submitted at `submitAt`. */
 interface Hypothesis {
-  readonly item: Item;
+  readonly item: PlanItem;
   readonly submitAt: number;
   readonly anchor: ItemKey | "next";
 }
@@ -844,7 +850,7 @@ interface Flight {
   readonly seconds: number;
   readonly continued: boolean;
   readonly tag: ClipTag | undefined;
-  readonly item: Item | undefined;
+  readonly item: PlanItem | undefined;
   readonly clipId: string | undefined;
 }
 
@@ -860,7 +866,7 @@ interface Run {
       }
     | undefined;
   /** Items the run dropped or displaced. */
-  readonly gone: ReadonlySet<Item>;
+  readonly gone: ReadonlySet<PlanItem>;
 }
 
 /** `unmeasured` before three builds are measured; else whether what it rests on is projected. */
@@ -870,14 +876,14 @@ const basisOf = (unmeasured: boolean, projected: boolean): Placement["basis"] =>
 };
 
 /** One look at the plan: applies the input, then decides what is due at `now`. */
-const decide = (config: Config, previous: State, input: Input, now: Now): Step => {
+const decide = <Req extends ClipRequest>(config: Config<Req>, previous: State<Req>, input: Input<Req>, now: Now): Step<Req> => {
   const items = new Map(previous.items);
   const groups = new Map(previous.groups);
-  let state: State = previous;
-  const actions: Array<Action> = [];
+  let state: State<Req> = previous;
+  const actions: Array<Action<Req>> = [];
   const lanes = config.lanes.length;
 
-  const set = (key: ItemKey, patch: Partial<Item>): Item => {
+  const set = (key: ItemKey, patch: Partial<Item<Req>>): Item<Req> => {
     const next = { ...items.get(key)!, ...patch };
     items.set(key, next);
     return next;
@@ -889,9 +895,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     set(key, { status });
     emit({ _tag: "AsRun", event: { key, at: now.wall, status } });
   };
-  const session = (id: string | undefined): Session | undefined =>
+  const session = (id: string | undefined): Session<Req> | undefined =>
     state.sessions.find((candidate) => candidate.id === id);
-  const updateSession = (id: string, patch: Partial<Session>): void => {
+  const updateSession = (id: string, patch: Partial<Session<Req>>): void => {
     state = {
       ...state,
       sessions: state.sessions.map((value) => (value.id === id ? { ...value, ...patch } : value)),
@@ -904,8 +910,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     updateSession(id, { source, changes: (previous?.changes ?? 0) + (changed ? 1 : 0) });
   };
   /** The session new work goes to: the newest one that is live and not retiring. */
-  const preferred = (): Session | undefined => preferredOf(state.sessions);
-  const atMono = (item: Item): number | undefined =>
+  const preferred = (): Session<Req> | undefined => preferredOf(state.sessions);
+  const atMono = (item: PlanItem): number | undefined =>
     item.spec.start._tag === "At" ? now.mono + (item.spec.start.time - now.wall) : undefined;
 
   /**
@@ -992,34 +998,34 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     set(key, { withdraw: item.withdraw ?? reason, waiting });
   };
 
-  const live = (item: Item | undefined): item is Item =>
+  const live = <I extends PlanItem>(item: I | undefined): item is I =>
     item !== undefined && item.phase !== "Settled";
-  const readyOf = (value: Session): ReadonlyArray<SourceClip> => value.source?.ready ?? [];
+  const readyOf = (value: Session<Req>): ReadonlyArray<SourceClip> => value.source?.ready ?? [];
   /** Whether a session still holds the air: it takes new work, or has clips of its own to air. */
-  const holding = (value: Session | undefined): boolean =>
+  const holding = (value: Session<Req> | undefined): boolean =>
     value !== undefined &&
     (!value.indeterminate || value.source?.playing !== undefined || readyOf(value).length > 0);
-  const itemOf = (clip: PlayingClip | undefined): Item | undefined =>
+  const itemOf = (clip: PlayingClip | undefined): Item<Req> | undefined =>
     clip?.tag?._tag === "Item" ? items.get(clip.tag.key) : undefined;
 
   // Ranks: lexicographic places in a session's Ready order and in the build order.
   const superseded = new Set(
     state.batches.flatMap((batch) => batch.targets.map((target) => target.key)),
   );
-  const begun = (item: Item): boolean =>
+  const begun = (item: PlanItem): boolean =>
     item.group !== undefined &&
     (groups.get(item.group.key)?.parts ?? []).some((part) => {
       const other = items.get(part);
       return other?.startedAt !== undefined || other?.phase === "Started";
     });
   /** The item still in the place a replacement takes; replaced replacements lead back to it. */
-  const replacedOf = (item: Item): Item | undefined => {
+  const replacedOf = (item: Item<Req>): Item<Req> | undefined => {
     let old = item.replaces === undefined ? undefined : items.get(item.replaces);
     while (old?.phase === "Settled" && old.startedAt === undefined && old.replaces !== undefined)
       old = items.get(old.replaces);
     return old;
   };
-  const rankItem = (item: Item): Rank => {
+  const rankItem = (item: Item<Req>): Rank => {
     const at = atMono(item);
     if (
       item.mode === "held" ||
@@ -1030,8 +1036,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       return [lanes + 1, 1, item.order, item.generation];
     return airRank(item);
   };
-  const heldForFollows = (item: Item): boolean => followHeldOf(items, item);
-  const cuts = (item: Item): boolean => config.lanes[item.spec.lane]?.cut === true;
+  const heldForFollows = (item: Item<Req>): boolean => followHeldOf(items, item);
+  const cuts = (item: PlanItem): boolean => config.lanes[item.spec.lane]?.cut === true;
   /** Why a clip `key` would follow could never air before it, or undefined. */
   const followsIssue = (key: ItemKey, follows: ClipTag | undefined): string | undefined => {
     if (follows === undefined) return undefined;
@@ -1046,7 +1052,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     return undefined;
   };
   /** `rankItem` once nothing holds the item back. */
-  const airRank = (item: Item): Rank => {
+  const airRank = (item: Item<Req>): Rank => {
     // Its build continues the Ready clip it follows on its session, so it airs right behind that
     // clip until that clip starts. An item accepted again for a rebuild follows nothing yet.
     const followed =
@@ -1078,7 +1084,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     return item === undefined ? [-1, 0, 0, 0] : rankItem(item);
   };
   /** Which of two waiting items takes the build slot first. */
-  const buildOrder = (a: Item, b: Item): number =>
+  const buildOrder = (a: PlanItem, b: PlanItem): number =>
     Number(b.mode === "asap") - Number(a.mode === "asap") ||
     Number(a.mode === "held") - Number(b.mode === "held") ||
     a.spec.lane - b.spec.lane ||
@@ -1088,7 +1094,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     (a.startBy ?? Infinity) - (b.startBy ?? Infinity) ||
     a.order - b.order;
   /** A group's part may build only once the part before it was admitted. */
-  const previousAdmitted = (item: Item): boolean => {
+  const previousAdmitted = (item: Item<Req>): boolean => {
     // An insert waits for whatever airs just before it in its lane to be admitted.
     if (item.inserted) {
       const before = [...items.values()]
@@ -1112,7 +1118,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   };
 
   const estimates = (): PublicState["estimates"] => estimatesOf(state.samples);
-  const playingRestMs = (value: Session | undefined): number => playingRestOf(value, now.mono);
+  const playingRestMs = (value: Session<Req> | undefined): number => playingRestOf(value, now.mono);
   const airs = (clip: SourceClip): boolean => airsOf(items, clip, now);
   /**
    * The runway as the time passes: at `time` it is `(Math.max(end, time) - time) / 1000 +
@@ -1152,7 +1158,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * before it on the session taking new work, built or not, and the first of those not built
    * yet airs only once it is. `memo` holds what is known already of the items ahead.
    */
-  const project = (item: Item, memo: Memo): { readonly from: number; readonly after: number } => {
+  const project = (item: Item<Req>, memo: Memo): { readonly from: number; readonly after: number } => {
     const target = preferred() ?? session(state.air);
     const rank = rankOf(item, memo);
     const readyMs = waitingOf(target)
@@ -1235,7 +1241,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   };
   /** `project`, as `memo` holds it. */
   const projection = (
-    item: Item,
+    item: Item<Req>,
     memo: Memo = emptyMemo(),
   ): { readonly from: number; readonly after: number } => {
     const known = memo.projections.get(item);
@@ -1248,7 +1254,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * Whether a clip in `item`'s place could not start before `startBy`, as projected. Once
    * nothing holds it, the projection grows with the time: it misses from `startBy - after` on.
    */
-  const misses = (item: Item, startBy: number, memo: Memo = emptyMemo()): boolean => {
+  const misses = (item: Item<Req>, startBy: number, memo: Memo = emptyMemo()): boolean => {
     const { from, after } = projection(item, memo);
     return Math.max(from, now.mono + after) >= startBy || now.mono >= startBy - after;
   };
@@ -1259,7 +1265,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * boundary, and the run projects no cut; and one that follows a clip, which `misses` puts behind
    * everything queued, since until it is admitted nothing records whether that clip has aired.
    */
-  const startsBefore = (item: Item, startBy: number, forwardRun: () => Run): boolean => {
+  const startsBefore = (item: Item<Req>, startBy: number, forwardRun: () => Run): boolean => {
     if (cuts(item) || item.spec.follows !== undefined) return true;
     const run = forwardRun();
     if (run.gone.has(item)) return false;
@@ -1269,7 +1275,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     return last === undefined || last.start + last.clip.seconds * 1000 < startBy;
   };
   /** `item`'s rank, as `memo` holds it. */
-  const rankOf = (item: Item, memo: Memo): Rank => {
+  const rankOf = (item: Item<Req>, memo: Memo): Rank => {
     const known = memo.ranks.get(item);
     if (known !== undefined) return known;
     const rank = rankItem(item);
@@ -1282,7 +1288,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * what it does not keep, and a projection counts only what it keeps ahead. Only items ahead
    * decide that, so `memo` gathers each once.
    */
-  function keeps(item: Item, memo: Memo): boolean {
+  function keeps(item: Item<Req>, memo: Memo): boolean {
     const known = memo.kept.get(item);
     if (known !== undefined) return known;
     const at = atMono(item);
@@ -1297,14 +1303,17 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     return value;
   }
   /** Whether `item` is firm, not sent, and dropped once projected to miss its `startBy`. */
-  const lateWhenProjected = (item: Item): item is Item & { readonly startBy: number } =>
+  const lateWhenProjected = (item: Item<Req>): item is Item<Req> & { readonly startBy: number } =>
     item.phase === "Accepted" &&
     item.spec.window?.firm === true &&
     item.startBy !== undefined &&
     item.dispatchedAt === undefined &&
     estimates().build !== undefined;
 
-  const newItem = (spec: Spec, place: Partial<Item> = {}): Item => ({
+  const newItem = <S extends PlanSpec>(
+    spec: S,
+    place: Partial<Omit<PlanItem, "spec">> = {},
+  ): Omit<PlanItem, "spec"> & { readonly spec: S } => ({
     spec,
     order: state.nextOrder,
     generation: 0,
@@ -1321,7 +1330,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     ...place,
   });
 
-  const applyEdit = (id: number, edits: ReadonlyArray<EditInput>, batched: boolean): void => {
+  const applyEdit = (id: number, edits: ReadonlyArray<EditInput<Req>>, batched: boolean): void => {
     // A drain stops admissions, not withdrawals.
     if (state.closed || (!state.accepting && edits.some((edit) => edit._tag !== "Withdraw"))) {
       actions.push({ _tag: "Refused", id, refusal: { _tag: "PlayoutClosed" } });
@@ -1428,7 +1437,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const joined: Array<{ readonly index: number; readonly parts: number }> = [];
     /** Withdrawals of keys the plan does not know, answered once the edit is accepted. */
     const notFound: Array<number> = [];
-    const put = (item: Item): void => {
+    const put = (item: Item<Req>): void => {
       items.set(item.spec.key, item);
       adds.push(item.spec.key);
       state = { ...state, nextOrder: state.nextOrder + 1 };
@@ -1637,7 +1646,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     } else actions.push({ _tag: "Committed", id });
   };
   /** A group's first or last waiting part by place; a replacement shares its part's place. */
-  function firstOrLastPart(key: ItemKey, side: "before" | "after"): Item | undefined {
+  function firstOrLastPart(key: ItemKey, side: "before" | "after"): Item<Req> | undefined {
     const parts = (
       groups
         .get(key)
@@ -1989,7 +1998,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * pauses until it no longer does, when one more open is tried once the last
    * failure's wait is over.
    */
-  const pauseOrFail = (reason: string, cause: "open" | "lost", air: Session | undefined): void => {
+  const pauseOrFail = (reason: string, cause: "open" | "lost", air: Session<Req> | undefined): void => {
     if (state.countedFailures < config.maxSetupFailures) return;
     if (holding(air)) state = { ...state, openingPaused: true };
     else actions.push({ _tag: "Fail", reason, cause });
@@ -2522,7 +2531,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
   }
 
   // Renewal.
-  const expiresAt = (value: Session) => value.openedAt + value.lifetimeMs;
+  const expiresAt = (value: Session<Req>) => value.openedAt + value.lifetimeMs;
   for (const value of state.sessions)
     if (now.mono >= expiresAt(value) && value.lifetimeMs !== Infinity)
       lose(value.id, "the session's granted length ended");
@@ -2606,7 +2615,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     emit({ _tag: "Starved", at: now.wall });
   } else if (!dry && state.starving) state = { ...state, starving: false };
 
-  const fireCue = (item: Item, index: number): void =>
+  const fireCue = (item: Item<Req>, index: number): void =>
     emit({
       _tag: "Cue",
       event: { key: item.spec.key, name: item.spec.cues[index]!.name, at: now.wall },
@@ -2675,7 +2684,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
 
   return { state: { ...state, items, groups }, actions, wake: wake() };
 
-  function queueCommand(sessionId: string, command: Command, key?: ItemKey): void {
+  function queueCommand(sessionId: string, command: Command<Req>, key?: ItemKey): void {
     const lane = session(sessionId);
     if (lane === undefined || lane.busy !== undefined) return;
     const id = state.nextCommand;
@@ -2693,7 +2702,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     });
   }
   /** A filler clip a session takes commands for, unless its removal was refused as things stand. */
-  function fillerRemovable(value: Session, clip: SourceClip): boolean {
+  function fillerRemovable(value: Session<Req>, clip: SourceClip): boolean {
     return (
       clip.tag?._tag === "Filler" &&
       value.source?.available === true &&
@@ -2704,7 +2713,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     );
   }
   /** A session's queues as they stand: a clip finishing its build changes them too. */
-  function signature(value: Session | undefined): string {
+  function signature(value: Session<Req> | undefined): string {
     const source = value?.source;
     return source === undefined
       ? ""
@@ -2712,7 +2721,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           .map((clips) => clips.map((clip) => clip.clipId).join(","))
           .join(":");
   }
-  function cueAt(item: Item, cue: Spec["cues"][number]): number {
+  function cueAt(item: Item<Req>, cue: Spec<Req>["cues"][number]): number {
     return cue.from === "start"
       ? item.startedAt! + cue.offsetMs
       : item.startedAt! + (item.airSeconds ?? item.spec.seconds) * 1000 - cue.offsetMs;
@@ -3072,7 +3081,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * `item`'s p95 build in seconds, at the continued rate if it continues a
    * clip. Unknown until three builds were measured.
    */
-  function buildOf(item: Item, continued: boolean): number | undefined {
+  function buildOf(item: Item<Req>, continued: boolean): number | undefined {
     const p95 = estimates().build?.p95;
     if (p95 === undefined) return undefined;
     return (continued ? (continuedBuildRate(state.samples) ?? p95) : p95) * item.spec.seconds;
@@ -3088,7 +3097,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * before the session's cap. A shortfall within the margin alone is left to
    * the floor, which refills without holding the item.
    */
-  function coverFirst(target: Session, item: Item, continued: boolean, room: number): boolean {
+  function coverFirst(target: Session<Req>, item: Item<Req>, continued: boolean, room: number): boolean {
     const filler = config.filler;
     if (filler === undefined || !protects(item) || item.covered === true || !fillerFree())
       return false;
@@ -3121,7 +3130,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * time; an `Asap` start, a released `Manual` item, which airs as one, or a
    * lane that cuts makes it now.
    */
-  function protects(item: Item): boolean {
+  function protects(item: Item<Req>): boolean {
     return (
       config.filler?.protect === "air" &&
       item.startBy === undefined &&
@@ -3140,7 +3149,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     return now.mono >= state.filler.retryAt;
   }
   /** Asks for the filler clip `index` again as it was, unless moderation flagged it. */
-  function retryFiller(index: number, request: Request): void {
+  function retryFiller(index: number, request: Req): void {
     if (state.filler.flagged.includes(index)) return;
     const retries = [...state.filler.retries, { index, request }].sort((a, b) => a.index - b.index);
     state = { ...state, filler: { ...state.filler, retries } };
@@ -3151,12 +3160,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    */
   function fillerLength(seconds: number): number {
     const request = state.filler.retries[0]?.request;
-    return request === undefined ? seconds : (request.seconds ?? requestSeconds.min);
+    return request === undefined ? seconds : (request.seconds ?? config.defaultSeconds);
   }
   /** Sends the next filler clip to `target`, a new one asked for `seconds`. */
   function sendFiller(
-    filler: NonNullable<Config["filler"]>,
-    target: Session,
+    filler: NonNullable<Config<Req>["filler"]>,
+    target: Session<Req>,
     seconds: number,
     room: number,
   ): void {
@@ -3178,12 +3187,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       },
     };
     updateSession(target.id, {
-      fillerSent: { at: now.mono, seconds: request.seconds ?? requestSeconds.min },
+      fillerSent: { at: now.mono, seconds: request.seconds ?? config.defaultSeconds },
     });
     queueCommand(target.id, { _tag: "Enqueue", request, tag: { _tag: "Filler", index } });
   }
   /** Items that may be built now, first in build order. */
-  function eligible(floorSeconds: number): ReadonlyArray<Item> {
+  function eligible(floorSeconds: number): ReadonlyArray<Item<Req>> {
     const target = preferred();
     return [...items.values()]
       .filter(
@@ -3211,7 +3220,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * Whether the air secured lasts to an `At` item's time, so that its build may go. Once the
    * runway stops falling, the item's time comes within it, at `coveredAt`.
    */
-  function covered(item: Item): boolean {
+  function covered(item: Item<Req>): boolean {
     const at = atMono(item);
     if (at === undefined || at <= now.mono) return true;
     const { end, seconds } = runwayTerms();
@@ -3224,7 +3233,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * build at the median by the exposure margin. A continued build waits for that clip to be Ready
    * ahead of it, and ends before it does (`followContinuation`).
    */
-  function followCovered(item: Item): boolean {
+  function followCovered(item: Item<Req>): boolean {
     // Before three builds are measured its build may outlast any air ahead: it goes once the clip
     // it follows is Ready ahead of it, which airs first.
     if (estimates().build === undefined) return followedReady(item);
@@ -3237,7 +3246,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     );
   }
   /** Whether the clip `item` follows is Ready and queued to air where it would air before it. */
-  function followedReady(item: Item): boolean {
+  function followedReady(item: Item<Req>): boolean {
     const follows = item.spec.follows;
     if (follows === undefined) return false;
     return [session(state.air), preferred()].some((value) =>
@@ -3252,12 +3261,12 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * margin, before what is left of the clip on air adds to it. Undefined with no session taking
    * new work.
    */
-  function followSpareMs(item: Item): number | undefined {
+  function followSpareMs(item: Item<Req>): number | undefined {
     const target = preferred();
     if (target === undefined) return undefined;
     const air = session(state.air);
     // An `At` clip kept Ready airs at its time, which the air ahead of it reaches.
-    const queuedMs = (value: Session | undefined): number =>
+    const queuedMs = (value: Session<Req> | undefined): number =>
       waitingOf(value)
         .filter((clip) => {
           const other = itemOf(clip);
@@ -3269,14 +3278,14 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     return aheadMs - buildMs - exposureMarginMs;
   }
   /** When `followCovered` stops holding for `item` as the clip on air plays; undefined if not. */
-  function followUncoveredAt(item: Item): number | undefined {
+  function followUncoveredAt(item: Item<Req>): number | undefined {
     if (estimates().build === undefined) return undefined;
     const spare = followSpareMs(item);
     return spare === undefined || spare > 0
       ? undefined
       : playingRestFallsTo(session(state.air), -spare);
   }
-  function coveredAt(item: Item): number | undefined {
+  function coveredAt(item: Item<Req>): number | undefined {
     const at = atMono(item);
     return at === undefined || covered(item) ? undefined : at - runwayTerms().seconds * 1000;
   }
@@ -3285,7 +3294,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * and about to be next, waiting for the clip it follows and about to air before it, or an `At`
    * item Ready too early.
    */
-  function exposure(value: Session, item: Item, readyMs: number): boolean {
+  function exposure(value: Session<Req>, item: Item<Req>, readyMs: number): boolean {
     const aheadMs = playingRestMs(value) + readyMs;
     if (item.mode === "held")
       return aheadMs < exposureMarginMs || now.mono >= (exposedAt(value, readyMs) ?? Infinity);
@@ -3298,7 +3307,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     return at !== undefined && at > now.mono && aheadMs < at - now.mono;
   }
   /** Milliseconds of Ready air ahead of `value`'s Ready clip at `index`, less what plays. */
-  function readyAheadMs(value: Session, index: number): number {
+  function readyAheadMs(value: Session<Req>, index: number): number {
     const waiting = waitingOf(value);
     return readyOf(value)
       .slice(0, index)
@@ -3309,7 +3318,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * When a held item Ready on `value` behind `aheadMs` of Ready air comes within the margin of
    * airing, as the clip playing there airs; undefined if it doesn't before that clip ends.
    */
-  function exposedAt(value: Session, aheadMs: number): number | undefined {
+  function exposedAt(value: Session<Req>, aheadMs: number): number | undefined {
     const end = playingEndOf(value);
     return end === undefined || aheadMs >= exposureMarginMs
       ? undefined
@@ -3320,13 +3329,13 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * air there, would air: on the session on air, after what plays; on the replacement, after all
    * the session on air has left, since the switch starts the replacement's queue at its head.
    */
-  function pairAheadMs(value: Session, readyMs: number): number {
+  function pairAheadMs(value: Session<Req>, readyMs: number): number {
     if (value.id === state.air) return playingRestMs(value) + readyMs;
     const air = session(state.air);
     return playingRestMs(air) + (air === undefined ? 0 : readyAheadMs(air, Infinity)) + readyMs;
   }
   /** When `pairAheadMs` falls within the margin, as the clip on air plays. */
-  function pairExposedAt(value: Session, readyMs: number): number | undefined {
+  function pairExposedAt(value: Session<Req>, readyMs: number): number | undefined {
     if (value.id === state.air) return exposedAt(value, readyMs);
     const air = session(state.air);
     return air === undefined ? undefined : exposedAt(air, readyAheadMs(air, Infinity) + readyMs);
@@ -3338,24 +3347,24 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * replacement, what the session on air still has. A clip no fresh session
    * could air whole is not held back.
    */
-  function fits(target: Session, seconds: number): boolean {
+  function fits(target: Session<Req>, seconds: number): boolean {
     if (target.lifetimeMs === Infinity) return true;
     const lengthMs = seconds * estimates().length * 1000;
     if (lengthMs > target.lifetimeMs - lookaheadMarginSeconds * 1000) return true;
     return airedAheadAt(target) + lengthMs <= capOf(target);
   }
   /** The most seconds a clip built on `target` now may ask for and still air before its cap. */
-  function longestFit(target: Session): number {
+  function longestFit(target: Session<Req>): number {
     return (capOf(target) - airedAheadAt(target)) / (estimates().length * 1000);
   }
   /** When a clip built on `target` must have aired by: its cap, less the margin. */
-  function capOf(target: Session): number {
+  function capOf(target: Session<Req>): number {
     return target.openedAt + target.lifetimeMs - lookaheadMarginSeconds * 1000;
   }
   /** When all that airs ahead of a clip built on `target` now has aired. */
-  function airedAheadAt(target: Session): number {
+  function airedAheadAt(target: Session<Req>): number {
     const ratio = estimates().length;
-    const queuedMs = (value: Session): number =>
+    const queuedMs = (value: Session<Req>): number =>
       waitingOf(value)
         .filter(airs)
         .reduce((total, clip) => total + clip.seconds * 1000, 0);
@@ -3401,8 +3410,8 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * predecessor is an item not built yet; there is nothing to continue across sessions.
    */
   function continuation(
-    item: Item,
-    target: Session,
+    item: Item<Req>,
+    target: Session<Req>,
   ):
     | { readonly _tag: "wait" }
     | {
@@ -3456,7 +3465,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    */
   function followContinuation(
     follows: ClipTag,
-    target: Session,
+    target: Session<Req>,
     seconds: number,
   ): { readonly _tag: "wait" } | { readonly _tag: "from"; readonly clipId: string | undefined } {
     const onAir = target.id === state.air ? target.source?.playing : undefined;
@@ -3488,7 +3497,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * it: an item settled, started or withdrawn, or a filler clip no session lists and none will
    * send again.
    */
-  function followsGone(item: Item): boolean {
+  function followsGone(item: Item<Req>): boolean {
     const follows = item.spec.follows;
     if (follows === undefined || item.followsAired === true) return false;
     if (follows._tag === "Item") {
@@ -3518,7 +3527,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * behind the clip on air, whose end is known, with no item still to be built ranked ahead of
    * it. Undefined otherwise.
    */
-  function followsEnd(item: Item): number | undefined {
+  function followsEnd(item: Item<Req>): number | undefined {
     const follows = item.spec.follows;
     const air = session(state.air);
     const playing = air?.playing;
@@ -3554,7 +3563,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * build counts as independent, since a continued one that would miss falls back to that. The
    * projection grows with the time once nothing holds it, as `misses` has it.
    */
-  function projectedLate(item: Item): { readonly due: number } | undefined {
+  function projectedLate(item: Item<Req>): { readonly due: number } | undefined {
     const perSecond = estimates().build?.median;
     if (
       item.spec.follows === undefined ||
@@ -3611,9 +3620,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
    * only from a clip that finished generating.
    */
   function airsBefore(
-    item: Item,
+    item: Item<Req>,
     predecessor: string,
-    target: Session,
+    target: Session<Req>,
   ): { readonly clipId: string; readonly follows?: string | undefined } {
     const rate = continuedBuildRate(state.samples);
     if (rate === undefined) return { clipId: predecessor };
@@ -3748,10 +3757,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           [...items.values()].some((item) => item.spec.lane === lanes - 1 && live(item))))
     )
       return undefined;
-    const spec: Spec = {
+    const spec: PlanSpec = {
       key: probeKey,
       lane: anchor?.spec.lane ?? lanes - 1,
-      request: { prompt: "placement probe", seconds: probe.seconds },
       seconds: probe.seconds,
       fingerprint: "",
       cues: [],
@@ -3828,10 +3836,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     const horizon = now.mono + 600_000;
 
     const pool: Array<Projected> = [];
-    const gone = new Set<Item>();
-    const done = new Set<Item>();
-    const dispatched = new Set<Item>();
-    const followsAired = new Map<Item, boolean>();
+    const gone = new Set<PlanItem>();
+    const done = new Set<PlanItem>();
+    const dispatched = new Set<PlanItem>();
+    const followsAired = new Map<PlanItem, boolean>();
     const free = new Map<string, number>();
     const aired: Array<{ readonly clip: Projected; readonly start: number }> = [];
     let retries = [...state.filler.retries];
@@ -3840,7 +3848,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
     let probeReady: number | undefined;
     let probeContinued = false;
 
-    const pending = [...items.values()].filter(
+    const pending: Array<PlanItem> = [...items.values()].filter(
       (item) => item.phase === "Accepted" && item.withdraw === undefined && item.mode !== "held",
     );
     if (hypothesis !== undefined) pending.push(hypothesis.item);
@@ -3912,7 +3920,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
           ? [
               {
                 at: value.fillerSent?.at ?? now.mono,
-                seconds: value.fillerSent?.seconds ?? requestSeconds.min,
+                seconds: value.fillerSent?.seconds ?? config.defaultSeconds,
                 continued: false,
                 tag: busy.tag,
                 item: undefined,
@@ -3965,7 +3973,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         start: playing.at,
       });
 
-    const deadline = (item: Item): number => {
+    const deadline = (item: PlanItem): number => {
       const at = atMono(item);
       const late = item.spec.start._tag === "At" ? item.spec.start.late : "nextBoundary";
       const own = at === undefined ? Infinity : lateAt(at, late);
@@ -3973,7 +3981,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         item.spec.window?.firm === true && item.startBy !== undefined ? item.startBy : Infinity;
       return Math.min(own, firm);
     };
-    const readyBy = (item: Item, time: number): boolean =>
+    const readyBy = (item: PlanItem, time: number): boolean =>
       item.phase === "Ready" ||
       item.phase === "Started" ||
       item.phase === "Settled" ||
@@ -3991,7 +3999,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       );
     };
     // As `followHeldOf`: an anchor is ahead while it is Ready by `time`, not aired, and queued.
-    const held = (item: Item, time: number): boolean =>
+    const held = (item: PlanItem, time: number): boolean =>
       followHeld(
         item,
         (other) => followsAired.get(other) ?? other.followsAired === true,
@@ -4002,7 +4010,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         (key) => items.get(key),
       );
     // As `queuedToAir`.
-    const queuedAt = (item: Item, time: number): boolean =>
+    const queuedAt = (item: PlanItem, time: number): boolean =>
       !gone.has(item) && item.mode !== "held" && !open(item.batch, time) && !held(item, time);
     const airsAt = (clip: Projected, time: number): boolean => {
       const item = clip.item;
@@ -4042,7 +4050,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       return (rest + ready) / 1000;
     };
     /** As `followCovered`, at `time`. */
-    const coveredFor = (item: Item, time: number): boolean => {
+    const coveredFor = (item: PlanItem, time: number): boolean => {
       const follows = item.spec.follows;
       if (perSecond === undefined)
         return (
@@ -4081,10 +4089,10 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
             : [];
         }),
       );
-    const pendingIn = (item: Item): boolean =>
+    const pendingIn = (item: PlanItem): boolean =>
       item.phase === "Accepted" && !dispatched.has(item) && !gone.has(item);
     // As `previousAdmitted`, against what the run has sent.
-    const admitted = (item: Item): boolean => {
+    const admitted = (item: PlanItem): boolean => {
       if (item.inserted) {
         const before = ordered
           .filter(
@@ -4110,7 +4118,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       });
     };
     // A continuing item waits for the item it follows to be built.
-    const followsUnbuilt = (item: Item, time: number): boolean => {
+    const followsUnbuilt = (item: PlanItem, time: number): boolean => {
       const follows = item.spec.follows;
       if (!item.spec.continuity || follows?._tag !== "Item") return false;
       const other = items.get(follows.key);
@@ -4120,7 +4128,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
         !readyBy(other, time)
       );
     };
-    const eligibleAt = (item: Item, time: number): boolean => {
+    const eligibleAt = (item: PlanItem, time: number): boolean => {
       if (!pendingIn(item)) return false;
       if (item === hypothesis?.item && time < hypothesis.submitAt) return false;
       if ((item.notBefore ?? -Infinity) > time) return false;
@@ -4149,7 +4157,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       );
     };
     // As `followContinuation` decides at dispatch; any other continuing item is taken to continue.
-    const continues = (item: Item, time: number): boolean => {
+    const continues = (item: PlanItem, time: number): boolean => {
       if (!item.spec.continuity) return false;
       const follows = item.spec.follows;
       if (follows === undefined) return true;
@@ -4168,7 +4176,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       pool.push({ ...clip, readyAt });
       return readyAt;
     };
-    const launch = (item: Item, time: number): void => {
+    const launch = (item: PlanItem, time: number): void => {
       const decision = continues(item, time);
       dispatched.add(item);
       const readyAt = build(
@@ -4230,7 +4238,7 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
       const seconds =
         retry === undefined
           ? fillLength(gap - room, filler.lengths, ratio)
-          : (retry.request.seconds ?? requestSeconds.min);
+          : (retry.request.seconds ?? config.defaultSeconds);
       if (!fitsAt(seconds, time)) return false;
       const index = retry?.index ?? nextIndex;
       if (retry === undefined) nextIndex++;
@@ -4511,9 +4519,9 @@ const decide = (config: Config, previous: State, input: Input, now: Now): Step =
  * again until nothing more is due, so none of it waits for a later input or wake.
  */
 export const step: {
-  (previous: State, input: Input, now: Now): (config: Config) => Step;
-  (config: Config, previous: State, input: Input, now: Now): Step;
-} = dual(4, (config: Config, previous: State, input: Input, now: Now): Step => {
+  <Req extends ClipRequest>(previous: State<Req>, input: Input<Req>, now: Now): (config: Config<Req>) => Step<Req>;
+  <Req extends ClipRequest>(config: Config<Req>, previous: State<Req>, input: Input<Req>, now: Now): Step<Req>;
+} = dual(4, <Req extends ClipRequest>(config: Config<Req>, previous: State<Req>, input: Input<Req>, now: Now): Step<Req> => {
   let result = decide(config, previous, input, now);
   for (let look = 1, decided = result.actions.length; decided > 0 && look < maxLooks; look++) {
     const again = decide(config, result.state, { _tag: "Tick" }, now);
@@ -4528,9 +4536,9 @@ export const step: {
  * the item, or of a group's parts, answered as a withdrawal waiting on them would be.
  */
 export const fate: {
-  (key: ItemKey): (state: State) => WithdrawOutcome;
-  (state: State, key: ItemKey): WithdrawOutcome;
-} = dual(2, (state: State, key: ItemKey): WithdrawOutcome =>
+  (key: ItemKey): <Req extends ClipRequest>(state: State<Req>) => WithdrawOutcome;
+  <Req extends ClipRequest>(state: State<Req>, key: ItemKey): WithdrawOutcome;
+} = dual(2, <Req extends ClipRequest>(state: State<Req>, key: ItemKey): WithdrawOutcome =>
   combined(
     (state.groups.get(key)?.parts ?? [key]).flatMap((part) => {
       const item = state.items.get(part);
@@ -4559,9 +4567,9 @@ const fillLength = (
 
 /** The public view of the plan. */
 export const view: {
-  (state: State, now: Now): (config: Config) => PublicState;
-  (config: Config, state: State, now: Now): PublicState;
-} = dual(3, (config: Config, state: State, now: Now): PublicState => {
+  <Req extends ClipRequest>(state: State<Req>, now: Now): (config: Config<Req>) => PublicState;
+  <Req extends ClipRequest>(config: Config<Req>, state: State<Req>, now: Now): PublicState;
+} = dual(3, <Req extends ClipRequest>(config: Config<Req>, state: State<Req>, now: Now): PublicState => {
   const own = (clip: PlayingClip): ItemKey | "filler" | "other" =>
     clip.tag?._tag === "Item" ? clip.tag.key : clip.tag?._tag === "Filler" ? "filler" : "other";
   const playing = state.sessions.find((value) => value.id === state.air)?.playing;

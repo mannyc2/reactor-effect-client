@@ -118,6 +118,7 @@ const fingerprint = (value: unknown): string =>
 
 export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>) {
   const config: Policy.Config = {
+    defaultSeconds: clipModel.defaultSeconds,
     lanes: options.lanes.map((lane) => ({
       name: lane.name,
       conflict: lane.conflict ?? "queue",
@@ -154,7 +155,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   const acquisition = yield* currentParent;
   const inbox = yield* Queue.unbounded<Input>();
   const events = yield* PubSub.unbounded<Playout.Event>();
-  const state = yield* Ref.make(Policy.initial);
+  const state = yield* Ref.make<Policy.State>(Policy.initial);
   const ids = yield* Ref.make(0);
   // What callers wait for, each resolved once and then forgotten: an edit's reply, a batch's
   // commit, a batch withdrawal's outcome, a drain.
