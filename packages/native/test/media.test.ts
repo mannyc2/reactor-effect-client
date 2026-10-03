@@ -480,6 +480,7 @@ layer(services, { excludeTestServices: true, timeout: "30 seconds" })(
       "sustains two concurrent sessions at full load for 10 s without dropping audio",
       () =>
         Effect.gen(function* () {
+          const far = yield* FarPeer;
           const sessions = [yield* open("pair-a"), yield* open("pair-b")];
           yield* eventually({
             condition: () => sessions.every((session) => session.frames.length >= 24),
@@ -488,20 +489,35 @@ layer(services, { excludeTestServices: true, timeout: "30 seconds" })(
           });
           const measured = yield* begin;
           const start = yield* Effect.forEach(sessions, pressure);
+          const sentStart = yield* Effect.forEach(sessions, (session) => far.sent(session.id));
           yield* measure(measured, sessions);
           const seconds = (performance.now() - measured.at) / 1000;
           const end = yield* Effect.forEach(sessions, pressure);
+          const sentEnd = yield* Effect.forEach(sessions, (session) => far.sent(session.id));
           yield* report({ label: "two sessions", window: measured, receivers: sessions });
           for (const [index, session] of sessions.entries()) {
             const before = start[index],
               after = end[index];
             assert(before !== undefined && after !== undefined, "each session was sampled");
+            const sentBefore = sentStart[index],
+              sentAfter = sentEnd[index];
+            assert(sentBefore !== undefined && sentAfter !== undefined, "each sender was sampled");
             const reached = arrived(after) - arrived(before);
+            const sentInWindow = sentAfter.frames - sentBefore.frames;
             expect(session.failures).toEqual([]);
+            // The sender shares the runner's CPU with two encoders, so a small
+            // runner can send fewer than 24 frames a second; a three-core runner's
+            // sender reached about 20. Judge the bridge by what was sent, allowing
+            // 5% for frames in flight at the window's edges since the counters are
+            // read moments apart. The drop, held-frame and audio bounds catch real loss.
+            expect(
+              reached,
+              `${session.id} frames reaching the bridge of those sent`,
+            ).toBeGreaterThanOrEqual(Math.floor(sentInWindow * 0.95));
             expect(
               reached / seconds,
               `${session.id} frames per second reaching the bridge`,
-            ).toBeGreaterThanOrEqual(20);
+            ).toBeGreaterThanOrEqual(15);
             expect(Number(after.droppedVideo - before.droppedVideo)).toBeLessThanOrEqual(
               Math.floor(reached * 0.01),
             );
