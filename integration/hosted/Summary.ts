@@ -273,6 +273,14 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
   if (avatar !== undefined) lines.push(...avatarLines(avatar));
   const character = evidence.character;
   if (character !== undefined) lines.push(...characterLines(character));
+  const fasth3 = evidence.fasth3;
+  if (fasth3 !== undefined) {
+    if (evidence.mode === "rehearsal")
+      lines.push(
+        `**FastH3 rehearsal:** Rehearsed on ReactorTest (${fasth3.model}): proves the program, not hosted FastH3`,
+      );
+    lines.push(...fastH3Lines(fasth3));
+  }
   return lines;
 };
 
@@ -822,3 +830,111 @@ export const summarize = (runs: ReadonlyArray<Evidence>): string =>
     ...runs.map(section),
     "",
   ].join("\n");
+
+/** FastH3's answers, with uncertainty kept beside each measurement. */
+const fastH3Lines = (probe: NonNullable<Evidence["fasth3"]>): ReadonlyArray<string> => {
+  const comparisons: Array<{ difference: number; unbuilt: boolean }> = [];
+  const attempts = new Set<number>();
+  for (const count of probe.counts) {
+    if (count.read && count.pair !== undefined) attempts.add(count.pair);
+    if (
+      !count.read ||
+      count.from !== "state_update" ||
+      count.comparable !== true ||
+      count.pair === undefined
+    )
+      continue;
+    const queue = probe.counts.find(
+      (other) =>
+        other.read &&
+        other.from === "queue_update" &&
+        other.comparable === true &&
+        other.pair === count.pair,
+    );
+    if (queue !== undefined)
+      comparisons.push({
+        difference: count.generation - queue.generation,
+        unbuilt: count.building || queue.building,
+      });
+  }
+  const lines = [
+    `**Q1, counts:** at ${comparisons.length} comparable explicit read pairs of ${attempts.size} attempts, generation_queued minus the generation list was ${comparisons.map((pair) => String(pair.difference)).join(", ") || "unmeasured"}; while a clip was unbuilt: ${
+      comparisons
+        .filter((pair) => pair.unbuilt)
+        .map((pair) => String(pair.difference))
+        .join(", ") || "unmeasured"
+    }. Other broadcasts and interrupted pairs are not compared${probe.observerLost ? "; observation was lost" : ""}.`,
+  ];
+  const contract = probe.contract;
+  lines.push(
+    contract === undefined
+      ? "**Q2 and Q7, document:** unread"
+      : `**Q2 and Q7, document:** model ${probe.model}; title ${contract.title ?? "unmeasured"}, version ${contract.version ?? "unmeasured"}; commands ${listed(contract.commands)}; enqueue properties ${listed(contract.enqueue)}`,
+  );
+  const enqueue = (label: string) => {
+    const entry = probe.enqueues.find((each) => each.label === label);
+    if (entry === undefined) return "not attempted";
+    const errors = entry.commandErrors.map(
+      (error) =>
+        `command_error ${error.command}, ${error.reasonLength} reason characters (${error.attribution}, ${error.beforeAnswer ? "before" : "after or with"} the answer)`,
+    );
+    const own = entry.commandError;
+    if (own !== undefined && errors.length === 0)
+      errors.push(
+        `command_error ${own.command}, ${own.reasonLength} reason characters (own reply)`,
+      );
+    return `${entry.answer}${entry.outcome === undefined ? "" : ` (${entry.outcome})`}${entry.clipAttribution === undefined ? "" : `; clip identified by ${entry.clipAttribution}`}${errors.length === 0 ? "" : `; observed ${errors.join("; ")}`}`;
+  };
+  lines.push(
+    `**Q3, undeclared reference_images:** ${enqueue("reference_images")}. A temporal error does not establish this command was refused.`,
+  );
+  const state = probe.state;
+  lines.push(
+    state === undefined
+      ? "**Q4, state:** unread"
+      : `**Q4, state:** ${state.missing.length === 0 ? "none of H3's 18 missing" : `missing ${listed(state.missing)}`}; extra keys ${listed(state.extra)}; clip_seconds_min ${String(state.values.clip_seconds_min ?? "unread")}, clip_seconds_max ${String(state.values.clip_seconds_max ?? "unread")}`,
+  );
+  lines.push(
+    `**Q5, lengths:** ${probe.lengths.map((length) => `${length.requested} → ${length.clipSeconds === undefined ? length.answer : `${length.clipSeconds} (${String(length.frames)} frames)`}`).join("; ") || "unmeasured"}`,
+  );
+  lines.push(
+    `**Q6, history:** lengths seen ${probe.history.map((read) => String(read.length)).join(", ") || "unmeasured"}; observed maximum ${probe.history.length === 0 ? "unmeasured" : Math.max(...probe.history.map((read) => read.length))}, a lower bound on capacity; clip keys ${listed([...new Set(probe.history.flatMap((read) => read.clipKeys))])}`,
+  );
+  const ahead = probe.ahead;
+  let precondition = "not checked";
+  if (ahead?.checked === true)
+    precondition = ahead.observed
+      ? "observed ahead of its unbuilt anchor"
+      : "not established by the returned queue and events";
+  lines.push(
+    `**Q8, continuations:** Q8a precondition ${precondition}; generated order ${listed(probe.generatedOrder)}; unknown source ${enqueue("unknown source")}; from history ${enqueue("from history")}`,
+  );
+  const stop = probe.stop;
+  lines.push(
+    stop === undefined
+      ? "**Q9, stop:** skipped; frozen-tail timing unmeasured"
+      : `**Q9, stop:** ${stop.answer}; stop → clip_stopped ${stop.stoppedMs === undefined ? "unmeasured" : seconds(stop.stoppedMs - stop.sentMs)}; frozen-tail timing unmeasured`,
+  );
+  lines.push(
+    `**Q10, builds and seams:** ${
+      probe.clips
+        .map((clip) => {
+          const generated =
+            clip.generatedMs === undefined
+              ? "unmeasured"
+              : seconds(clip.generatedMs - clip.queuedMs);
+          const started =
+            clip.startedMs === undefined || clip.generatedMs === undefined
+              ? "unmeasured"
+              : seconds(clip.startedMs - clip.generatedMs);
+          const ended =
+            clip.endedMs === undefined || clip.startedMs === undefined
+              ? "unmeasured"
+              : `${seconds(clip.endedMs - clip.startedMs)} (${clip.ended ?? "unknown"})`;
+          return `${clip.label}: queued → generated ${generated}, generated → started ${started}, started → end ${ended}`;
+        })
+        .join("; ") || "unmeasured"
+    }; seams ${probe.seams.map((seam) => `to ${seam.toLabel} ${seconds(seam.pauseMs)}`).join(", ") || "unmeasured"}`,
+  );
+  return lines;
+};
