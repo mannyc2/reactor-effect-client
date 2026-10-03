@@ -48,6 +48,7 @@ export const packages = Object.freeze([
       "./ReactorTest",
       "./Session",
       "./ViduS2Avatar",
+      "./FastH3",
     ],
     dependsOn: [],
   },

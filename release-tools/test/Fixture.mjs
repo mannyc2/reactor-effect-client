@@ -150,6 +150,7 @@ const workspace = {
           "ReactorTest",
           "Session",
           "ViduS2Avatar",
+          "FastH3",
         ].map((module) => [`./${module}`, entry(module)]),
       ),
     },

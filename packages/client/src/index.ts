@@ -1,5 +1,6 @@
 /** Portable entry point: importing it selects no host and loads no native code. */
 export * as CoordinatorClient from "./CoordinatorClient.js";
+export * as FastH3 from "./FastH3.js";
 export * as H3 from "./H3.js";
 export * as H3Source from "./H3Source.js";
 export * as LocalSource from "./LocalSource.js";
