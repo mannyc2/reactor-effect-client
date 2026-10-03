@@ -302,6 +302,8 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
       );
     lines.push(...fastH3Lines(fasth3));
   }
+  const rejoin = evidence.rejoin;
+  if (rejoin !== undefined) lines.push(...rejoinLines(evidence, rejoin));
   return lines;
 };
 
@@ -588,6 +590,65 @@ const characterLines = (character: NonNullable<Evidence["character"]>): Readonly
     `**Transcripts:** ${character.transcripts.length}: ${finals.filter((entry) => entry.speaker === "user").length} final from the user, ${finals.filter((entry) => entry.speaker === "character").length} from the character`,
     `**Provider events:** command errors ${character.commandErrors.map((entry) => `${entry.command} ${entry.code} at ${fromAllocation(entry.atMs)}`).join(", ") || "none"}; diagnostics ${character.diagnostics.map((entry) => `${entry.reason} at ${fromAllocation(entry.atMs)}`).join(", ") || "none"}`,
   );
+  return lines;
+};
+
+/** Reconnect timing and fresh media, with timer intervals that overlap the reconnect. */
+const rejoinLines = (
+  evidence: Evidence,
+  rejoin: NonNullable<Evidence["rejoin"]>,
+): ReadonlyArray<string> => {
+  const lines = [
+    `**Photo:** ${rejoin.photo.type}, ${rejoin.photo.bytes} bytes`,
+    `**Operations:** ${rejoin.steps.map((step) => `${step.name} ${step.outcome} in ${seconds(step.endedMs - step.startedMs)}`).join("; ") || "none"}`,
+    `**Phases:** ${rejoin.phases.map((entry) => `${entry.phase} ${fromAllocation(entry.atMs)}`).join(" › ") || "none seen"}`,
+  ];
+  const call = rejoin.call;
+  if (call !== undefined) {
+    const absent =
+      call.observedMs >= 10_000
+        ? "none within 10 s"
+        : `none in ${seconds(call.observedMs)} observed`;
+    lines.push(
+      `**Before reconnect:** live at ${fromAllocation(call.liveAtMs)}, generation ${call.generation}; first frame ${call.firstFrameMs === undefined ? absent : `${seconds(call.firstFrameMs)} after live`}, first audio block ${call.firstBlockMs === undefined ? absent : `${seconds(call.firstBlockMs)} after live`}; ${call.video.frames} frames (${call.video.lit} lit), ${call.audio.blocks} blocks`,
+    );
+  }
+  const reconnect = rejoin.reconnect;
+  if (reconnect !== undefined) {
+    lines.push(
+      `**Reconnect:** ${reconnect.outcome ?? "not settled"}${reconnect.endedMs === undefined ? "" : ` in ${seconds(reconnect.endedMs - reconnect.startedMs)}`}, started ${fromAllocation(reconnect.startedMs)}; generation ${reconnect.fromGeneration} → ${reconnect.generation ?? "unread"}; provider phase ${reconnect.phase ?? "unread"}`,
+    );
+    const startedMs = (rejoin.allocatedMs ?? 0) + reconnect.startedMs;
+    const endedMs = (rejoin.allocatedMs ?? 0) + (reconnect.endedMs ?? reconnect.startedMs);
+    // A timer that fires after the reconnect can still have been delayed by it.
+    const samples = evidence.liveness?.samples.filter(
+      (sample) => sample.atMs >= startedMs && sample.atMs - sample.lateMs - 1000 <= endedMs,
+    );
+    const latest = samples?.reduce<(typeof samples)[number] | undefined>(
+      (maximum, sample) =>
+        maximum === undefined || sample.lateMs > maximum.lateMs ? sample : maximum,
+      undefined,
+    );
+    lines.push(
+      `**Liveness around reconnect:** ${latest === undefined ? "no timer sample" : `the 1 s timer fired at most ${seconds(Math.max(0, latest.lateMs))} late, at ${fromAllocation(latest.atMs - (rejoin.allocatedMs ?? 0))}`}`,
+    );
+  }
+  const after = rejoin.after;
+  if (after === undefined) lines.push("**After reconnect:** media was not observed");
+  else {
+    const absent =
+      after.observedMs >= 10_000
+        ? "none within 10 s"
+        : `none in ${seconds(after.observedMs)} observed`;
+    lines.push(
+      `**After reconnect:** generation ${after.generation}, observed ${seconds(after.observedMs)}; first frame ${after.firstFrameMs === undefined ? absent : `${seconds(after.firstFrameMs)} after reconnect`}, first audio block ${after.firstBlockMs === undefined ? absent : `${seconds(after.firstBlockMs)} after reconnect`}; ${after.video.frames} frames (${after.video.lit} lit), ${after.audio.blocks} blocks`,
+    );
+  }
+  lines.push(
+    `**Provider diagnostics:** ${rejoin.diagnostics.map((entry) => `${entry.reason} at ${fromAllocation(entry.atMs)}`).join(", ") || "none"}`,
+  );
+  if (rejoin.end !== undefined)
+    lines.push(`**End:** ${rejoin.end.endReason}, the call live ${rejoin.end.durationSeconds} s`);
   return lines;
 };
 

@@ -19,7 +19,8 @@ import * as H3 from "reactor-effect-client/H3";
  * asks another question, of Vidu S2-Avatar: what its docs leave open about a
  * call, for the SDK's module for it. `character` qualifies that module, the
  * `ViduS2Avatar` provider, through one call. `fasth3` asks what FastH3's docs
- * leave open before its provider is built.
+ * leave open before its provider is built. `rejoin` asks what reconnecting
+ * during a live call does, with the runner's liveness and fresh media kept.
  */
 export const checks = [
   "vertical",
@@ -41,6 +42,7 @@ export const checks = [
   "avatar",
   "character",
   "fasth3",
+  "rejoin",
 ] as const;
 export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;
@@ -142,6 +144,10 @@ export const plans = {
   // minute.
   character: { model: vidu, sessions: 1, seconds: 75 },
   fasth3: { model: fastH3, sessions: 1, seconds: sessionSeconds, rehearsedAs: h3 },
+  // One call, a reconnect during it and end_call are planned to end about 70 s in, including
+  // the first paid avatar's 26.7 s create and 13.2 s end. $0.84 at most at 70 credits a second,
+  // and $0.84 by the started minute; the work ends 110 s in, before the 120 s cap.
+  rejoin: { model: vidu, sessions: 1, seconds: 120 },
 } satisfies { readonly [C in Check]: Plan };
 
 /** The model the check actually runs, including a rehearsal's stand-in. */

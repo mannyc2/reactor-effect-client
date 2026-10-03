@@ -200,7 +200,9 @@ export const execute = (input: {
       }
       // A Vidu call starts from a photo of a person: without one, a paid run buys nothing.
       if (
-        (authorization.check === "avatar" || authorization.check === "character") &&
+        (authorization.check === "avatar" ||
+          authorization.check === "character" ||
+          authorization.check === "rejoin") &&
         target.mode === "paid" &&
         target.photo === undefined
       )

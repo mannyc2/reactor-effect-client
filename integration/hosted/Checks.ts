@@ -36,6 +36,7 @@ import { dropped } from "./checks/Dropped.js";
 import { avatar } from "./checks/Avatar.js";
 import { character } from "./checks/Character.js";
 import { fastH3 } from "./checks/FastH3.js";
+import { rejoin } from "./checks/Rejoin.js";
 import { tour } from "./checks/Tour.js";
 import { show } from "./checks/Show.js";
 import { showreel } from "./checks/Showreel.js";
@@ -2379,6 +2380,7 @@ const all = {
   avatar: avatar(pieces),
   character: character(pieces),
   fasth3: fastH3(pieces),
+  rejoin: rejoin(pieces),
 };
 /** What a check can fail with, and what it needs. */
 export type CheckError = Effect.Error<(typeof all)[Check]>;
