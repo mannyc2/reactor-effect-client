@@ -1377,6 +1377,14 @@ export const FastH3Record = Schema.Struct({
       comparable: Schema.optionalKey(Schema.Boolean),
     }),
   ),
+  readPairs: Schema.Array(
+    Schema.Struct({
+      pair: Schema.Int,
+      stateAnswered: Schema.Boolean,
+      queueAnswered: Schema.Boolean,
+      comparable: Schema.Boolean,
+    }),
+  ),
   lengths: Schema.Array(
     Schema.Struct({
       requested: Schema.Finite,

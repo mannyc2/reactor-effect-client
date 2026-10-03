@@ -834,9 +834,7 @@ export const summarize = (runs: ReadonlyArray<Evidence>): string =>
 /** FastH3's answers, with uncertainty kept beside each measurement. */
 const fastH3Lines = (probe: NonNullable<Evidence["fasth3"]>): ReadonlyArray<string> => {
   const comparisons: Array<{ difference: number; unbuilt: boolean }> = [];
-  const attempts = new Set<number>();
   for (const count of probe.counts) {
-    if (count.read && count.pair !== undefined) attempts.add(count.pair);
     if (
       !count.read ||
       count.from !== "state_update" ||
@@ -858,7 +856,7 @@ const fastH3Lines = (probe: NonNullable<Evidence["fasth3"]>): ReadonlyArray<stri
       });
   }
   const lines = [
-    `**Q1, counts:** at ${comparisons.length} comparable explicit read pairs of ${attempts.size} attempts, generation_queued minus the generation list was ${comparisons.map((pair) => String(pair.difference)).join(", ") || "unmeasured"}; while a clip was unbuilt: ${
+    `**Q1, counts:** at ${comparisons.length} comparable explicit read pairs of ${probe.readPairs.length} attempts, generation_queued minus the generation list was ${comparisons.map((pair) => String(pair.difference)).join(", ") || "unmeasured"}; while a clip was unbuilt: ${
       comparisons
         .filter((pair) => pair.unbuilt)
         .map((pair) => String(pair.difference))

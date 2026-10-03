@@ -95,7 +95,7 @@ const Document = Schema.Struct({
   info: Schema.optionalKey(Schema.JsonObject),
   paths: Schema.Record(Schema.String, Schema.JsonObject),
   components: Schema.optionalKey(
-    Schema.Struct({ schemas: Schema.Record(Schema.String, Schema.JsonObject) }),
+    Schema.Struct({ schemas: Schema.optionalKey(Schema.Record(Schema.String, Schema.JsonObject)) }),
   ),
 });
 // A dotted version is useful, but arbitrary provider text and four-part addresses are private.
@@ -115,9 +115,9 @@ interface Sent {
 }
 interface Pair {
   readonly number: number;
-  readonly state: Sent;
-  readonly queue: Sent;
-  readonly comparable: boolean;
+  state?: Sent;
+  queue?: Sent;
+  comparable: boolean;
 }
 
 const field = (value: unknown, key: string): unknown =>
@@ -173,6 +173,7 @@ export const fastH3 = Effect.fnUntraced(function* (pieces: Pieces) {
   const initial: FastH3Record = {
     model,
     counts: [],
+    readPairs: [],
     lengths: [],
     enqueues: [],
     clips: [],
@@ -319,9 +320,13 @@ export const fastH3 = Effect.fnUntraced(function* (pieces: Pieces) {
             : Effect.void;
 
         const readPair = Effect.fnUntraced(function* () {
+          const pair: Pair = { number: pairs.length + 1, comparable: false };
+          pairs.push(pair);
           const state = yield* send("get_state");
+          pair.state = state;
           yield* checkNative(state);
           const queue = yield* send("get_queue");
+          pair.queue = queue;
           yield* checkNative(queue);
           const s = replyOf(state);
           const q = replyOf(queue);
@@ -335,7 +340,7 @@ export const fastH3 = Effect.fnUntraced(function* (pieces: Pieces) {
             q.sequence === s.sequence + 1n &&
             parsed(StateCounts, s.data) !== undefined &&
             parsed(QueueLists, q.data) !== undefined;
-          pairs.push({ number: pairs.length + 1, state, queue, comparable });
+          pair.comparable = comparable;
           return { state, queue };
         });
 
@@ -493,6 +498,7 @@ export const fastH3 = Effect.fnUntraced(function* (pieces: Pieces) {
           const readRequests = new Map<string, { pair: number; comparable: boolean }>();
           for (const pair of pairs)
             for (const sent of [pair.state, pair.queue]) {
+              if (sent === undefined) continue;
               const request = requestOf(sent);
               if (request !== undefined)
                 readRequests.set(request, {
@@ -588,11 +594,16 @@ export const fastH3 = Effect.fnUntraced(function* (pieces: Pieces) {
               .filter(
                 (other) =>
                   other.label !== clip.label &&
-                  other.endedMs !== undefined &&
-                  other.endedMs <= start,
+                  other.startedMs !== undefined &&
+                  other.startedMs < start,
               )
-              .sort((a, b) => (b.endedMs ?? 0) - (a.endedMs ?? 0))[0];
-            if (prior?.endedMs === undefined) continue;
+              .sort((a, b) => (b.startedMs ?? 0) - (a.startedMs ?? 0))[0];
+            if (
+              prior?.endedMs === undefined ||
+              prior.endedMs > start ||
+              (prior.ended !== "finished" && prior.ended !== "stopped")
+            )
+              continue;
             const pause = video.pause(prior.endedMs - pieces.seamMs, start + pieces.seamMs);
             if (pause !== undefined) seams.push({ toLabel: clip.label, pauseMs: pause.durationMs });
           }
@@ -611,6 +622,12 @@ export const fastH3 = Effect.fnUntraced(function* (pieces: Pieces) {
             ...value,
             ...(first === undefined ? {} : { state: first }),
             counts,
+            readPairs: pairs.map((pair) => ({
+              pair: pair.number,
+              stateAnswered: pair.state !== undefined && answered(pair.state),
+              queueAnswered: pair.queue !== undefined && answered(pair.queue),
+              comparable: pair.comparable && !observerLost,
+            })),
             clips: lifecycle,
             generatedOrder,
             history,
@@ -671,7 +688,8 @@ export const fastH3 = Effect.fnUntraced(function* (pieces: Pieces) {
               )
                 break;
               visited.add(reference);
-              shape = document.components?.schemas[reference.slice("#/components/schemas/".length)];
+              shape =
+                document.components?.schemas?.[reference.slice("#/components/schemas/".length)];
             }
             const properties = field(shape, "properties");
             const title = field(document.info, "title");
