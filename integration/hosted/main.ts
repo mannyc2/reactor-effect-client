@@ -83,13 +83,13 @@ const moderationPrompt = (file: Option.Option<string>) =>
 
 const avatarImage = Flag.String("avatar-image").pipe(
   Flag.withDescription(
-    "a photo of one person, a PNG, JPEG or WebP under 20 MB, that `avatar` and `character` make their avatar from",
+    "a photo of one person, a PNG, JPEG or WebP under 20 MB, that `avatar`, `character` and `rejoin` make their avatar from",
   ),
   Flag.optional,
 );
 
 /**
- * The photo `avatar` and `character` make their avatar from, read from the operator's file: refused unless it
+ * The photo `avatar`, `character` and `rejoin` make their avatar from, read from the operator's file: refused unless it
  * is one Vidu S2-Avatar takes, by its size and its first bytes. Neither it nor its path is
  * ever in a message.
  */

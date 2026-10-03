@@ -1146,6 +1146,34 @@ rehearse("dropped fails, and says to end the session now, when the key cannot en
   },
 });
 
+// The reconnect investigation must keep its answer and the runner's liveness before later work.
+rehearse("rejoin records a live reconnect, media and liveness", {
+  check: "rejoin",
+  judge: (evidence) => {
+    passes(evidence);
+    for (const name of [
+      "the call went live with picture",
+      "the reconnect returned within 30 s",
+      "the session was confirmed ended",
+    ])
+      assert.isTrue(evidence.criteria.find((criterion) => criterion.name === name)?.passed, name);
+    const rejoin = evidence.rejoin;
+    assert.isDefined(rejoin);
+    const reconnect = rejoin.reconnect;
+    const after = rejoin.after;
+    assert.isDefined(reconnect);
+    assert.isDefined(reconnect.endedMs);
+    assert.isDefined(after);
+    assert.strictEqual(after.generation, reconnect.generation);
+    assert.strictEqual(
+      rejoin.steps.find((step) => step.name === "decoded after reconnect")?.outcome,
+      "ok",
+    );
+    assert.isAtMost(after.observedMs, 10_000);
+    assert.isNotEmpty(evidence.liveness?.samples);
+  },
+});
+
 const flagged = "a prompt the rehearsal's moderation flags";
 
 rehearse("cut records a moderation verdict, and the playout ends on it", {

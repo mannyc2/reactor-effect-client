@@ -1497,6 +1497,59 @@ export const DroppedRecord = Schema.Struct({
 });
 export type DroppedRecord = typeof DroppedRecord.Type;
 
+/**
+ * A reconnect during one live Vidu call. Times count from allocation, except the first media's
+ * delays from live or the reconnect's end. Only timings, counts, phases and reason tags are kept.
+ */
+export const RejoinRecord = Schema.Struct({
+  photo: Schema.Struct({ bytes: Schema.Int, type: Schema.Literals(["png", "jpeg", "webp"]) }),
+  /** The allocation on the run's timeline, as `sessions` has it. */
+  allocatedMs: Schema.optionalKey(Ms),
+  steps: Schema.Array(
+    Schema.Struct({ name: Schema.String, startedMs: Ms, endedMs: Ms, outcome: Schema.String }),
+  ),
+  phases: Schema.Array(Schema.Struct({ phase: Schema.String, atMs: Ms })),
+  diagnostics: Schema.Array(Schema.Struct({ atMs: Ms, reason: Schema.String })),
+  /** The initial live call's media, up to the reconnect. */
+  call: Schema.optionalKey(
+    Schema.Struct({
+      liveAtMs: Ms,
+      generation: Schema.Int,
+      observedMs: Ms,
+      firstFrameMs: Schema.optionalKey(Ms),
+      firstBlockMs: Schema.optionalKey(Ms),
+      video: VideoSummary,
+      audio: AudioSummary,
+    }),
+  ),
+  /** Saved before reconnect starts, then immediately when it settles, before further work. */
+  reconnect: Schema.optionalKey(
+    Schema.Struct({
+      startedMs: Ms,
+      endedMs: Schema.optionalKey(Ms),
+      outcome: Schema.optionalKey(Schema.String),
+      fromGeneration: Schema.Int,
+      generation: Schema.optionalKey(Schema.Int),
+      phase: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  /** Fresh readers on the generation obtained after reconnect, observed for at most 10 s. */
+  after: Schema.optionalKey(
+    Schema.Struct({
+      generation: Schema.Int,
+      observedMs: Ms,
+      firstFrameMs: Schema.optionalKey(Ms),
+      firstBlockMs: Schema.optionalKey(Ms),
+      video: VideoSummary,
+      audio: AudioSummary,
+    }),
+  ),
+  end: Schema.optionalKey(
+    Schema.Struct({ endReason: Schema.String, durationSeconds: Schema.Finite }),
+  ),
+});
+export type RejoinRecord = typeof RejoinRecord.Type;
+
 export const Evidence = Schema.Struct({
   format: Schema.Literal(format),
   runId: Schema.String,
@@ -1727,6 +1780,7 @@ export const Evidence = Schema.Struct({
   avatar: Schema.optionalKey(AvatarRecord),
   character: Schema.optionalKey(CharacterRecord),
   fasth3: Schema.optionalKey(FastH3Record),
+  rejoin: Schema.optionalKey(RejoinRecord),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -1756,6 +1810,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   avatar: ["server", "network", "avatar"],
   character: ["network", "character"],
   fasth3: ["server", "network", "fasth3"],
+  rejoin: ["network", "rejoin"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */
