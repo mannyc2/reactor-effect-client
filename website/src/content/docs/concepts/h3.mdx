@@ -83,6 +83,32 @@ The profile's constants state these bounds in code: `H3.requestSeconds`, `H3.ref
 `H3.audioReferenceLimits` and `H3.canvases`, with `H3.alignFrames` and `H3.estimateTokens` (an
 estimate only; H3's tokenizer decides).
 
+## FastH3
+
+`FastH3.make(session)` provides the same commands, acceptance evidence, snapshots and operation
+facts for FastH3 (`reactor/fast-h3`). Create the session with `model: FastH3.modelName`; it
+observes a session it neither allocates nor closes. `H3.make` checks the deployment's declared
+commands rather than identifying the model and can admit a FastH3 deployment. Use `FastH3.make`
+for FastH3's frame arguments; it refuses an H3 deployment with `UnsupportedCapability` before
+sending model commands. FastH3 has no playout source yet.
+
+Its `Request` takes `prompt`, optional `seconds`, `seed`, `position` and `metadata`. Optional
+`start` picks an image reference or `{ continueFrom: clipId }`; optional `end` picks an image or
+`{ endFrom: clipId }`. Both ids are UUIDs, and the same id may open and close a clip to make a hold.
+Images use the same PNG, JPEG and WebP validation as H3's references; there are no H3
+reference-image or audio lists. Metadata and the acceptance envelope share the 2,000-character
+bound. Reactor enforces FastH3's 1,024-token prompt budget when it enqueues.
+
+Lengths range from 5.167 to 14.375 s and align up on a grid of 124 frames, then steps of 17, at
+24 fps. The rounded 5.167 s minimum represents 124 frames; 6 s builds 158 frames (6.583 s).
+Built clips in `queue.history` can supply a continuation, but cannot be played from history.
+
+One [paid raw `Session` probe](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.10.0-fasth3/summary.md)
+on 2026-10-03 observed upward length alignment and refused the undeclared `reference_images: []`
+key. It did not establish history capacity, dependent build order or frozen-tail drain timing.
+The provider has not been qualified on hosted Reactor. `ReactorTest` simulates FastH3 using H3's
+timings and an unmeasured default history capacity of eight.
+
 ## Validating references once
 
 A reference is `{ _tag: "Bytes", bytes }`, or `{ _tag: "Uploaded", file }` for a file the session

@@ -11,66 +11,70 @@ import type { CommandReply, SessionEvent } from "../../Session.js";
 import type { Clip, DecodedMessage, MessageType, Queue, State } from "./messages.js";
 import { metadataMaxChars } from "./profile.js";
 
-export interface ClipObservation {
-  readonly clip: Clip;
+export interface ClipObservation<C extends Clip = Clip> {
+  readonly clip: C;
   /** The last explicit lifecycle message; null means only a queue snapshot listed it. */
   readonly lifecycle: Exclude<MessageType, "queue_update" | "state_update"> | null;
   readonly source: CommandReply;
 }
 
-export interface Facts {
+export interface Facts<C extends Clip = Clip> {
   readonly state: State;
-  readonly queue: Queue;
+  readonly queue: Queue<C>;
 }
 
-interface SnapshotBase {
+interface SnapshotBase<C extends Clip = Clip> {
   readonly sessionId: string;
   readonly transportGeneration: bigint;
   readonly revision: bigint;
-  readonly clips: ReadonlyArray<ClipObservation>;
+  readonly clips: ReadonlyArray<ClipObservation<C>>;
 }
 
-export type ProviderSnapshot = SnapshotBase &
+export type ProviderSnapshot<C extends Clip = Clip> = SnapshotBase<C> &
   (
-    | { readonly _tag: "Synchronizing"; readonly lastFacts: Facts | null }
-    | { readonly _tag: "Ready"; readonly state: State; readonly queue: Queue }
+    | { readonly _tag: "Synchronizing"; readonly lastFacts: Facts<C> | null }
+    | { readonly _tag: "Ready"; readonly state: State; readonly queue: Queue<C> }
     | {
         readonly _tag: "Unavailable";
         readonly cause: ReactorError;
-        readonly lastFacts: Facts | null;
+        readonly lastFacts: Facts<C> | null;
       }
   );
 
-export interface Model {
+export interface Model<C extends Clip = Clip> {
+  readonly coherent: (state: State, queue: Queue<C>) => boolean;
   readonly sessionId: string;
   readonly generation: bigint;
   readonly revision: bigint;
   readonly maxClips: number;
   readonly state: State | undefined;
-  readonly queue: Queue | undefined;
+  readonly queue: Queue<C> | undefined;
   /** A message implied a change the last full state or queue does not show. */
   readonly stateDirty: boolean;
   readonly queueDirty: boolean;
-  readonly lastFacts: Facts | null;
+  readonly lastFacts: Facts<C> | null;
   readonly cause: ReactorError | undefined;
-  readonly clips: ReadonlyMap<string, ClipObservation>;
+  readonly clips: ReadonlyMap<string, ClipObservation<C>>;
   /** Request ids whose message body this generation applied, to drop a repeated body. */
   readonly bodies: ReadonlyMap<string, bigint>;
 }
 
 type Disposition = "applied" | "duplicate" | "stale";
 
-export const initial = ({
+export const initial = <C extends Clip = Clip>({
+  coherent,
   sessionId,
   generation,
   revision,
   maxClips,
 }: {
+  readonly coherent: Model<C>["coherent"];
   readonly sessionId: string;
   readonly generation: bigint;
   readonly revision: bigint;
   readonly maxClips: number;
-}): Model => ({
+}): Model<C> => ({
+  coherent,
   sessionId,
   generation,
   revision,
@@ -107,23 +111,19 @@ const rank = (type: MessageType | null): number => {
  * it has left the playout queue by then is undocumented, so a playing clip at
  * the front of that queue is taken as armed rather than as a disagreement.
  */
-const coherent = (model: Model): model is Model & Facts =>
+const coherent = <C extends Clip>(model: Model<C>): model is Model<C> & Facts<C> =>
   model.state !== undefined &&
   model.queue !== undefined &&
   !model.stateDirty &&
   !model.queueDirty &&
-  model.state.generation_queued === model.queue.generation.length &&
-  model.state.playout_queued === model.queue.playout.length &&
-  ![...model.queue.generation, ...model.queue.playout.slice(1)].some(
-    (clip) => clip.clip_id === model.state?.playing_clip_id,
-  );
+  model.coherent(model.state, model.queue);
 
-export const availability = (model: Model): ProviderSnapshot["_tag"] => {
+export const availability = <C extends Clip>(model: Model<C>): ProviderSnapshot<C>["_tag"] => {
   if (model.cause !== undefined) return "Unavailable";
   return coherent(model) ? "Ready" : "Synchronizing";
 };
 
-export const snapshot = (model: Model): ProviderSnapshot => {
+export const snapshot = <C extends Clip>(model: Model<C>): ProviderSnapshot<C> => {
   const base = {
     sessionId: model.sessionId,
     transportGeneration: model.generation,
@@ -136,24 +136,24 @@ export const snapshot = (model: Model): ProviderSnapshot => {
   return { ...base, _tag: "Synchronizing", lastFacts: model.lastFacts };
 };
 
-const remember = (model: Model): Model =>
+const remember = <C extends Clip>(model: Model<C>): Model<C> =>
   coherent(model) &&
   (model.lastFacts?.state !== model.state || model.lastFacts.queue !== model.queue)
     ? { ...model, lastFacts: { state: model.state, queue: model.queue } }
     : model;
 
-export const unavailable = ({
+export const unavailable = <C extends Clip>({
   model,
   cause,
 }: {
-  readonly model: Model;
+  readonly model: Model<C>;
   readonly cause: ReactorError;
-}): Model => ({
+}): Model<C> => ({
   ...remember(model),
   cause,
 });
 
-const reread = (model: Model): Model => ({
+const reread = <C extends Clip>(model: Model<C>): Model<C> => ({
   ...model,
   state: undefined,
   queue: undefined,
@@ -162,16 +162,16 @@ const reread = (model: Model): Model => ({
 });
 
 /** Orders an event against the facts: a later generation starts over from fresh reads. */
-export const admit = ({
+export const admit = <C extends Clip>({
   model,
   source,
 }: {
-  readonly model: Model;
+  readonly model: Model<C>;
   readonly source: SessionEvent;
-}): readonly [Disposition, Model] => {
+}): readonly [Disposition, Model<C>] => {
   if (source.generation < model.generation) return ["stale", model];
   if (source.sequence <= model.revision) return ["duplicate", model];
-  let next: Model = { ...model, revision: source.sequence };
+  let next: Model<C> = { ...model, revision: source.sequence };
   if (source.generation > model.generation)
     next = {
       ...reread(remember(next)),
@@ -216,23 +216,23 @@ const overflow = (): ReactorError =>
     operation: "H3 observation",
   });
 
-const invalidate = (model: Model, state: boolean, queue: boolean): Model => ({
+const invalidate = <C extends Clip>(model: Model<C>, state: boolean, queue: boolean): Model<C> => ({
   ...remember(model),
   stateDirty: model.stateDirty || state,
   queueDirty: model.queueDirty || queue,
 });
 
 /** Applies a decoded message; only full state and queue reads make the facts current. */
-export const apply = ({
+export const apply = <C extends Clip>({
   model,
   message,
   source,
 }: {
-  readonly model: Model;
-  readonly message: DecodedMessage;
+  readonly model: Model<C>;
+  readonly message: DecodedMessage<C>;
   readonly source: CommandReply;
-}): Result.Result<readonly [Disposition, Model], ReactorError> => {
-  const done = (next: Model): Result.Result<readonly [Disposition, Model], ReactorError> =>
+}): Result.Result<readonly [Disposition, Model<C>], ReactorError> => {
+  const done = (next: Model<C>): Result.Result<readonly [Disposition, Model<C>], ReactorError> =>
     Result.succeed(["applied", next.cause === undefined ? remember(next) : next]);
   if (message.type === "unknown") return done(model);
   if (message.type === "state_update")
@@ -253,7 +253,7 @@ export const apply = ({
   const clip = message.data.clip;
   const previous = model.clips.get(clip.clip_id);
   if (previous === undefined && model.clips.size >= model.maxClips) return Result.fail(overflow());
-  const put = (lifecycle: ClipObservation["lifecycle"]): Model => ({
+  const put = (lifecycle: ClipObservation<C>["lifecycle"]): Model<C> => ({
     ...model,
     clips: new Map(model.clips).set(clip.clip_id, { clip, source, lifecycle }),
   });
@@ -296,7 +296,7 @@ export const apply = ({
 };
 
 /** A setting's acknowledgement invalidates the state only when it differs from it. */
-const settingChanged = (model: Model, message: DecodedMessage): Model => {
+const settingChanged = <C extends Clip>(model: Model<C>, message: DecodedMessage<C>): Model<C> => {
   const state = model.state;
   switch (message.type) {
     case "seed_accepted":
@@ -332,9 +332,9 @@ const settingChanged = (model: Model, message: DecodedMessage): Model => {
 // Acceptance evidence
 // ---------------------------------------------------------------------------
 
-export interface Acceptance {
+export interface Acceptance<C extends Clip = Clip> {
   readonly submissionId: string;
-  readonly clip: Clip;
+  readonly clip: C;
   readonly evidence: { readonly kind: "correlated" | "metadata"; readonly source: CommandReply };
 }
 
@@ -413,15 +413,15 @@ export const submissionFromMetadata = ({
 };
 
 /** Only the exact captured prompt and metadata, in the submission's generation, prove acceptance. */
-export const acceptanceFor = ({
+export const acceptanceFor = <C extends Clip>({
   identity,
   clip,
   source,
 }: {
   readonly identity: Identity;
-  readonly clip: Clip;
+  readonly clip: C;
   readonly source: CommandReply;
-}): Acceptance | undefined => {
+}): Acceptance<C> | undefined => {
   if (
     identity.generation !== source.generation ||
     identity.metadata !== clip.metadata ||

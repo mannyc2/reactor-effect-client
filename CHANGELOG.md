@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Source.model`; the playout refuses a source whose model name differs from its own before sending commands.
 - `H3Source.model`, the H3 clip model and its documented request limits.
 - `Playout.Service<Req>` for application services that plan another model's requests.
+- `FastH3`, a provider for Reactor's FastH3 (`reactor/fast-h3`) over a connected `Session`. Requests take a frame or clip id as opener and closer, with lengths of 5.167–14.375 s aligned up to the frame grid. `ReactorTest` simulates its queues and playback. One paid raw-session probe confirmed the deployment contract and observed length alignment; no paid run has qualified this provider or a FastH3 playout. Hosted FastH3 refused H3's undeclared `reference_images` field.
 
 ### Changed
 

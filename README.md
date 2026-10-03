@@ -110,11 +110,11 @@ The hosted figures come from paid runs between 2026-09-24 and 2026-10-01, on the
 
 ## Packages
 
-| Package                                        | What it gives you                                                                                                                         | Runs in                |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| [`reactor-effect-client`](./packages/client)   | `Reactor` and `Session`, `CoordinatorClient` and tokens, `H3`, `ViduS2Avatar`, `Playout` with `H3Source` and `LocalSource`, `ReactorTest` | Node, Bun and browsers |
-| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the browser's `RTCPeerConnection`, and `BrowserMedia` for the session's tracks                                           | Browsers               |
-| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a Node-API addon over Reactor's `reactor-webrtc` crate, prebuilt for Linux x64 (glibc) and macOS on Apple silicon         | Node and Bun           |
+| Package                                        | What it gives you                                                                                                                                   | Runs in                |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| [`reactor-effect-client`](./packages/client)   | `Reactor` and `Session`, `CoordinatorClient` and tokens, `H3`, `FastH3`, `ViduS2Avatar`, `Playout` with `H3Source` and `LocalSource`, `ReactorTest` | Node, Bun and browsers |
+| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the browser's `RTCPeerConnection`, and `BrowserMedia` for the session's tracks                                                     | Browsers               |
+| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a Node-API addon over Reactor's `reactor-webrtc` crate, prebuilt for Linux x64 (glibc) and macOS on Apple silicon                   | Node and Bun           |
 
 ```sh
 npm install --save-exact reactor-effect-client effect@4.0.0
@@ -155,8 +155,9 @@ lists every run with its date, commit and spend, and what has not run on hosted 
 
 ## Status
 
-reactor-effect is an independent project, not an official Reactor SDK. It supports H3 Reference
-Turbo Realtime today. [Limits and support](https://mannyc2.github.io/reactor-effect-client/reference/limits/) says which
+reactor-effect is an independent project, not an official Reactor SDK. H3 Reference Turbo Realtime,
+FastH3 and Vidu S2-Avatar have providers; only H3 has a playout source.
+[Limits and support](https://mannyc2.github.io/reactor-effect-client/reference/limits/) says which
 platforms it runs on and what has not been exercised on hosted Reactor yet. It is at 0.x, so a minor release can still change the API; the
 [changelog](./CHANGELOG.md) says what changed and how to upgrade. Every release is published to npm
 with provenance by the [release workflow](./.github/workflows/release.yml). Protocol material and

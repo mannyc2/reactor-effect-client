@@ -26,10 +26,11 @@ reactor-effect is for Effect applications, and adds:
 
 ## Which models does it support?
 
-H3 Reference Turbo Realtime (`reactor/h3-reference-to-video-turbo-realtime`) and Vidu S2-Avatar
-(`reactor/vidu-s2-avatar`). Each has a provider and paid runs on hosted Reactor, Vidu S2-Avatar's
-through the raw `Session` so far; only H3 has a playout source. FastH3 and Reactor's other models
-are not supported yet, though `Reactor` and `Session` take any model name. See
+H3 Reference Turbo Realtime (`reactor/h3-reference-to-video-turbo-realtime`), FastH3
+(`reactor/fast-h3`) and Vidu S2-Avatar (`reactor/vidu-s2-avatar`) each have a provider, and
+`ReactorTest` simulates all three. Only H3 has a playout source. FastH3 has one paid raw `Session`
+probe; its provider has not been qualified on hosted Reactor. Other models can use `Reactor` and
+`Session`, which take any model name. See [FastH3](/reactor-effect-client/concepts/h3/#fasth3),
 [A talking character](/reactor-effect-client/guides/avatar/) and
 [Limits](/reactor-effect-client/reference/limits/#models).
 

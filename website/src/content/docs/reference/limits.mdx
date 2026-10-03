@@ -33,6 +33,11 @@ provider in two `character` runs on Effect 4.0.0 (2026-10-02): one passed every 
 the other the native connection failed with a `Protocol` failure right after the provider's first
 command, for a cause not yet known.
 
+FastH3 has one paid raw `Session` probe
+([2026-10-03](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.10.0-fasth3/summary.md)).
+It measured sample lengths and read the state, queues and history; it refused the undeclared
+`reference_images: []` key. The FastH3 provider has not been qualified on hosted Reactor.
+
 **Locally and in CI only:**
 
 - the browser host, against DOM fakes and, for media, real Chrome talking to the native host;
@@ -42,29 +47,34 @@ command, for a cause not yet known.
 - the native media path under load, against a local libwebrtc sender: see
   [measured performance](/reactor-effect-client/guides/native/#measured-performance);
 - 0.9.0's `Playout.place` and `follows`, on `ReactorTest`;
-- the `ViduS2Avatar` provider and the avatar example, on `ReactorTest`.
+- the `ViduS2Avatar` provider and the avatar example, on `ReactorTest`;
+- the `FastH3` provider, on `ReactorTest`.
 
 **Not yet exercised anywhere:** TURN relays with hosted credentials, native media published on to a
 browser or a stream ingest, sessions longer than a few minutes on hosted Reactor, and dedicated
 physical machines: the native performance figures come from a 4-vCPU container and GitHub's
 runners.
 
-`ReactorTest` models what H3 and Vidu S2-Avatar do, with delays drawn from paid runs. It does not model hosted
-latency as a real network varies it, billing as Reactor charges it, TURN relays or interop. A
-rehearsal on it is never evidence of hosted behaviour.
+`ReactorTest` models H3, FastH3 and Vidu S2-Avatar. H3's and Vidu's delays are drawn from paid runs;
+FastH3 borrows H3's timings, and its `fastH3History` defaults to eight because hosted history
+capacity remains unmeasured. It does not model hosted latency as a real network varies it,
+billing as Reactor charges it, TURN relays or interop. A rehearsal on it is never evidence of
+hosted behaviour.
 
 ## Models
 
 The SDK targets H3 Reference Turbo Realtime (`reactor/h3-reference-to-video-turbo-realtime`),
-against its documented 0.5.5 schema, and Vidu S2-Avatar (`reactor/vidu-s2-avatar`) through
-`ViduS2Avatar`. `H3.make` reads the deployment's schema and fails any command
-the deployment lacks with `UnsupportedCapability` before sending it; the hosted deployment reports
-its version as `v0.0.0`.
+against its documented 0.5.5 schema, FastH3 (`reactor/fast-h3`) through `FastH3`, and Vidu S2-Avatar
+(`reactor/vidu-s2-avatar`) through `ViduS2Avatar`. `H3.make` reads the deployment's schema and fails
+any command the deployment lacks with `UnsupportedCapability` before sending it; the hosted
+deployment reports its version as `v0.0.0`.
 
 `Reactor`, `Session` and the hosts are not specific to H3: `reactor.create` takes any model name,
-and `session.command(name, data)` sends any command. H3 and Vidu S2-Avatar have providers and
-paid runs on hosted Reactor, Vidu S2-Avatar's through the raw `Session` so far; only H3 has a
-playout source. FastH3 and Reactor's other models are not supported yet.
+and `session.command(name, data)` sends any command. H3, FastH3 and Vidu S2-Avatar have providers;
+only H3 has a playout source. Create each session with its provider's `modelName`.
+`H3.make` checks declared commands rather than identifying the model, so it can admit a FastH3
+deployment; use `FastH3.make` to send FastH3's frame arguments. `FastH3.make` refuses an H3
+deployment with `UnsupportedCapability` before sending model commands.
 On Node and Bun, a Vidu S2-Avatar caller speaks only through `say`: the native host can't publish a
 microphone track.
 
@@ -117,6 +127,17 @@ A request H3 would refuse fails locally with outcome `not-submitted`, before any
 
 H3's text budget, about 2,000 tokens, is enforced by H3 at build: a longer prompt is accepted and
 then fails its clip. See [the H3 provider](/reactor-effect-client/concepts/h3/).
+
+## FastH3's limits
+
+`FastH3.Request` accepts 5.167–14.375 s. Lengths align up on its grid of 124 frames, then steps of
+17, at 24 fps: the rounded 5.167 s minimum represents 124 frames, and 6 s builds 158 frames
+(6.583 s). `start` and `end` each take an image reference or a clip id, for an opener and closer;
+there are no H3 reference-image or audio lists. Metadata shares the 2,000-character bound,
+including the acceptance envelope. Reactor enforces the 1,024-token prompt budget at enqueue.
+The paid probe sampled this length rule; it did not measure every length, history capacity,
+dependent build order or the documented stop drain. See
+[FastH3](/reactor-effect-client/concepts/h3/#fasth3).
 
 ## Security
 

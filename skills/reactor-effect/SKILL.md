@@ -1,17 +1,17 @@
 ---
 name: reactor-effect
-description: Build Reactor real-time video applications with reactor-effect, the Effect (effect-ts v4) SDK. Use when code imports `reactor-effect-client`, `reactor-effect-browser` or `reactor-effect-native`; when writing Effect code that opens Reactor sessions, drives the H3 model or a Vidu S2-Avatar character, keeps a channel on air with `Playout`, reads decoded frames in Node or Bun, or tests against `ReactorTest`. SKIP for Reactor's official `@reactor-team/js-sdk` or Python `reactor-sdk` without Effect.
+description: Build Reactor real-time video applications with reactor-effect, the Effect (effect-ts v4) SDK. Use when code imports `reactor-effect-client`, `reactor-effect-browser` or `reactor-effect-native`; when writing Effect code that opens Reactor sessions, drives H3, FastH3 or a Vidu S2-Avatar character, keeps a channel on air with `Playout`, reads decoded frames in Node or Bun, or tests against `ReactorTest`. SKIP for Reactor's official `@reactor-team/js-sdk` or Python `reactor-sdk` without Effect.
 ---
 
 # reactor-effect
 
 reactor-effect is an independent Effect SDK for [Reactor](https://reactor.inc)'s real-time video
-models. A session is a scoped Effect resource; H3 and Vidu S2-Avatar are providers over it;
+models. A session is a scoped Effect resource; H3, FastH3 and Vidu S2-Avatar are providers over it;
 `Playout` keeps H3 on air across sessions; `ReactorTest` is Reactor simulated in memory for offline runs and tests.
 
 **Packages** (one version for all, published to npm):
 
-- `reactor-effect-client`: `Reactor`, `Session`, `CoordinatorClient`, `H3`, `ViduS2Avatar`,
+- `reactor-effect-client`: `Reactor`, `Session`, `CoordinatorClient`, `H3`, `FastH3`, `ViduS2Avatar`,
   `H3Source`, `LocalSource`, `Playout`, `Media`, `Peer`, `ReactorError`, `ReactorTest`. Portable: Node, Bun and
   browsers.
 - `reactor-effect-browser`: `BrowserPeer.layer` on `RTCPeerConnection`, `BrowserMedia` for tracks.

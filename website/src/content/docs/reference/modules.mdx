@@ -17,7 +17,7 @@ comments state every option's default and bound; this page is the map.
 
 ## `reactor-effect-client`
 
-The portable core: the coordinator's HTTP API, sessions, the wire protocol, the H3 and Vidu
+The portable core: the coordinator's HTTP API, sessions, the wire protocol, the H3, FastH3 and Vidu
 S2-Avatar providers, the playout and the simulated Reactor. It runs on Node, Bun and browsers, and importing it selects no
 host and loads no native code.
 
@@ -27,6 +27,7 @@ host and loads no native code.
 | `Session`           | One session: its status, events, commands, uploads, recordings, media and close report |
 | `CoordinatorClient` | Reactor's HTTP API: tokens, pricing, inspection, termination and recordings    |
 | `H3`                | The H3 Reference Turbo Realtime provider over a session                        |
+| `FastH3`            | The FastH3 provider over a session: frames or clip ids as opener and closer     |
 | `ViduS2Avatar`      | The Vidu S2-Avatar provider over a session: an avatar and its calls            |
 | `Playout`           | A keyed schedule in priority lanes, aired across sessions it renews            |
 | `H3Source`          | A paid H3 session as a playout source                                          |
@@ -65,6 +66,14 @@ See [Sessions and tokens](/reactor-effect-client/concepts/sessions/).
 `h3ReferenceTurboRealtime`, `alignFrames`, `isRequestableSeconds`, `estimateTokens`; H3's
 `Clip`, `Queue` and `State` Schemas; `Acceptance`, `Submission`, `ClipOperation` and
 `ProviderSnapshot`. See [The H3 provider](/reactor-effect-client/concepts/h3/).
+
+### `FastH3`
+
+`reactor-effect-client/FastH3`. `make`, `Provider` and `Options`; `modelName`, `tracks`,
+`documentedVersion`, `source`, `requestSeconds` and `canvases`; the `Request`, `Clip`, `Queue`
+and `State` Schemas; `Acceptance`, `Submission`, `ProviderSnapshot` and the clip's operation facts.
+Frames or clip ids supply a clip's opener and closer. There is no FastH3 playout source yet.
+See [FastH3](/reactor-effect-client/concepts/h3/#fasth3).
 
 ### `ViduS2Avatar`
 

@@ -7,6 +7,8 @@ import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import { ReactorError } from "../../ReactorError.js";
 import type { MessageType } from "./messages.js";
+import type { Clip } from "./messages.js";
+import type { Family, RequestFields } from "./family.js";
 import { documentedVersion, modelName, source } from "./profile.js";
 
 const Upload = Schema.Struct({
@@ -78,9 +80,12 @@ export type ControlCommand = Exclude<CommandName, ReplyCommand>;
 const required: ReadonlyArray<CommandName> = ["enqueue", "get_state", "get_queue"];
 
 /** What this adapter supports, and what the deployment it checked declares. */
-export interface Contract {
-  readonly modelName: typeof modelName;
-  readonly documentedVersion: typeof documentedVersion;
+export interface Contract<
+  Name extends string = typeof modelName,
+  Version extends string = typeof documentedVersion,
+> {
+  readonly modelName: Name;
+  readonly documentedVersion: Version;
   readonly source: string;
   /**
    * Whether the deployment's `enqueue` declares `reference_audios`. When it
@@ -123,12 +128,14 @@ const Document = Schema.Struct({
 const Properties = Schema.Struct({ properties: Schema.Record(Schema.String, Schema.Json) });
 const Reference = Schema.Struct({ $ref: Schema.String });
 
-const incompatible = (reason: string): ReactorError =>
-  ReactorError.fromCode(
-    "UnsupportedCapability",
-    `Deployment does not offer H3 ${documentedVersion}: ${reason}`,
-    { operation: "H3 schema", outcome: "not-submitted" },
-  );
+const incompatible =
+  (version: string) =>
+  (reason: string): ReactorError =>
+    ReactorError.fromCode(
+      "UnsupportedCapability",
+      `Deployment does not offer H3 ${version}: ${reason}`,
+      { operation: "H3 schema", outcome: "not-submitted" },
+    );
 
 /**
  * Admits a deployment whose OpenAPI document offers the commands a provider
@@ -136,47 +143,62 @@ const incompatible = (reason: string): ReactorError =>
  * where they arrive: a message that does not match its Schema fails the
  * provider as `Protocol`.
  */
-export const deploymentContract = (
-  openapi: Schema.Json | undefined,
-): Result.Result<Contract, ReactorError> =>
-  Result.gen(function* () {
-    const document = yield* Result.mapError(Schema.decodeUnknownResult(Document)(openapi), () =>
-      incompatible("not an OpenAPI 3.0 or 3.1 document"),
-    );
-    const components = document.components?.schemas ?? {};
-    const resolve = (schema: Schema.Json): Schema.Json => {
-      const reference = Schema.decodeUnknownResult(Reference)(schema);
-      if (Result.isFailure(reference)) return schema;
-      const name = reference.success.$ref.replace("#/components/schemas/", "");
-      return components[name] ?? schema;
-    };
-    let referenceAudio = false;
-    const commands = new Set<CommandName>();
-    for (const name of Struct.keys(Commands)) {
-      const operation = Schema.decodeUnknownResult(Operation)(document.paths[`/events/${name}`]);
-      if (Result.isFailure(operation)) {
-        if (required.includes(name)) return yield* Result.fail(incompatible(`command ${name}`));
-        continue;
+export const deploymentContractFor =
+  <Name extends string, Version extends string>(
+    family: Pick<
+      Family<never, RequestFields, Clip, Name, Version>,
+      "modelName" | "documentedVersion" | "source" | "refuses"
+    >,
+  ) =>
+  (openapi: Schema.Json | undefined): Result.Result<Contract<Name, Version>, ReactorError> =>
+    Result.gen(function* () {
+      const refuse = incompatible(family.documentedVersion);
+      const document = yield* Result.mapError(Schema.decodeUnknownResult(Document)(openapi), () =>
+        refuse("not an OpenAPI 3.0 or 3.1 document"),
+      );
+      const components = document.components?.schemas ?? {};
+      const resolve = (schema: Schema.Json): Schema.Json => {
+        const reference = Schema.decodeUnknownResult(Reference)(schema);
+        if (Result.isFailure(reference)) return schema;
+        const name = reference.success.$ref.replace("#/components/schemas/", "");
+        return components[name] ?? schema;
+      };
+      let referenceAudio = false;
+      const commands = new Set<CommandName>();
+      for (const name of Struct.keys(Commands)) {
+        const operation = Schema.decodeUnknownResult(Operation)(document.paths[`/events/${name}`]);
+        if (Result.isFailure(operation)) {
+          if (required.includes(name)) return yield* Result.fail(refuse(`command ${name}`));
+          continue;
+        }
+        commands.add(name);
+        if (name !== "enqueue") continue;
+        const body = operation.success.post.requestBody?.content["application/json"].schema;
+        const declared =
+          body === undefined ? undefined : Schema.decodeUnknownResult(Properties)(resolve(body));
+        if (
+          family.refuses !== undefined &&
+          declared !== undefined &&
+          Result.isSuccess(declared) &&
+          Object.hasOwn(declared.success.properties, family.refuses)
+        )
+          return yield* Result.fail(refuse(`enqueue declares ${family.refuses}`));
+        referenceAudio =
+          declared !== undefined &&
+          Result.isSuccess(declared) &&
+          Object.hasOwn(declared.success.properties, "reference_audios");
       }
-      commands.add(name);
-      if (name !== "enqueue") continue;
-      const body = operation.success.post.requestBody?.content["application/json"].schema;
-      const declared =
-        body === undefined ? undefined : Schema.decodeUnknownResult(Properties)(resolve(body));
-      referenceAudio =
-        declared !== undefined &&
-        Result.isSuccess(declared) &&
-        Object.hasOwn(declared.success.properties, "reference_audios");
-    }
-    return {
-      modelName,
-      documentedVersion,
-      source,
-      referenceAudio,
-      commands,
-      deployment: {
-        title: document.info?.title ?? null,
-        version: document.info?.version ?? null,
-      },
-    };
-  });
+      return {
+        modelName: family.modelName,
+        documentedVersion: family.documentedVersion,
+        source: family.source,
+        referenceAudio,
+        commands,
+        deployment: {
+          title: document.info?.title ?? null,
+          version: document.info?.version ?? null,
+        },
+      };
+    });
+
+export const deploymentContract = deploymentContractFor({ modelName, documentedVersion, source });

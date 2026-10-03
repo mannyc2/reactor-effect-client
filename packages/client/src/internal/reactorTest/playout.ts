@@ -1,5 +1,5 @@
 /**
- * One simulated H3 session at work: its model takes one input at a time, and
+ * One simulated H3 or FastH3 session: its model takes one input at a time, and
  * its builds, boundaries and clips' media run on the session's runner.
  */
 import * as Duration from "effect/Duration";
@@ -10,20 +10,51 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Wire from "../wire.js";
 import * as H3 from "./h3.js";
-import type { Clip, Message } from "./h3.js";
 import * as Media from "./media.js";
 import type { Link } from "./peer.js";
 import { monotonic, until } from "./runner.js";
-import type { Connection, Model, Runner, Simulation } from "./runner.js";
+import type { Connection, Message, Model, Runner, Simulation } from "./runner.js";
+
+type Clip = Pick<H3.Clip, "clip_id" | "frames" | "seconds">;
+type Output<M extends Message> =
+  | Exclude<H3.Output, { readonly _tag: "Reply" | "Broadcast" | "Play" | "Flush" }>
+  | { readonly _tag: "Reply"; readonly requestId: string; readonly message: M }
+  | { readonly _tag: "Broadcast"; readonly message: M }
+  | {
+      readonly _tag: "Play";
+      readonly clip: Clip;
+      readonly startedAt: number;
+      readonly token: number;
+    }
+  | { readonly _tag: "Flush"; readonly clip: Clip };
+type Playing = Omit<Extract<Output<Message>, { readonly _tag: "Play" }>, "_tag">;
+interface Machine<S, M extends Message> {
+  readonly documented: {
+    readonly fps: number;
+    readonly tracks: { readonly video: string; readonly audio: string };
+  };
+  readonly initial: S;
+  readonly step: (input: {
+    readonly model: S;
+    readonly input: H3.Input;
+    readonly env: H3.Env & { readonly connected: boolean; readonly history: number };
+  }) => readonly [S, ReadonlyArray<Output<M>>];
+  readonly deployment: (referenceAudio: boolean) => unknown;
+  readonly describe: Simulation<M>["describe"];
+  readonly hasImages?: (args: Schema.JsonObject) => boolean;
+}
 
 const range = (count: number) => Array.from({ length: Math.max(0, count) }, (_, index) => index);
 
-const start = Effect.fnUntraced(function* (runner: Runner<Message>) {
+const start = Effect.fnUntraced(function* <
+  S extends { readonly playing: Playing | undefined },
+  M extends Message,
+>(machine: Machine<S, M>, runner: Runner<M>) {
   const { options, faults, timing } = runner.environment;
-  const model = yield* Ref.make(H3.initial);
+  const model = yield* Ref.make(machine.initial);
   const lock = yield* Semaphore.make(1);
   const openapi = yield* Schema.decodeUnknownEffect(Wire.StructJson)(
-    H3.deployment(options.referenceAudio),
+    machine.deployment(options.referenceAudio),
   ).pipe(Effect.orDie);
 
   const later = (ms: number, input: H3.Input) => runner.later(ms, apply(input));
@@ -31,7 +62,7 @@ const start = Effect.fnUntraced(function* (runner: Runner<Message>) {
   const flush = (to: number, link: Link, clip: Clip, at: number) =>
     until(at).pipe(
       Effect.andThen(
-        runner.media(to, link, H3.documented.tracks.video, () =>
+        runner.media(to, link, machine.documented.tracks.video, () =>
           link.video({
             data: Media.render({
               clipId: clip.clip_id,
@@ -56,13 +87,13 @@ const start = Effect.fnUntraced(function* (runner: Runner<Message>) {
       const silent = yield* faults.standing((fault) => fault._tag === "NoAudio");
       const picture = video?._tag === "Video" ? video.video : "live";
       const { link, latency: delay } = connection;
-      const frameMs = 1000 / H3.documented.fps;
+      const frameMs = 1000 / machine.documented.fps;
       const past = (yield* monotonic) - startedAt - delay;
       const from = (step: number) => Math.max(0, Math.ceil(past / step));
       const frame = (index: number) =>
         until(startedAt + delay + index * frameMs).pipe(
           Effect.andThen(
-            runner.media(to, link, H3.documented.tracks.video, () =>
+            runner.media(to, link, machine.documented.tracks.video, () =>
               link.video({
                 data: Media.render({
                   clipId: clip.clip_id,
@@ -80,7 +111,7 @@ const start = Effect.fnUntraced(function* (runner: Runner<Message>) {
       const block = (index: number) =>
         until(startedAt + delay + index * Media.audioBlockMs).pipe(
           Effect.andThen(
-            runner.media(to, link, H3.documented.tracks.audio, () =>
+            runner.media(to, link, machine.documented.tracks.audio, () =>
               link.audio(
                 Media.tone({ clipId: clip.clip_id, first: index * Media.samplesPerBlock }),
               ),
@@ -103,7 +134,7 @@ const start = Effect.fnUntraced(function* (runner: Runner<Message>) {
     });
 
   /** `greeting` is a connection that just opened, which alone hears the state and queue. */
-  const perform = (output: H3.Output, greeting: number | undefined) =>
+  const perform = (output: Output<M>, greeting: number | undefined) =>
     Effect.gen(function* () {
       switch (output._tag) {
         case "Reply":
@@ -168,13 +199,15 @@ const start = Effect.fnUntraced(function* (runner: Runner<Message>) {
   function apply(input: H3.Input, greeting?: number): Effect.Effect<void> {
     return lock.withPermit(
       Effect.gen(function* () {
-        const [next, outputs] = H3.step({
+        const [next, outputs] = machine.step({
           model: yield* Ref.get(model),
           input,
           env: {
             now: yield* monotonic,
             generationCapacity: options.generationCapacity,
             playoutCapacity: options.playoutCapacity,
+            connected: (yield* runner.connections).size > 0,
+            history: options.fastH3History,
           },
         });
         yield* Ref.set(model, next);
@@ -185,7 +218,7 @@ const start = Effect.fnUntraced(function* (runner: Runner<Message>) {
 
   return {
     openapi,
-    outputs: [H3.documented.tracks.video, H3.documented.tracks.audio],
+    outputs: [machine.documented.tracks.video, machine.documented.tracks.audio],
     /** A clip already playing plays on to a connection that opens, which alone hears the state. */
     connected: (to, connection) =>
       Effect.gen(function* () {
@@ -206,7 +239,8 @@ const start = Effect.fnUntraced(function* (runner: Runner<Message>) {
       Effect.gen(function* () {
         const images = args.reference_images;
         const invalid =
-          name === "enqueue" && Array.isArray(images) && images.length > 0
+          name === "enqueue" &&
+          (machine.hasImages?.(args) ?? (Array.isArray(images) && images.length > 0))
             ? yield* faults.trip((candidate) => candidate._tag === "InvalidImage")
             : undefined;
         const flagged =
@@ -241,8 +275,20 @@ const start = Effect.fnUntraced(function* (runner: Runner<Message>) {
   } satisfies Model;
 });
 
+/** The same media, timers and command delivery for either pure machine. */
+export const simulationOf = <
+  S extends { readonly playing: Playing | undefined },
+  M extends Message,
+>(
+  machine: Machine<S, M>,
+): Simulation<M> => ({
+  describe: machine.describe,
+  start: (runner) => start(machine, runner),
+});
+
 /** H3 as the runner simulates it. */
-export const simulation: Simulation<Message> = {
+export const simulation = simulationOf({
+  ...H3,
   describe: (message) =>
     message.type === "queue_update" || message.type === "state_update"
       ? undefined
@@ -250,5 +296,4 @@ export const simulation: Simulation<Message> = {
           name: message.type,
           ...("clip" in message.data ? { clipId: message.data.clip.clip_id } : {}),
         },
-  start,
-};
+});

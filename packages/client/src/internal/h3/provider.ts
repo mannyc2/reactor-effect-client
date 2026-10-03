@@ -17,39 +17,97 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import type {
-  ControlResult,
-  Options,
-  PrepareHooks,
-  Provider,
-  ProviderEvent,
-  Reply,
-} from "../../H3.js";
+import type * as H3 from "../../H3.js";
 import { CommandFailure, ReactorError, Remote } from "../../ReactorError.js";
 import type { MessageCode } from "../../ReactorError.js";
 import type { CommandReply, Session, SessionEvent, UploadReference } from "../../Session.js";
 import * as Submission from "./submission.js";
 import * as Deadline from "../deadline.js";
 import * as Hub from "../hub.js";
-import { Commands, deploymentContract } from "./commands.js";
+import { Commands, deploymentContractFor } from "./commands.js";
 import type {
   CommandArgs,
   CommandName,
   ControlCommand,
   ReplyCommand,
   ReplyType,
+  Contract,
 } from "./commands.js";
-import { decodeMessage, Payloads } from "./messages.js";
-import type { Clip, Message } from "./messages.js";
+import type { Family, RequestFields } from "./family.js";
+import { decodeMessageFor, payloadsFor } from "./messages.js";
+import type { Clip, DecodedMessage, Message, MessageType, Payload } from "./messages.js";
 import * as Operations from "./operations.js";
-import { canvases } from "./profile.js";
 import type { CanvasAspect } from "./profile.js";
-import { materialOf, validateAudioReference, validateReference } from "./references.js";
+import { materialOf } from "./references.js";
 import type { ValidatedAudioReference, ValidatedReference } from "./references.js";
-import { enqueueArguments, Request } from "./request.js";
-import type { Captured } from "./request.js";
 import * as State from "./state.js";
 import type { Acceptance, Identity } from "./state.js";
+
+export type Reply<K extends MessageType, C extends Clip = Clip> = Omit<H3.Reply<K>, "value"> & {
+  readonly value: Payload<K, C>;
+};
+export type ControlResult<C extends Clip = Clip> =
+  | Exclude<H3.ControlResult, { readonly _tag: "Reply" }>
+  | (Omit<Extract<H3.ControlResult, { readonly _tag: "Reply" }>, "message"> & {
+      readonly message: Message<MessageType, C>;
+    });
+export type ProviderEvent<C extends Clip = Clip> =
+  | Exclude<H3.ProviderEvent, { readonly _tag: "Message" | "Acceptance" }>
+  | (Omit<Extract<H3.ProviderEvent, { readonly _tag: "Message" }>, "message"> & {
+      readonly message: DecodedMessage<C>;
+    })
+  | { readonly _tag: "Acceptance"; readonly acceptance: Acceptance<C> };
+export type ProviderObservation<C extends Clip = Clip> = Omit<
+  H3.ProviderObservation,
+  "initial" | "events"
+> & {
+  readonly initial: State.ProviderSnapshot<C>;
+  readonly events: Stream.Stream<ProviderEvent<C>, ReactorError>;
+};
+export type PrepareHooks<E = never, C extends Clip = Clip> = Omit<H3.PrepareHooks<E>, "result"> & {
+  readonly result?: (
+    submissionId: string,
+    result: Result.Result<Acceptance<C>, CommandFailure | E>,
+  ) => Effect.Effect<void>;
+};
+interface ProviderMembers<Req, C extends Clip, Name extends string, Version extends string> {
+  readonly contract: Contract<Name, Version>;
+  readonly snapshot: Effect.Effect<State.ProviderSnapshot<C>>;
+  readonly changes: Stream.Stream<State.ProviderSnapshot<C>>;
+  readonly observe: (
+    options?: H3.ObservationOptions,
+  ) => Effect.Effect<ProviderObservation<C>, ReactorError, Scope.Scope>;
+  readonly events: (
+    options?: H3.ObservationOptions,
+  ) => Stream.Stream<ProviderEvent<C>, ReactorError>;
+  readonly acceptance: (submissionId: string) => Effect.Effect<Acceptance<C> | undefined>;
+  readonly operation: (
+    submission: Pick<Submission.Submission<Acceptance<C>, unknown>, "id">,
+  ) => Effect.Effect<Operations.ClipOperation<C>, ReactorError, Scope.Scope>;
+  readonly prepare: <E = never>(
+    request: Req,
+    hooks?: PrepareHooks<E, C>,
+  ) => Effect.Effect<
+    Submission.Submission<Acceptance<C>, CommandFailure | E>,
+    ReactorError | CommandFailure
+  >;
+  readonly enqueue: (request: Req) => Effect.Effect<Acceptance<C>, CommandFailure>;
+  readonly getQueue: Effect.Effect<Reply<"queue_update", C>, CommandFailure>;
+  readonly pop: (clipId: string) => Effect.Effect<Reply<"clip_popped", C>, CommandFailure>;
+  readonly move: (
+    clipId: string,
+    position: number,
+  ) => Effect.Effect<Reply<"clip_moved", C>, CommandFailure>;
+  readonly play: (clipId?: string) => Effect.Effect<ControlResult<C>, CommandFailure>;
+  readonly stop: Effect.Effect<ControlResult<C>, CommandFailure>;
+}
+export type Provider<
+  Req = H3.Request,
+  C extends Clip = Clip,
+  Name extends string = typeof H3.modelName,
+  Version extends string = typeof H3.documentedVersion,
+> = Omit<H3.Provider, keyof ProviderMembers<Req, C, Name, Version>> &
+  ProviderMembers<Req, C, Name, Version>;
 
 /** Bounds on what the provider retains; none is an application setting. */
 const bounds = {
@@ -61,8 +119,8 @@ const bounds = {
   observation: 1024,
 };
 
-interface Pending extends Identity {
-  readonly deferred: Deferred.Deferred<Acceptance, ReactorError>;
+interface Pending<C extends Clip = Clip> extends Identity {
+  readonly deferred: Deferred.Deferred<Acceptance<C>, ReactorError>;
   /** The enqueue still awaits its reply, the one evidence that correlates. */
   readonly awaiting: boolean;
   /**
@@ -71,19 +129,19 @@ interface Pending extends Identity {
    * decides whether it counts, unless it stays away for the reconcile window:
    * then the evidence decides.
    */
-  readonly held: Acceptance | undefined;
+  readonly held: Acceptance<C> | undefined;
 }
 
-interface Internal {
-  readonly model: State.Model;
+interface Internal<C extends Clip = Clip> {
+  readonly model: State.Model<C>;
   readonly closed: boolean;
   readonly fatal: ReactorError | undefined;
-  readonly pending: ReadonlyMap<string, Pending>;
-  readonly acceptances: ReadonlyMap<string, Acceptance>;
-  readonly operations: Operations.Table;
+  readonly pending: ReadonlyMap<string, Pending<C>>;
+  readonly acceptances: ReadonlyMap<string, Acceptance<C>>;
+  readonly operations: Operations.Table<C>;
 }
 
-type Transition = readonly [Internal, ReadonlyArray<Effect.Effect<void>>];
+type Transition<C extends Clip = Clip> = readonly [Internal<C>, ReadonlyArray<Effect.Effect<void>>];
 
 const localFailure = (operation: string, cause: ReactorError | CommandFailure): CommandFailure =>
   CommandFailure.from(cause, { ...cause.context, operation, outcome: "not-submitted" });
@@ -126,7 +184,7 @@ const hex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 /** The clips a message lists: a queue's three lists, or a lifecycle message's one clip. */
-const clipsOf = (message: Message) => {
+const clipsOf = <C extends Clip>(message: Message<MessageType, C>): ReadonlyArray<C> => {
   if (message.type === "queue_update")
     return [...message.data.generation, ...message.data.playout, ...message.data.history];
   return "clip" in message.data ? [message.data.clip] : [];
@@ -153,7 +211,7 @@ const endedByReactor = (error: ReactorError): boolean =>
   error.reason._tag === "TerminalSession" || error.reason._tag === "Moderated";
 
 /** Whether a snapshot at `revision` already reflects `event`. */
-const covered = (event: ProviderEvent, revision: bigint): boolean => {
+const covered = <C extends Clip>(event: ProviderEvent<C>, revision: bigint): boolean => {
   switch (event._tag) {
     case "Acceptance":
       return false;
@@ -164,7 +222,15 @@ const covered = (event: ProviderEvent, revision: bigint): boolean => {
   }
 };
 
-const build = Effect.fnUntraced(function* (session: Session, options: Options) {
+const build = Effect.fnUntraced(function* <
+  Req,
+  Captured extends RequestFields,
+  C extends Clip,
+  Name extends string,
+  Version extends string,
+>(session: Session, family: Family<Req, Captured, C, Name, Version>, options: H3.Options) {
+  const Payloads = payloadsFor(family.clip);
+  const decodeMessage = decodeMessageFor<C>(Payloads);
   const scope = yield* Effect.scope;
   const crypto = yield* Crypto.Crypto;
   const limits = {
@@ -186,13 +252,14 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       ),
     ),
   );
-  const hub = yield* Hub.make<ProviderEvent>();
+  const hub = yield* Hub.make<ProviderEvent<C>>();
   const fatal = yield* Deferred.make<ReactorError>();
   const counter = yield* Ref.make(0n);
   const uploads = yield* Ref.make<ReadonlyMap<string, UploadReference>>(new Map());
   const uploadGate = yield* Semaphore.make(1);
-  const state = yield* SubscriptionRef.make<Internal>({
-    model: State.initial({
+  const state = yield* SubscriptionRef.make<Internal<C>>({
+    model: State.initial<C>({
+      coherent: family.coherent,
       sessionId: session.id,
       generation: observation.initial.generation,
       revision: observation.revision,
@@ -202,11 +269,11 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     fatal: undefined,
     pending: new Map(),
     acceptances: new Map(),
-    operations: Operations.empty(bounds.operations),
+    operations: Operations.empty<C>(bounds.operations),
   });
 
   /** Applies a transition atomically, then settles the waiters it names, in order. */
-  const step = (transition: (internal: Internal) => Transition): Effect.Effect<void> =>
+  const step = (transition: (internal: Internal<C>) => Transition<C>): Effect.Effect<void> =>
     SubscriptionRef.modify(state, (internal) => {
       const [next, effects] = transition(internal);
       return [effects, next] as const;
@@ -214,7 +281,11 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       Effect.flatMap((effects) => Effect.forEach(effects, (effect) => effect, { discard: true })),
     );
 
-  const withPending = (internal: Internal, id: string, pending: Pending | undefined): Internal => {
+  const withPending = (
+    internal: Internal<C>,
+    id: string,
+    pending: Pending<C> | undefined,
+  ): Internal<C> => {
     const next = new Map(internal.pending);
     if (pending === undefined) next.delete(id);
     else next.set(id, pending);
@@ -222,7 +293,11 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   };
 
   /** Records a submission's acceptance, resolves its waiter and announces it. */
-  const record = (internal: Internal, entry: Pending, acceptance: Acceptance): Transition => {
+  const record = (
+    internal: Internal<C>,
+    entry: Pending<C>,
+    acceptance: Acceptance<C>,
+  ): Transition<C> => {
     const acceptances = new Map(internal.acceptances);
     if (acceptances.size >= bounds.acceptances)
       acceptances.delete(acceptances.keys().next().value ?? "");
@@ -243,15 +318,15 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   };
 
   /** Held evidence decides once the reply cannot: it was lost, or it came without correlating. */
-  const decideHeld = (internal: Internal, id: string): Transition => {
+  const decideHeld = (internal: Internal<C>, id: string): Transition<C> => {
     const entry = internal.pending.get(id);
     return entry?.held === undefined ? [internal, []] : record(internal, entry, entry.held);
   };
 
   const sequence = (
-    internal: Internal,
-    transitions: ReadonlyArray<(internal: Internal) => Transition>,
-  ): Transition => {
+    internal: Internal<C>,
+    transitions: ReadonlyArray<(internal: Internal<C>) => Transition<C>>,
+  ): Transition<C> => {
     let current = internal;
     const effects: Array<Effect.Effect<void>> = [];
     for (const transition of transitions) {
@@ -263,10 +338,10 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   };
 
   /** Held evidence decides every pending acceptance it can. */
-  const decideAll = (internal: Internal): Transition =>
+  const decideAll = (internal: Internal<C>): Transition<C> =>
     sequence(
       internal,
-      [...internal.pending.keys()].map((id) => (current: Internal) => decideHeld(current, id)),
+      [...internal.pending.keys()].map((id) => (current: Internal<C>) => decideHeld(current, id)),
     );
 
   /**
@@ -276,7 +351,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
    */
   const failProvider =
     (error: ReactorError) =>
-    (internal: Internal): Transition => {
+    (internal: Internal<C>): Transition<C> => {
       if (internal.fatal !== undefined) return [internal, []];
       const [decided, recorded] = decideAll({
         ...internal,
@@ -302,8 +377,8 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     };
 
   const accept =
-    (clip: Clip, source: CommandReply) =>
-    (internal: Internal): Transition => {
+    (clip: C, source: CommandReply) =>
+    (internal: Internal<C>): Transition<C> => {
       const id = State.submissionFromMetadata({ namespace, metadata: clip.metadata });
       if (id === undefined) return [internal, []];
       const entry = internal.pending.get(id);
@@ -351,10 +426,10 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
 
   const reduce =
     (source: SessionEvent) =>
-    (internal: Internal): Transition => {
+    (internal: Internal<C>): Transition<C> => {
       if (internal.closed || internal.fatal !== undefined) return [internal, []];
       const [disposition, admitted] = State.admit({ model: internal.model, source });
-      let current: Internal = { ...internal, model: admitted };
+      let current: Internal<C> = { ...internal, model: admitted };
       const effects: Array<Effect.Effect<void>> = [];
       if (admitted.generation !== internal.model.generation) {
         effects.push(Ref.set(uploads, new Map()));
@@ -454,7 +529,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     SubscriptionRef.update(state, (internal) => ({ ...internal, closed: true })),
   );
 
-  const refusal = (internal: Internal, needsFacts: boolean): ReactorError | undefined =>
+  const refusal = (internal: Internal<C>, needsFacts: boolean): ReactorError | undefined =>
     internal.closed
       ? ReactorError.fromCode("Closed", "H3 provider scope is closed")
       : (internal.fatal ??
@@ -545,7 +620,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     operation: K,
     args: CommandArgs<K>,
     needsFacts = true,
-  ): Effect.Effect<Reply<ReplyType<K>>, CommandFailure> => {
+  ): Effect.Effect<Reply<ReplyType<K>, C>, CommandFailure> => {
     const expected = Commands[operation].reply;
     return call(operation, args, needsFacts).pipe(
       Effect.flatMap(({ source, message }) =>
@@ -570,9 +645,9 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   const control = <K extends ControlCommand>(
     operation: K,
     args: CommandArgs<K>,
-  ): Effect.Effect<ControlResult, CommandFailure> =>
+  ): Effect.Effect<ControlResult<C>, CommandFailure> =>
     call(operation, args, true).pipe(
-      Effect.flatMap(({ source, message }): Effect.Effect<ControlResult, CommandFailure> => {
+      Effect.flatMap(({ source, message }): Effect.Effect<ControlResult<C>, CommandFailure> => {
         if (source.kind === "ack") return Effect.succeed({ _tag: "Acknowledged", source });
         if (message === undefined || message.type === "unknown")
           return Effect.fail(uncertain(operation, source, "Unexpected H3 control response"));
@@ -648,27 +723,6 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     );
   });
 
-  /** The request as the caller gave it, decoded and with its references validated and copied. */
-  const capture = Effect.fnUntraced(function* (input: Request) {
-    const request = yield* Schema.decodeEffect(Request)(input).pipe(
-      Effect.mapError((cause) =>
-        ReactorError.fromCode("InvalidInput", "Invalid H3 request", {
-          operation: "enqueue",
-          outcome: "not-submitted",
-          detail: cause,
-        }),
-      ),
-    );
-    const references = yield* Effect.forEach(request.references ?? [], (reference) =>
-      Effect.fromResult(validateReference(reference)),
-    );
-    const audio = yield* Effect.forEach(request.audio ?? [], (reference) =>
-      Effect.fromResult(validateAudioReference(reference)),
-    );
-    const captured: Captured = { ...request, references, audio };
-    return captured;
-  });
-
   const stage = Effect.fnUntraced(function* (request: Captured, metadata: string) {
     yield* active("enqueue", true);
     const internal = yield* SubscriptionRef.get(state);
@@ -685,20 +739,13 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         "InvalidInput",
         "Clip duration is outside H3's accepted range",
       );
-    if (request.audio.length > 0 && !contract.referenceAudio)
-      return yield* refused(
-        "enqueue",
-        "UnsupportedCapability",
-        "The H3 deployment does not declare reference audio",
-      );
+    const refusal = family.admit(request, contract);
+    if (refusal !== undefined) return yield* refusal;
     const generation = snapshot.transportGeneration;
-    const images = yield* Effect.forEach(request.references, (reference) =>
+    const uploaded = yield* Effect.forEach(family.uploads(request), (reference) =>
       upload(reference, generation),
     );
-    const audio = yield* Effect.forEach(request.audio, (reference) =>
-      upload(reference, generation),
-    );
-    return { args: enqueueArguments({ request, images, audio, metadata }), generation };
+    return { args: family.encode({ request, uploaded, metadata }), generation };
   });
 
   const nextId = Ref.modify(counter, (n) => [`${namespace}:${n + 1n}`, n + 1n] as const);
@@ -713,7 +760,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
 
   /** The enqueue itself, run once in the submission's own execution fiber. */
   const execute = Effect.fnUntraced(
-    function* (id: string, args: CommandArgs<"enqueue">, entry: Pending) {
+    function* (id: string, args: Schema.JsonObject, entry: Pending<C>) {
       // The command waits for its reply in a fiber of its own, so held evidence can decide
       // first. The request stays attributable after that, and nothing sends it again. That
       // fiber starts at once, so the enqueue is handed to the transport before this execution
@@ -765,7 +812,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         : Effect.flatMap(replied, (failure) => Effect.fail(failure));
       const acceptance = yield* Deferred.await(entry.deferred).pipe(
         Effect.timeoutOption(limits.reconcile),
-        Effect.orElseSucceed(() => Option.none<Acceptance>()),
+        Effect.orElseSucceed(() => Option.none<Acceptance<C>>()),
         Effect.flatMap((decided) =>
           Option.isSome(decided) ? Effect.succeed(decided.value) : unproven,
         ),
@@ -806,8 +853,8 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
 
   const observeResult = <E>(
     id: string,
-    hooks: PrepareHooks<E>,
-    result: Result.Result<Acceptance, CommandFailure | E>,
+    hooks: PrepareHooks<E, C>,
+    result: Result.Result<Acceptance<C>, CommandFailure | E>,
   ): Effect.Effect<void> =>
     hooks.result === undefined
       ? Effect.void
@@ -832,21 +879,26 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           ),
         );
 
-  const prepared = <E>(id: string, request: Captured, metadata: string, hooks: PrepareHooks<E>) =>
+  const prepared = <E>(
+    id: string,
+    request: Captured,
+    metadata: string,
+    hooks: PrepareHooks<E, C>,
+  ) =>
     Submission.make({
       id,
       prepare: Effect.gen(function* () {
         const staged = yield* stage(request, metadata);
-        const entry: Pending = {
+        const entry: Pending<C> = {
           id,
           metadata,
           prompt: request.prompt,
           generation: staged.generation,
-          deferred: yield* Deferred.make<Acceptance, ReactorError>(),
+          deferred: yield* Deferred.make<Acceptance<C>, ReactorError>(),
           awaiting: true,
           held: undefined,
         };
-        return { args: staged.args, entry, waiters: yield* Operations.makeWaiters };
+        return { args: staged.args, entry, waiters: yield* Operations.makeWaiters<C>() };
       }),
       commit: ({ entry, waiters }) =>
         Effect.gen(function* () {
@@ -858,7 +910,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
           // before anything is sent.
           const conflict = yield* SubscriptionRef.modify(
             state,
-            (internal): readonly [ReactorError | undefined, Internal] => {
+            (internal): readonly [ReactorError | undefined, Internal<C>] => {
               if (
                 entry.generation !== internal.model.generation ||
                 live.generation !== entry.generation
@@ -906,11 +958,14 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         ),
     }).pipe(Scope.provide(executions));
 
-  const prepare: Provider["prepare"] = <E = never>(input: Request, hooks: PrepareHooks<E> = {}) =>
+  const prepare: Provider<Req, C, Name, Version>["prepare"] = <E = never>(
+    input: Req,
+    hooks: PrepareHooks<E, C> = {},
+  ) =>
     Effect.gen(function* () {
       yield* active("enqueue", true);
       const id = yield* nextId;
-      const request = yield* capture(input);
+      const request = yield* family.capture(input);
       const metadata = yield* Effect.fromResult(
         State.encodeMetadata({ namespace, submission: id, caller: request.metadata }),
       );
@@ -933,7 +988,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
         );
 
   const contract = yield* session.schema.pipe(
-    Effect.flatMap(({ openapi }) => Effect.fromResult(deploymentContract(openapi))),
+    Effect.flatMap(({ openapi }) => Effect.fromResult(deploymentContractFor(family)(openapi))),
     Effect.timeoutOrElse({
       duration: limits.setup,
       orElse: () => Effect.fail(ReactorError.fromCode("Timeout", "H3 schema read timed out")),
@@ -968,7 +1023,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       ),
     );
 
-  const provider: Provider = {
+  const provider: Provider<Req, C, Name, Version> = {
     sessionId: session.id,
     contract,
     snapshot,
@@ -995,7 +1050,9 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
       Effect.acquireRelease(
         SubscriptionRef.modify(
           state,
-          (internal): readonly [Result.Result<Operations.Waiters, ReactorError>, Internal] => {
+          (
+            internal,
+          ): readonly [Result.Result<Operations.Waiters<C>, ReactorError>, Internal<C>] => {
             const held = Operations.hold({ table: internal.operations, id: submission.id });
             if (Result.isFailure(held)) return [Result.fail(held.failure), internal];
             const operation = held.success.operations.get(submission.id);
@@ -1071,7 +1128,7 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
     setCanvas: (aspect: CanvasAspect) =>
       traced(
         "setCanvas",
-        Object.hasOwn(canvases, aspect)
+        Object.hasOwn(family.canvases, aspect)
           ? named("set_canvas", { aspect })
           : Effect.fail(refused("set_canvas", "InvalidInput", "Unsupported H3 canvas aspect")),
       ),
@@ -1084,10 +1141,25 @@ const build = Effect.fnUntraced(function* (session: Session, options: Options) {
 });
 
 /** A failed acquisition closes its own observation scope at once. */
-export const make = Effect.fn("H3.make")(function* (session: Session, options: Options = {}) {
-  const child = yield* Scope.fork(yield* Effect.scope);
-  return yield* build(session, options).pipe(
-    Scope.provide(child),
-    Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(child, exit) : Effect.void)),
-  );
-});
+export const make = (spanName: string) =>
+  Effect.fn(spanName)(function* <
+    Req,
+    Captured extends RequestFields,
+    C extends Clip,
+    Name extends string,
+    Version extends string,
+  >(
+    session: Session,
+    family: Family<Req, Captured, C, Name, Version>,
+    options: H3.Options = {},
+  ): Effect.fn.Return<
+    Provider<Req, C, Name, Version>,
+    ReactorError | CommandFailure,
+    Crypto.Crypto | Scope.Scope
+  > {
+    const child = yield* Scope.fork(yield* Effect.scope);
+    return yield* build(session, family, options).pipe(
+      Scope.provide(child),
+      Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(child, exit) : Effect.void)),
+    );
+  });

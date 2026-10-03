@@ -25,9 +25,9 @@ export interface ClipFact {
 }
 
 /** What one clip operation has established so far; monotone. */
-export interface OperationFacts {
+export interface OperationFacts<C extends Clip = Clip> {
   readonly submissionId: string;
-  readonly acceptance?: Acceptance;
+  readonly acceptance?: Acceptance<C>;
   readonly generated?: ClipFact;
   readonly started?: ClipFact;
   readonly ended?: ClipFact;
@@ -49,27 +49,27 @@ export interface OperationFacts {
  * definite, unless the provider failed first. Evidence from a later transport
  * generation of the same session still resolves the operation.
  */
-export interface ClipOperation {
+export interface ClipOperation<C extends Clip = Clip> {
   readonly submissionId: string;
-  readonly accepted: Effect.Effect<Acceptance, ReactorError | CommandFailure>;
+  readonly accepted: Effect.Effect<Acceptance<C>, ReactorError | CommandFailure>;
   readonly reached: (phase: ClipPhase) => Effect.Effect<ClipFact, ReactorError | CommandFailure>;
   readonly ended: Effect.Effect<ClipFact, ReactorError | CommandFailure>;
-  readonly facts: Effect.Effect<OperationFacts>;
+  readonly facts: Effect.Effect<OperationFacts<C>>;
 }
 
 type Failure = ReactorError | CommandFailure;
 
-export interface Waiters {
-  readonly accepted: Deferred.Deferred<Acceptance, Failure>;
+export interface Waiters<C extends Clip = Clip> {
+  readonly accepted: Deferred.Deferred<Acceptance<C>, Failure>;
   readonly generated: Deferred.Deferred<ClipFact, Failure>;
   readonly started: Deferred.Deferred<ClipFact, Failure>;
   readonly finished: Deferred.Deferred<ClipFact, Failure>;
 }
 
-export interface Operation {
+export interface Operation<C extends Clip = Clip> {
   readonly identity: Identity;
-  readonly waiters: Waiters;
-  readonly acceptance: Acceptance | undefined;
+  readonly waiters: Waiters<C>;
+  readonly acceptance: Acceptance<C> | undefined;
   /** The clip the evidence names, known before the acceptance is decided. */
   readonly clipId: string | undefined;
   readonly generated: ClipFact | undefined;
@@ -81,34 +81,35 @@ export interface Operation {
   readonly holders: number;
 }
 
-export interface Table {
+export interface Table<C extends Clip = Clip> {
   readonly capacity: number;
-  readonly operations: ReadonlyMap<string, Operation>;
+  readonly operations: ReadonlyMap<string, Operation<C>>;
   readonly byClip: ReadonlyMap<string, string>;
 }
 
-export type Step = readonly [Table, ReadonlyArray<Effect.Effect<void>>];
+export type Step<C extends Clip = Clip> = readonly [Table<C>, ReadonlyArray<Effect.Effect<void>>];
 
-export const empty = (capacity: number): Table => ({
+export const empty = <C extends Clip = Clip>(capacity: number): Table<C> => ({
   capacity,
   operations: new Map(),
   byClip: new Map(),
 });
 
-export const makeWaiters: Effect.Effect<Waiters> = Effect.all({
-  accepted: Deferred.make<Acceptance, Failure>(),
-  generated: Deferred.make<ClipFact, Failure>(),
-  started: Deferred.make<ClipFact, Failure>(),
-  finished: Deferred.make<ClipFact, Failure>(),
-});
+export const makeWaiters = <C extends Clip = Clip>(): Effect.Effect<Waiters<C>> =>
+  Effect.all({
+    accepted: Deferred.make<Acceptance<C>, Failure>(),
+    generated: Deferred.make<ClipFact, Failure>(),
+    started: Deferred.make<ClipFact, Failure>(),
+    finished: Deferred.make<ClipFact, Failure>(),
+  });
 
 /** Nothing more can change it: its clip ended once accepted, or it was decided without one. */
-const settled = (operation: Operation): boolean =>
+const settled = <C extends Clip>(operation: Operation<C>): boolean =>
   (operation.ended !== undefined && operation.acceptance !== undefined) ||
   operation.indeterminate ||
   operation.rejected;
 
-const put = (table: Table, operation: Operation): Table => {
+const put = <C extends Clip>(table: Table<C>, operation: Operation<C>): Table<C> => {
   const operations = new Map(table.operations).set(operation.identity.id, operation);
   const byClip =
     operation.clipId === undefined || operation.rejected
@@ -117,7 +118,7 @@ const put = (table: Table, operation: Operation): Table => {
   return { ...table, operations, byClip };
 };
 
-const remove = (table: Table, id: string): Table => {
+const remove = <C extends Clip>(table: Table<C>, id: string): Table<C> => {
   const operation = table.operations.get(id);
   if (operation === undefined) return table;
   const operations = new Map(table.operations);
@@ -137,15 +138,15 @@ const fail = <A>(deferred: Deferred.Deferred<A, Failure>, error: Failure) =>
  * Takes a slot for a submission about to dispatch. Operations that ended are
  * evicted first, oldest first; a table of unresolved operations refuses.
  */
-export const reserve = ({
+export const reserve = <C extends Clip>({
   table,
   identity,
   waiters,
 }: {
-  readonly table: Table;
+  readonly table: Table<C>;
   readonly identity: Identity;
-  readonly waiters: Waiters;
-}): Result.Result<Table, ReactorError> => {
+  readonly waiters: Waiters<C>;
+}): Result.Result<Table<C>, ReactorError> => {
   if (table.operations.has(identity.id)) return Result.succeed(table);
   let next = table;
   if (next.operations.size >= next.capacity) {
@@ -176,11 +177,16 @@ export const reserve = ({
 };
 
 /** A commit that failed after reserving sent nothing. */
-export const abandon = ({ table, id }: { readonly table: Table; readonly id: string }): Table =>
-  remove(table, id);
+export const abandon = <C extends Clip>({
+  table,
+  id,
+}: {
+  readonly table: Table<C>;
+  readonly id: string;
+}): Table<C> => remove(table, id);
 
 /** What an operation established resolves its waiters, once its acceptance is decided. */
-const publish = (operation: Operation): ReadonlyArray<Effect.Effect<void>> => {
+const publish = <C extends Clip>(operation: Operation<C>): ReadonlyArray<Effect.Effect<void>> => {
   if (operation.acceptance === undefined) return [];
   const { generated, started, ended, waiters } = operation;
   const effects: Array<Effect.Effect<void>> = [];
@@ -206,15 +212,15 @@ const publish = (operation: Operation): ReadonlyArray<Effect.Effect<void>> => {
 };
 
 /** The enqueue's own result: a definite failure decides the operation without a clip. */
-export const settle = ({
+export const settle = <C extends Clip>({
   table,
   id,
   exit,
 }: {
-  readonly table: Table;
+  readonly table: Table<C>;
   readonly id: string;
-  readonly exit: Exit.Exit<Acceptance, unknown>;
-}): Step => {
+  readonly exit: Exit.Exit<Acceptance<C>, unknown>;
+}): Step<C> => {
   const operation = table.operations.get(id);
   if (operation === undefined || operation.acceptance !== undefined || Exit.isSuccess(exit))
     return [table, []];
@@ -224,7 +230,7 @@ export const settle = ({
   if (failure.context.outcome === "unknown") return [table, []];
   // No clip will ever carry this submission, and what a clip showed before the
   // refusal is not its fact.
-  const rejected: Operation = {
+  const rejected: Operation<C> = {
     ...operation,
     rejected: true,
     generated: undefined,
@@ -248,29 +254,29 @@ export const settle = ({
  * Evidence the provider holds until the enqueue's reply decides the
  * acceptance: the clip's facts accrue meanwhile.
  */
-export const identify = ({
+export const identify = <C extends Clip>({
   table,
   acceptance,
 }: {
-  readonly table: Table;
-  readonly acceptance: Acceptance;
-}): Table => {
+  readonly table: Table<C>;
+  readonly acceptance: Acceptance<C>;
+}): Table<C> => {
   const operation = table.operations.get(acceptance.submissionId);
   if (operation === undefined || operation.clipId !== undefined || operation.rejected) return table;
   return put(table, { ...operation, clipId: acceptance.clip.clip_id });
 };
 
 /** The acceptance the provider recorded, on the same path that records it. */
-export const accept = ({
+export const accept = <C extends Clip>({
   table,
   acceptance,
 }: {
-  readonly table: Table;
-  readonly acceptance: Acceptance;
-}): Step => {
+  readonly table: Table<C>;
+  readonly acceptance: Acceptance<C>;
+}): Step<C> => {
   const operation = table.operations.get(acceptance.submissionId);
   if (operation === undefined || operation.acceptance !== undefined) return [table, []];
-  const accepted: Operation = {
+  const accepted: Operation<C> = {
     ...operation,
     acceptance,
     clipId: operation.clipId ?? acceptance.clip.clip_id,
@@ -285,17 +291,17 @@ export const accept = ({
  * A clip carrying a submission's exact prompt and metadata after its pending
  * acceptance expired, or in a later generation. It resolves the operation only.
  */
-export const lateEvidence = ({
+export const lateEvidence = <C extends Clip>({
   table,
   id,
   clip,
   source,
 }: {
-  readonly table: Table;
+  readonly table: Table<C>;
   readonly id: string;
-  readonly clip: Clip;
+  readonly clip: C;
   readonly source: CommandReply;
-}): Step => {
+}): Step<C> => {
   const operation = table.operations.get(id);
   if (
     operation === undefined ||
@@ -318,13 +324,13 @@ const fact = (clipId: string, message: MessageType, source: CommandReply): ClipF
   source,
 });
 
-const advance = (
-  table: Table,
+const advance = <C extends Clip>(
+  table: Table<C>,
   clipId: string,
   message: MessageType,
   source: CommandReply,
   phase: "generated" | "started" | "ended",
-): Step => {
+): Step<C> => {
   const id = table.byClip.get(clipId);
   const operation = id === undefined ? undefined : table.operations.get(id);
   if (operation === undefined || operation.ended !== undefined || operation.indeterminate)
@@ -334,7 +340,7 @@ const advance = (
   const reachedStart =
     phase === "started" ||
     (phase === "ended" && (message === "clip_finished" || message === "clip_stopped"));
-  const next: Operation = {
+  const next: Operation<C> = {
     ...operation,
     generated:
       operation.generated ?? (phase === "generated" || reachedStart ? evidence : undefined),
@@ -345,15 +351,15 @@ const advance = (
 };
 
 /** Advances operations from a message the reducer applied. */
-export const observe = ({
+export const observe = <C extends Clip>({
   table,
   message,
   source,
 }: {
-  readonly table: Table;
-  readonly message: DecodedMessage;
+  readonly table: Table<C>;
+  readonly message: DecodedMessage<C>;
   readonly source: CommandReply;
-}): Step => {
+}): Step<C> => {
   if (table.byClip.size === 0) return [table, []];
   switch (message.type) {
     case "queue_update": {
@@ -389,7 +395,11 @@ export const observe = ({
  * No more evidence can come: what it did not decide fails with `error`. A retiring provider also
  * lets go of the operations nobody holds.
  */
-const strand = (table: Table, error: ReactorError, retiring: boolean): Step => {
+const strand = <C extends Clip>(
+  table: Table<C>,
+  error: ReactorError,
+  retiring: boolean,
+): Step<C> => {
   let next = table;
   const effects: Array<Effect.Effect<void>> = [];
   for (const operation of table.operations.values()) {
@@ -415,16 +425,16 @@ const strand = (table: Table, error: ReactorError, retiring: boolean): Step => {
  * The provider failed for good, so it reads no more evidence: what evidence did not decide fails
  * with the provider's failure.
  */
-export const failUndecided = ({
+export const failUndecided = <C extends Clip>({
   table,
   error,
 }: {
-  readonly table: Table;
+  readonly table: Table<C>;
   readonly error: ReactorError;
-}): Step => strand(table, error, false);
+}): Step<C> => strand(table, error, false);
 
 /** The provider retired: what evidence did not decide is `Indeterminate`. */
-export const retire = (table: Table): Step =>
+export const retire = <C extends Clip>(table: Table<C>): Step<C> =>
   strand(
     table,
     ReactorError.fromCode("Indeterminate", "H3 provider retired before the clip's evidence", {
@@ -434,13 +444,13 @@ export const retire = (table: Table): Step =>
   );
 
 /** A holder of an operation; releasing the last holder acknowledges it and frees its slot. */
-export const hold = ({
+export const hold = <C extends Clip>({
   table,
   id,
 }: {
-  readonly table: Table;
+  readonly table: Table<C>;
   readonly id: string;
-}): Result.Result<Table, ReactorError> => {
+}): Result.Result<Table<C>, ReactorError> => {
   const operation = table.operations.get(id);
   return operation === undefined
     ? Result.fail(
@@ -453,7 +463,13 @@ export const hold = ({
     : Result.succeed(put(table, { ...operation, holders: operation.holders + 1 }));
 };
 
-export const release = ({ table, id }: { readonly table: Table; readonly id: string }): Table => {
+export const release = <C extends Clip>({
+  table,
+  id,
+}: {
+  readonly table: Table<C>;
+  readonly id: string;
+}): Table<C> => {
   const operation = table.operations.get(id);
   if (operation === undefined) return table;
   return operation.holders <= 1
@@ -462,13 +478,13 @@ export const release = ({ table, id }: { readonly table: Table; readonly id: str
 };
 
 /** A clip's facts are the operation's once its acceptance is decided. */
-export const factsOf = ({
+export const factsOf = <C extends Clip>({
   id,
   operation,
 }: {
   readonly id: string;
-  readonly operation: Operation | undefined;
-}): OperationFacts =>
+  readonly operation: Operation<C> | undefined;
+}): OperationFacts<C> =>
   operation?.acceptance === undefined
     ? { submissionId: id, indeterminate: operation?.indeterminate ?? false }
     : {
