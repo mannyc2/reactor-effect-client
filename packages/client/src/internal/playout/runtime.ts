@@ -50,7 +50,10 @@ type Reply =
   | { readonly _tag: "Accepted"; readonly results: ReadonlyArray<Policy.EditReply> }
   | { readonly _tag: "Refused"; readonly refusal: Policy.Refusal };
 type Command<Req extends Playout.ClipRequest> = Extract<Policy.Action<Req>, { _tag: "Command" }>;
-type Input<Req extends Playout.ClipRequest> = { readonly input: Policy.Input<Req>; readonly parent?: Tracer.ExternalSpan | undefined };
+type Input<Req extends Playout.ClipRequest> = {
+  readonly input: Policy.Input<Req>;
+  readonly parent?: Tracer.ExternalSpan | undefined;
+};
 type QueuedCommand<Req extends Playout.ClipRequest> = {
   readonly action: Command<Req>;
   readonly parent: Tracer.ExternalSpan | undefined;
@@ -64,7 +67,9 @@ const millis = (input: Duration.Input | undefined, fallback: number): number =>
 
 const monotonic = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos) / 1_000_000);
 
-type FillerClip<Req extends Playout.ClipRequest> = NonNullable<Policy.Config<Req>["filler"]>["clip"];
+type FillerClip<Req extends Playout.ClipRequest> = NonNullable<
+  Policy.Config<Req>["filler"]
+>["clip"];
 
 /**
  * The application's filler clips, each asking for the length it was asked for unless it names
@@ -911,7 +916,10 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
         ? first.handle
         : yield* Effect.die("an insert returned no handle");
     }),
-    replace: Effect.fn("Playout.replace")(function* (key: ItemKey, next: Playout.ReplacementSpec<Req>) {
+    replace: Effect.fn("Playout.replace")(function* (
+      key: ItemKey,
+      next: Playout.ReplacementSpec<Req>,
+    ) {
       const { results } = yield* edit([{ _tag: "Replace", key, next }], false);
       const [first] = results;
       return first?._tag === "Added"

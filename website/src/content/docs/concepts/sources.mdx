@@ -206,6 +206,7 @@ export const announcer = Playout.make({
 
 | Option       | What it does                                                                    |
 | ------------ | ------------------------------------------------------------------------------- |
+| `model`      | The model the source runs, H3's by default; pass the same model to `Playout.make` |
 | `build`      | Makes a clip's value, and its built length when that differs (`seconds`)        |
 | `present`    | Plays the value through the `sink`'s `video` and `audio`; without it, a clip plays for its length |
 | `lifetime`   | Caps the session, as a paid session's cap does, so the playout renews it; unending by default |
@@ -214,18 +215,34 @@ export const announcer = Playout.make({
 `build` and `present` run in a scope the clip owns, which closes once the clip leaves the source,
 so a finalizer releases what they made. A hook that fails with your own error fails that clip
 alone: `Failed` with reason `Clip`, your error pretty-printed and `Redacted` in `provider`. A hook
-that dies stops the source, and the playout replaces its session. A clip's request still goes
-through H3's documented limits, since the playout checks every request against them.
+that dies stops the source, and the playout replaces its session. The playout checks every
+request against its model, H3's by default. A renderer with its own lengths passes the same
+`ClipModel` to `LocalSource.open` and `Playout.make`, so speech can air below H3's 5 s minimum:
+
+```ts
+import { Effect } from "effect";
+import { H3, LocalSource, Playout } from "reactor-effect-client";
+const speech: Playout.ClipModel<H3.Request> = {
+  name: "speech", lengths: { min: 0.5, max: 30 }, defaultSeconds: 2, check: () => [],
+};
+export const spoken = Playout.make({
+  model: speech,
+  open: LocalSource.open({ model: speech, build: (clip) => Effect.succeed({ value: clip.request.prompt }) }),
+  lanes: [{ name: "speech" }],
+});
+```
 
 <Aside>
 `LocalSource.open({ buildRatio: 0.4, lifetime: "1 minute" })` runs a whole programme, renewals
-included, with no model at all: a quick way to see what your schedule does.
+included, without a renderer: a quick way to see what your schedule does.
 </Aside>
 
 ## Writing a source
 
 `Playout.Source` is an interface: a `sessionId`, a `lifetime`, `events`, the commands `enqueue`,
 `remove`, `move`, `setAutoplay`, `stop` and `play`, the `video` and `audio` streams, and `close`.
+Its optional `model` names the model it runs. The playout refuses a different model name at
+open, before sending commands; a source without `model` is not checked.
 Its doc comment lists what the playout relies on, such as `events` starting with a `State` and
 reporting a clip's start or end before the `State` that shows it. Write one only for a model or
 renderer the SDK does not cover.
@@ -236,8 +253,8 @@ renderer the SDK does not cover.
   model.
 - A `LocalSource` renders in your process: its builds and presentations use your CPU, and one
   slow build holds its one build slot.
-- The playout validates a `LocalSource` clip's request against H3's limits too, so `seconds` is
-  still 5 to 15.084.
+- H3's 5 to 15.084 s request bounds apply by default. A local renderer with another range
+  declares its own model and passes it to both the source and the playout.
 
 ## Next
 

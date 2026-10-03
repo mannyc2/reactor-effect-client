@@ -61,10 +61,13 @@ The same program runs on the simulated Reactor, on paid H3, or on a renderer of 
 the [source](/reactor-effect-client/concepts/sources/) behind `open` changes. A pure policy makes
 every decision, and the service applies them one provider command at a time on each session. It
 wakes on a submission, a session's evidence or the plan's next deadline, and never polls.
+For another model, pass its `ClipModel` to `Playout.make` and the source. The `Playout` service
+tag and `layer` stay H3's; an application can name its own service with `Playout.Service<Req>`.
 
 ## Items and keys
 
-An item is one clip: a key, a lane and an [H3 request](/reactor-effect-client/concepts/h3/),
+An item is one clip: a key, a lane and a request for its model
+([H3](/reactor-effect-client/concepts/h3/) by default),
 with an optional start, window, cues and continuity. `submit` returns an `ItemHandle` whose
 `started` resolves with the clip's start (or how it settled without one) and whose `outcome`
 resolves with how it settled.
@@ -77,13 +80,14 @@ A submission is refused before anything is sent with one of these tagged errors:
 
 | Error               | When                                                                    |
 | ------------------- | ----------------------------------------------------------------------- |
-| `InvalidItem`       | The request is outside H3's documented limits, naming each field and limit, or names an unknown lane or anchor |
+| `InvalidItem`       | The request is outside its model's limits (H3's by default), naming each field and limit, or names an unknown lane or anchor |
 | `KeyMismatch`       | The key is in use with a different spec                                 |
 | `LaneBusy`          | The lane skips new items while one waits or plays                       |
 | `WouldMissDeadline` | The plan cannot start the item before its firm `startBy`                |
 | `PlayoutClosed`     | The playout is draining or closed                                       |
 
-An item whose request omits `seconds` is sent at 5 seconds, the length the plan counts it at.
+An item whose request omits `seconds` is sent at its model's `defaultSeconds` (5 s for H3),
+the length the plan counts it at.
 A filler request without `seconds` is sent at the length passed to its `clip` callback in
 `FillContext.seconds`. A request that names its length is sent unchanged.
 
@@ -130,9 +134,9 @@ and the Ready clips that will air after it, on the session on air and then on it
   are measured, the floor covers at least one slow (p95) build, so a refill started there is
   Ready in time.
 - `clip(context)`: called once per filler clip, with its `index`, the `runwaySeconds` and the
-  `seconds` to ask for. Keep it pure. A request outside H3's limits fails the playout with
+  `seconds` to ask for. Keep it pure. A request outside its model's limits fails the playout with
   `InvalidFiller`, since asking again would get the same request.
-- `lengths`: the lengths a filler clip may take, H3's request range by default. Before an `At`
+- `lengths`: the lengths a filler clip may take, the model's request range by default. Before an `At`
   item, filler tiles the gap in equal clips. Where a tile would air past a capped session's cap,
   the playout asks for the longest clip that airs before it, if `lengths.min` fits.
   H3 aligns each up to its frame grid, so the `At` item

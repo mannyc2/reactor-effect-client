@@ -807,73 +807,73 @@ export interface Cleanup {
 }
 
 export interface Service<Req extends ClipRequest = Request> {
-    readonly submit: (item: ItemSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
-    readonly submitGroup: (group: GroupSpec<Req>) => Effect.Effect<GroupHandle, SubmitError>;
-    readonly insert: (spec: InsertSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
-    /**
-     * Builds `next` for the item's place, lane, group position and the clip it
-     * `follows`. Once `next` is Ready the item goes as `replaced`; if the item
-     * starts first, `next` is dropped as `withdrawn`.
-     */
-    readonly replace: (
-      key: ItemKey,
-      next: ReplacementSpec<Req>,
-    ) => Effect.Effect<ItemHandle, SubmitError>;
-    /**
-     * Several edits as one make-before-break change: all are checked before any
-     * takes effect, and what the batch withdraws or replaces stays as cover
-     * until everything it adds is Ready or settled.
-     */
-    readonly edit: (edits: ReadonlyArray<Edit<Req>>) => Effect.Effect<EditHandle, SubmitError>;
-    /** Releases a held `Manual` item to air at the next boundary. */
-    readonly release: (key: ItemKey) => Effect.Effect<void, InvalidItem>;
-    /**
-     * Where a clip like `probe` would land: at the first boundary of the
-     * projected air order it could make, submitted `submitIn` from now to
-     * follow the clip before that boundary, as a submission its lane would
-     * take, without dropping or displacing anything submitted already, and
-     * with its clip projected Ready a readiness margin and one provider
-     * command's round trip before the boundary. A clip that cannot air before
-     * the cap of the session on air is placed on its replacement, if it can
-     * air there before that one's cap. It never answers after a clip this
-     * playout did not enqueue, nor after a cut not yet on air, which it does
-     * not project. Null once the playout has stopped, with no session on air,
-     * or when no boundary is makeable, as before anything has aired.
-     */
-    readonly place: (probe: PlaceProbe) => Effect.Effect<Placement | null, InvalidItem>;
-    /**
-     * A group key withdraws its unstarted parts, and answers `withdrawn` if any
-     * part was, else `already-started` if any started; a part key withdraws that
-     * part and those after it, and answers for that part. Once the playout has
-     * stopped, it answers from what became of the item or the parts. It answers
-     * `not-found` for a key it doesn't hold, and for an item that settled
-     * without starting, such as one that failed: its handle says how.
-     */
-    readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome>;
-    /** Admits nothing more and completes once the chosen work has aired or settled. */
-    readonly drain: (options?: {
-      readonly finish?: "playing" | "accepted";
-    }) => Effect.Effect<void, PlayoutClosed>;
-    readonly state: Effect.Effect<State>;
-    /** Every event from subscription on, in order. */
-    readonly events: Stream.Stream<Event>;
-    readonly asRun: Stream.Stream<AsRunEvent>;
-    /**
-     * The on-air session's picture, continuing across renewals, and ending
-     * when the playout stops. It fails with the on-air source's media failure;
-     * reading it again starts from the session then on air.
-     */
-    readonly video: Stream.Stream<VideoFrame, ReactorError>;
-    /** The on-air session's sound, as `video` is its picture. */
-    readonly audio: Stream.Stream<AudioFrame, ReactorError>;
-    /**
-     * Why the playout stopped: a session could not be opened or kept, a filler
-     * request was outside its model's limits (`InvalidFiller`), or its scope closed
-     * (`Closed`). A defect that stopped it, such as a throwing `filler.clip`,
-     * stays a defect: this dies with it.
-     */
-    readonly failure: Effect.Effect<ReactorFailure | InvalidFiller>;
-    readonly cleanup: Effect.Effect<Cleanup>;
+  readonly submit: (item: ItemSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
+  readonly submitGroup: (group: GroupSpec<Req>) => Effect.Effect<GroupHandle, SubmitError>;
+  readonly insert: (spec: InsertSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
+  /**
+   * Builds `next` for the item's place, lane, group position and the clip it
+   * `follows`. Once `next` is Ready the item goes as `replaced`; if the item
+   * starts first, `next` is dropped as `withdrawn`.
+   */
+  readonly replace: (
+    key: ItemKey,
+    next: ReplacementSpec<Req>,
+  ) => Effect.Effect<ItemHandle, SubmitError>;
+  /**
+   * Several edits as one make-before-break change: all are checked before any
+   * takes effect, and what the batch withdraws or replaces stays as cover
+   * until everything it adds is Ready or settled.
+   */
+  readonly edit: (edits: ReadonlyArray<Edit<Req>>) => Effect.Effect<EditHandle, SubmitError>;
+  /** Releases a held `Manual` item to air at the next boundary. */
+  readonly release: (key: ItemKey) => Effect.Effect<void, InvalidItem>;
+  /**
+   * Where a clip like `probe` would land: at the first boundary of the
+   * projected air order it could make, submitted `submitIn` from now to
+   * follow the clip before that boundary, as a submission its lane would
+   * take, without dropping or displacing anything submitted already, and
+   * with its clip projected Ready a readiness margin and one provider
+   * command's round trip before the boundary. A clip that cannot air before
+   * the cap of the session on air is placed on its replacement, if it can
+   * air there before that one's cap. It never answers after a clip this
+   * playout did not enqueue, nor after a cut not yet on air, which it does
+   * not project. Null once the playout has stopped, with no session on air,
+   * or when no boundary is makeable, as before anything has aired.
+   */
+  readonly place: (probe: PlaceProbe) => Effect.Effect<Placement | null, InvalidItem>;
+  /**
+   * A group key withdraws its unstarted parts, and answers `withdrawn` if any
+   * part was, else `already-started` if any started; a part key withdraws that
+   * part and those after it, and answers for that part. Once the playout has
+   * stopped, it answers from what became of the item or the parts. It answers
+   * `not-found` for a key it doesn't hold, and for an item that settled
+   * without starting, such as one that failed: its handle says how.
+   */
+  readonly withdraw: (key: ItemKey) => Effect.Effect<WithdrawOutcome>;
+  /** Admits nothing more and completes once the chosen work has aired or settled. */
+  readonly drain: (options?: {
+    readonly finish?: "playing" | "accepted";
+  }) => Effect.Effect<void, PlayoutClosed>;
+  readonly state: Effect.Effect<State>;
+  /** Every event from subscription on, in order. */
+  readonly events: Stream.Stream<Event>;
+  readonly asRun: Stream.Stream<AsRunEvent>;
+  /**
+   * The on-air session's picture, continuing across renewals, and ending
+   * when the playout stops. It fails with the on-air source's media failure;
+   * reading it again starts from the session then on air.
+   */
+  readonly video: Stream.Stream<VideoFrame, ReactorError>;
+  /** The on-air session's sound, as `video` is its picture. */
+  readonly audio: Stream.Stream<AudioFrame, ReactorError>;
+  /**
+   * Why the playout stopped: a session could not be opened or kept, a filler
+   * request was outside its model's limits (`InvalidFiller`), or its scope closed
+   * (`Closed`). A defect that stopped it, such as a throwing `filler.clip`,
+   * stays a defect: this dies with it.
+   */
+  readonly failure: Effect.Effect<ReactorFailure | InvalidFiller>;
+  readonly cleanup: Effect.Effect<Cleanup>;
 }
 
 export class Playout extends Context.Service<Playout, Service>()("reactor-effect-client/Playout") {}

@@ -47,7 +47,15 @@ import * as Deadline from "./internal/deadline.js";
 import { clipModel } from "./internal/h3/clipModel.js";
 import { currentParent, spanOptions } from "./internal/trace.js";
 import type { AudioFrame, VideoFrame } from "./Media.js";
-import type { ClipModel, ClipRequest, ClipTag, Source, SourceClip, SourceEvent, SourceState } from "./Playout.js";
+import type {
+  ClipModel,
+  ClipRequest,
+  ClipTag,
+  Source,
+  SourceClip,
+  SourceEvent,
+  SourceState,
+} from "./Playout.js";
 import { noAcquisition } from "./Reactor.js";
 import { CommandFailure, ReactorError } from "./ReactorError.js";
 
@@ -86,7 +94,14 @@ export interface Sink {
  * such as speech shorter than H3's 5 s, declares them here and passes the same
  * model to `Playout.make`.
  */
-export type Options<A = void, E = never, R = never, E2 = never, R2 = never, Req extends ClipRequest = Request> =
+export type Options<
+  A = void,
+  E = never,
+  R = never,
+  E2 = never,
+  R2 = never,
+  Req extends ClipRequest = Request,
+> =
   | {
       /** Renders a clip before it is Ready, in a scope the clip owns. */
       readonly build: (clip: LocalClip<Req>) => Effect.Effect<Rendered<A>, E, R | Scope.Scope>;
@@ -97,7 +112,11 @@ export type Options<A = void, E = never, R = never, E2 = never, R2 = never, Req 
        * for its length.
        */
       readonly present?:
-        | ((clip: LocalClip<Req>, value: A, sink: Sink) => Effect.Effect<void, E2, R2 | Scope.Scope>)
+        | ((
+            clip: LocalClip<Req>,
+            value: A,
+            sink: Sink,
+          ) => Effect.Effect<void, E2, R2 | Scope.Scope>)
         | undefined;
       /**
        * The session's granted length from when it opens, as a capped paid
@@ -115,9 +134,14 @@ export type Options<A = void, E = never, R = never, E2 = never, R2 = never, Req 
       readonly lifetime?: Duration.Input | undefined;
     };
 
-type Hooks<A, E, R, E2, R2, Req extends ClipRequest> = Extract<Options<A, E, R, E2, R2, Req>, { readonly build: unknown }>;
+type Hooks<A, E, R, E2, R2, Req extends ClipRequest> = Extract<
+  Options<A, E, R, E2, R2, Req>,
+  { readonly build: unknown }
+>;
 type Build<A, E, R, Req extends ClipRequest> = Hooks<A, E, R, never, never, Req>["build"];
-type Present<A, E, R, Req extends ClipRequest> = NonNullable<Hooks<A, never, never, E, R, Req>["present"]>;
+type Present<A, E, R, Req extends ClipRequest> = NonNullable<
+  Hooks<A, never, never, E, R, Req>["present"]
+>;
 
 interface QueuedClip<Req extends ClipRequest> extends LocalClip<Req> {
   readonly parent: Tracer.ExternalSpan | undefined;
@@ -135,7 +159,9 @@ interface Local<A, Req extends ClipRequest> {
   readonly building: ReadonlyArray<QueuedClip<Req>>;
   readonly ready: ReadonlyArray<Built<A, Req>>;
   /** The clip playing, and what stops it. */
-  readonly playing: { readonly clip: Built<A, Req>; readonly stop: Deferred.Deferred<void> } | undefined;
+  readonly playing:
+    | { readonly clip: Built<A, Req>; readonly stop: Deferred.Deferred<void> }
+    | undefined;
   readonly autoplay: boolean;
   /** A Ready clip asked to play, which plays next whatever autoplay says. */
   readonly play: string | undefined;
@@ -169,7 +195,9 @@ const view = <A, Req extends ClipRequest>(local: Local<A, Req>): SourceState => 
   continuable: [],
 });
 /** What plays once nothing does: the clip asked for, else with autoplay on the queue's head. */
-const nextToPlay = <A, Req extends ClipRequest>(local: Local<A, Req>): Built<A, Req> | undefined => {
+const nextToPlay = <A, Req extends ClipRequest>(
+  local: Local<A, Req>,
+): Built<A, Req> | undefined => {
   if (local.playing !== undefined) return undefined;
   if (local.play !== undefined) return local.ready.find((value) => value.clipId === local.play);
   return local.autoplay ? local.ready[0] : undefined;
@@ -588,7 +616,9 @@ export function open<A = void, E = never, R = never, E2 = never, R2 = never>(
   options?: Options<A, E, R, E2, R2>,
 ): Effect.Effect<Source, ReactorError, R | R2 | Scope.Scope>;
 export function open<A, E, R, E2, R2, Req extends ClipRequest>(
-  options?: (Options<A, E, R, E2, R2, Req> & { readonly model: ClipModel<Req> }) | Options<A, E, R, E2, R2>,
+  options?:
+    | (Options<A, E, R, E2, R2, Req> & { readonly model: ClipModel<Req> })
+    | Options<A, E, R, E2, R2>,
 ) {
   return options !== undefined && "model" in options
     ? configured(options, options.model)

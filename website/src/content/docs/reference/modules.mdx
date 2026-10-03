@@ -76,7 +76,8 @@ reports: `State`, `Phase`, `Transcript`, `Voice`, `Voices`, `CallEnded` and `Com
 
 ### `Playout`
 
-`reactor-effect-client/Playout`. The `Playout` service, `make`, `layer` and `lineup`; `Options`;
+`reactor-effect-client/Playout`. The H3 `Playout` service, generic `Service<Req>`, `make`, `layer`
+and `lineup`; `Options`, `ModelOptions`, `ClipModel` and `ClipRequest`;
 the item specs `ItemSpec`, `GroupSpec`, `InsertSpec`, `Edit`, `LaneSpec`, `Start`, `Window`,
 `Cue`, `PlaceProbe` and `Placement`; `ItemKey` (a branded Schema); the evidence `AsRunStatus`,
 `AsRunEvent`, `Settled`, `Event`, `SessionEvent` and `State`; the source contract `Source`,
@@ -86,7 +87,7 @@ the item specs `ItemSpec`, `GroupSpec`, `InsertSpec`, `Edit`, `LaneSpec`, `Start
 
 ### `H3Source` and `LocalSource`
 
-`reactor-effect-client/H3Source`: `open`, `resume`, the owner record `Allocation` (a Schema),
+`reactor-effect-client/H3Source`: `open`, `resume`, `model`, the owner record `Allocation` (a Schema),
 `Allocated`, `OpenOptions` and `ResumeOptions`. `reactor-effect-client/LocalSource`: `open`,
 `Options`, `LocalClip`, `Rendered` and `Sink`. See
 [Sources](/reactor-effect-client/concepts/sources/).

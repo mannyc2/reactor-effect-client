@@ -2073,7 +2073,10 @@ layer(hosted)("local renderer", (it) => {
       const opens = yield* Ref.make(0);
       const playout = yield* Playout.make({
         model: speech,
-        open: Effect.andThen(Ref.update(opens, (count) => count + 1), LocalSource.open({ buildRatio: 0 })),
+        open: Effect.andThen(
+          Ref.update(opens, (count) => count + 1),
+          LocalSource.open({ buildRatio: 0 }),
+        ),
         lanes: [{ name: "speech" }],
       });
       const failure = yield* playout.failure.pipe(Effect.timeout("1 second"));

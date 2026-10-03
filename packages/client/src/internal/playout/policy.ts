@@ -640,7 +640,9 @@ const continuedBuildRate = (samples: State<never>["samples"]): number | undefine
  * enqueue stayed unknown past the deadline takes none, since what it does with
  * a command can no longer be told.
  */
-const preferredOf = <Req extends ClipRequest>(sessions: ReadonlyArray<Session<Req>>): Session<Req> | undefined =>
+const preferredOf = <Req extends ClipRequest>(
+  sessions: ReadonlyArray<Session<Req>>,
+): Session<Req> | undefined =>
   [...sessions]
     .reverse()
     .find((value) => !value.retiring && !value.indeterminate && value.source?.available === true);
@@ -674,7 +676,10 @@ const playingRestOf = (value: Session<ClipRequest> | undefined, mono: number): n
  * undefined while it holds still. It counts back from the clip's end rather than on from the
  * time, so every look before then names the same instant.
  */
-const playingRestFallsTo = (value: Session<ClipRequest> | undefined, ms: number): number | undefined => {
+const playingRestFallsTo = (
+  value: Session<ClipRequest> | undefined,
+  ms: number,
+): number | undefined => {
   const end = playingEndOf(value);
   return end === undefined || value?.source?.playing?.clipId === value?.lastEnded?.clipId
     ? undefined
@@ -777,7 +782,10 @@ const waitingOf = (value: Session<ClipRequest> | undefined): ReadonlyArray<Sourc
  * Seconds of air secured: the playing clip's rest, then the Ready clips that
  * air from the session on air and from its replacement once that takes over.
  */
-const securedOf = (state: Pick<State<ClipRequest>, "items" | "sessions" | "air">, now: Now): number => {
+const securedOf = (
+  state: Pick<State<ClipRequest>, "items" | "sessions" | "air">,
+  now: Now,
+): number => {
   const air = state.sessions.find((value) => value.id === state.air);
   const replacement = state.sessions.find((value) => value.id !== state.air && !value.retiring);
   const ready = (value: Session<ClipRequest> | undefined): number =>
@@ -876,7 +884,12 @@ const basisOf = (unmeasured: boolean, projected: boolean): Placement["basis"] =>
 };
 
 /** One look at the plan: applies the input, then decides what is due at `now`. */
-const decide = <Req extends ClipRequest>(config: Config<Req>, previous: State<Req>, input: Input<Req>, now: Now): Step<Req> => {
+const decide = <Req extends ClipRequest>(
+  config: Config<Req>,
+  previous: State<Req>,
+  input: Input<Req>,
+  now: Now,
+): Step<Req> => {
   const items = new Map(previous.items);
   const groups = new Map(previous.groups);
   let state: State<Req> = previous;
@@ -1158,7 +1171,10 @@ const decide = <Req extends ClipRequest>(config: Config<Req>, previous: State<Re
    * before it on the session taking new work, built or not, and the first of those not built
    * yet airs only once it is. `memo` holds what is known already of the items ahead.
    */
-  const project = (item: Item<Req>, memo: Memo): { readonly from: number; readonly after: number } => {
+  const project = (
+    item: Item<Req>,
+    memo: Memo,
+  ): { readonly from: number; readonly after: number } => {
     const target = preferred() ?? session(state.air);
     const rank = rankOf(item, memo);
     const readyMs = waitingOf(target)
@@ -1998,7 +2014,11 @@ const decide = <Req extends ClipRequest>(config: Config<Req>, previous: State<Re
    * pauses until it no longer does, when one more open is tried once the last
    * failure's wait is over.
    */
-  const pauseOrFail = (reason: string, cause: "open" | "lost", air: Session<Req> | undefined): void => {
+  const pauseOrFail = (
+    reason: string,
+    cause: "open" | "lost",
+    air: Session<Req> | undefined,
+  ): void => {
     if (state.countedFailures < config.maxSetupFailures) return;
     if (holding(air)) state = { ...state, openingPaused: true };
     else actions.push({ _tag: "Fail", reason, cause });
@@ -3097,7 +3117,12 @@ const decide = <Req extends ClipRequest>(config: Config<Req>, previous: State<Re
    * before the session's cap. A shortfall within the margin alone is left to
    * the floor, which refills without holding the item.
    */
-  function coverFirst(target: Session<Req>, item: Item<Req>, continued: boolean, room: number): boolean {
+  function coverFirst(
+    target: Session<Req>,
+    item: Item<Req>,
+    continued: boolean,
+    room: number,
+  ): boolean {
     const filler = config.filler;
     if (filler === undefined || !protects(item) || item.covered === true || !fillerFree())
       return false;
@@ -4519,17 +4544,34 @@ const decide = <Req extends ClipRequest>(config: Config<Req>, previous: State<Re
  * again until nothing more is due, so none of it waits for a later input or wake.
  */
 export const step: {
-  <Req extends ClipRequest>(previous: State<Req>, input: Input<Req>, now: Now): (config: Config<Req>) => Step<Req>;
-  <Req extends ClipRequest>(config: Config<Req>, previous: State<Req>, input: Input<Req>, now: Now): Step<Req>;
-} = dual(4, <Req extends ClipRequest>(config: Config<Req>, previous: State<Req>, input: Input<Req>, now: Now): Step<Req> => {
-  let result = decide(config, previous, input, now);
-  for (let look = 1, decided = result.actions.length; decided > 0 && look < maxLooks; look++) {
-    const again = decide(config, result.state, { _tag: "Tick" }, now);
-    result = { ...again, actions: [...result.actions, ...again.actions] };
-    decided = again.actions.length;
-  }
-  return result;
-});
+  <Req extends ClipRequest>(
+    previous: State<Req>,
+    input: Input<Req>,
+    now: Now,
+  ): (config: Config<Req>) => Step<Req>;
+  <Req extends ClipRequest>(
+    config: Config<Req>,
+    previous: State<Req>,
+    input: Input<Req>,
+    now: Now,
+  ): Step<Req>;
+} = dual(
+  4,
+  <Req extends ClipRequest>(
+    config: Config<Req>,
+    previous: State<Req>,
+    input: Input<Req>,
+    now: Now,
+  ): Step<Req> => {
+    let result = decide(config, previous, input, now);
+    for (let look = 1, decided = result.actions.length; decided > 0 && look < maxLooks; look++) {
+      const again = decide(config, result.state, { _tag: "Tick" }, now);
+      result = { ...again, actions: [...result.actions, ...again.actions] };
+      decided = again.actions.length;
+    }
+    return result;
+  },
+);
 
 /**
  * What a withdrawal of `key` finds once nothing can change: the recorded fate of
@@ -4569,33 +4611,36 @@ const fillLength = (
 export const view: {
   <Req extends ClipRequest>(state: State<Req>, now: Now): (config: Config<Req>) => PublicState;
   <Req extends ClipRequest>(config: Config<Req>, state: State<Req>, now: Now): PublicState;
-} = dual(3, <Req extends ClipRequest>(config: Config<Req>, state: State<Req>, now: Now): PublicState => {
-  const own = (clip: PlayingClip): ItemKey | "filler" | "other" =>
-    clip.tag?._tag === "Item" ? clip.tag.key : clip.tag?._tag === "Filler" ? "filler" : "other";
-  const playing = state.sessions.find((value) => value.id === state.air)?.playing;
-  return {
-    accepting: state.accepting,
-    runwaySeconds: securedOf(state, now),
-    playing:
-      playing === undefined
-        ? null
-        : { key: own(playing), startedAt: playing.wall, seconds: playing.seconds },
-    lanes: config.lanes.map((lane, index) => ({
-      name: lane.name,
-      keys: [...state.items.values()]
-        .filter((item) => item.spec.lane === index && item.phase !== "Settled")
-        .sort((a, b) => a.order - b.order)
-        .map((item) => item.spec.key),
-    })),
-    sessions: state.sessions.map((value) => ({
-      sessionId: value.id,
-      role: value.id === state.air ? "on-air" : value.retiring ? "retiring" : "replacement",
-      ready: (value.source?.ready ?? []).map(own),
-    })),
-    starved: state.starved,
-    estimates: estimatesOf(state.samples),
-  };
-});
+} = dual(
+  3,
+  <Req extends ClipRequest>(config: Config<Req>, state: State<Req>, now: Now): PublicState => {
+    const own = (clip: PlayingClip): ItemKey | "filler" | "other" =>
+      clip.tag?._tag === "Item" ? clip.tag.key : clip.tag?._tag === "Filler" ? "filler" : "other";
+    const playing = state.sessions.find((value) => value.id === state.air)?.playing;
+    return {
+      accepting: state.accepting,
+      runwaySeconds: securedOf(state, now),
+      playing:
+        playing === undefined
+          ? null
+          : { key: own(playing), startedAt: playing.wall, seconds: playing.seconds },
+      lanes: config.lanes.map((lane, index) => ({
+        name: lane.name,
+        keys: [...state.items.values()]
+          .filter((item) => item.spec.lane === index && item.phase !== "Settled")
+          .sort((a, b) => a.order - b.order)
+          .map((item) => item.spec.key),
+      })),
+      sessions: state.sessions.map((value) => ({
+        sessionId: value.id,
+        role: value.id === state.air ? "on-air" : value.retiring ? "retiring" : "replacement",
+        ready: (value.source?.ready ?? []).map(own),
+      })),
+      starved: state.starved,
+      estimates: estimatesOf(state.samples),
+    };
+  },
+);
 
 /** The status of an item nothing can settle any more. */
 export const indeterminate = { _tag: "Unknown", terminal: true } as const satisfies Settled;
