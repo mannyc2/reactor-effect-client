@@ -245,7 +245,11 @@ export const execute = (input: {
       yield* run
         .mark("admitted", `worst case $${worstCaseUsd.toFixed(4)}`)
         .pipe(Effect.mapError((error) => Refused.make({ message: error.message })));
-      const exit = yield* checks[authorization.check].pipe(
+      const exit = yield* Effect.gen(function* () {
+        yield* Run.liveness.pipe(Effect.forkScoped);
+        yield* checks[authorization.check];
+      }).pipe(
+        Effect.scoped,
         Effect.provideService(Run.Run, run),
         Effect.withTracer(run.tracer),
         Effect.exit,

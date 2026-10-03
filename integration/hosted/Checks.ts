@@ -348,7 +348,11 @@ const create = Effect.fnUntraced(function* (grant: CoordinatorClient.TokenGrant,
       model: plans[run.check].model.name,
       tokens: CoordinatorClient.fixedTokens(grant),
       onAllocated: (allocation) =>
-        Effect.map(allocated(allocation.id, grant), (at) => {
+        Effect.gen(function* () {
+          yield* recordSessionEvents(allocation).pipe(
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          const at = yield* allocated(allocation.id, grant);
           deadline = at;
           grants.set(allocation.id, grant);
         }),
@@ -574,33 +578,93 @@ const readFresh = Effect.fnUntraced(function* <E>(
 });
 
 /** One statistics sample a second, as far as the evidence keeps it. */
-const sampleStats = (session: Pick<Session.Session, "stats">, samples: Array<StatsSample>) =>
+const sampleStats = (
+  session: Pick<Session.Session, "stats" | "snapshot">,
+  samples: Array<StatsSample>,
+) =>
   Effect.gen(function* () {
     const run = yield* Run;
-    const stats = yield* session.stats;
+    const snapshot = yield* session.snapshot;
+    const stats = Option.getOrUndefined(yield* session.stats.pipe(Effect.option));
     const atMs = yield* run.now;
     if (samples.length < 600)
       samples.push({
         atMs,
-        ...(stats.pair?.localCandidateType === undefined
+        status: snapshot.status,
+        generation: Number(snapshot.generation),
+        ...(stats?.pair?.localCandidateType === undefined
           ? {}
           : { local: stats.pair.localCandidateType }),
-        ...(stats.pair?.remoteCandidateType === undefined
+        ...(stats?.pair?.remoteCandidateType === undefined
           ? {}
           : { remote: stats.pair.remoteCandidateType }),
-        ...(stats.roundTripTimeSeconds === undefined
+        ...(stats?.roundTripTimeSeconds === undefined
           ? {}
           : { rttMs: round(stats.roundTripTimeSeconds * 1000) }),
-        ...(stats.rates === undefined
+        ...(stats?.rates === undefined
           ? {}
           : { receivedKbps: round(stats.rates.receivedBitsPerSecond / 1000) }),
-        ...(stats.framesPerSecond === undefined ? {} : { fps: round(stats.framesPerSecond) }),
-        ...(stats.jitterSeconds === undefined
+        ...(stats?.framesPerSecond === undefined ? {} : { fps: round(stats.framesPerSecond) }),
+        ...(stats?.jitterSeconds === undefined
           ? {}
           : { jitterMs: round(stats.jitterSeconds * 1000) }),
-        ...(stats.lossRatio === undefined ? {} : { lossRatio: round(stats.lossRatio, 4) }),
+        ...(stats?.lossRatio === undefined ? {} : { lossRatio: round(stats.lossRatio, 4) }),
       });
   }).pipe(Effect.ignore, Effect.repeat(Schedule.spaced("1 second")));
+
+/** The session's events from allocation, as tags and names only, never provider text or data. */
+const recordSessionEvents = Effect.fnUntraced(function* (
+  session: Pick<Session.Session, "observe">,
+) {
+  const run = yield* Run;
+  const observation = yield* session.observe({ capacity: 256 });
+  yield* observation.events.pipe(
+    Stream.runForEach((event) =>
+      Effect.gen(function* () {
+        if (event._tag === "Upload") return;
+        let detail: string;
+        switch (event._tag) {
+          case "Model":
+            detail = event.kind === "ack" ? "ack" : `message ${Probes.keptText(event.type)}`;
+            detail += ` ${event.correlation}`;
+            break;
+          case "Status":
+            detail = event.status;
+            break;
+          case "Track":
+            detail = Probes.keptText(event.name);
+            break;
+          case "Decoded":
+            detail = `${event.kind} ${Probes.keptText(event.name)}`;
+            break;
+          case "Control":
+            detail = event.message._tag;
+            break;
+          case "CommandError":
+          case "Diagnostic":
+            detail = event.error.reason._tag;
+            break;
+          case "Moderation":
+            detail = Probes.keptText(event.action);
+            break;
+        }
+        const atMs = yield* run.now;
+        yield* run.update((evidence) => {
+          const events = evidence.sessionEvents ?? [];
+          if (events.length >= 2000) return evidence;
+          return {
+            ...evidence,
+            sessionEvents: [
+              ...events,
+              { atMs, generation: Number(event.generation), tag: event._tag, detail },
+            ],
+          };
+        });
+      }),
+    ),
+    Effect.catch((error) => Effect.ignore(run.mark("session events unread", error.reason._tag))),
+  );
+});
 
 /** A clip with a reference image and reference audio: H3 takes audio only beside an image or a continuation. */
 const withReferences = (metadata: string): H3.Request => ({
@@ -2272,6 +2336,7 @@ const pieces = {
   readFresh,
   readInto,
   recordPlayout,
+  recordSessionEvents,
   round,
   sampleStats,
   seamMs,

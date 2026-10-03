@@ -776,6 +776,9 @@ const billing = (
 /** One run as a section. */
 const section = (evidence: Evidence): string => {
   const environment = evidence.environment;
+  const firstLate = evidence.liveness?.samples.find((sample) => sample.lateMs > 2000);
+  const firstLateText =
+    firstLate === undefined ? "" : `, first over 2 s at ${seconds(firstLate.atMs)}`;
   const packages = Object.entries(environment.packages)
     .map(([name, version]) => `${name} ${version}`)
     .join(", ");
@@ -791,6 +794,11 @@ const section = (evidence: Evidence): string => {
     `- **Network:** ${environment.network}`,
     `- **Cost:** worst case ${usd(evidence.budget.worstCaseUsd)}, estimated ${usd(evidence.budget.estimatedUsd)}${evidence.budget.rate === undefined ? "" : ` at ${evidence.budget.rate.creditsPerSecond} credits/s, billed per ${evidence.budget.rate.per}, and ${evidence.budget.rate.creditsPerDollar} credits/$`}`,
     `- **Timeline:** ${evidence.milestones.map((milestone) => `${milestone.step} ${seconds(milestone.atMs)}`).join(" · ")}`,
+    ...(evidence.liveness === undefined
+      ? []
+      : [
+          `- **Liveness:** the runner's 1 s timer fired at most ${seconds(evidence.liveness.maxLateMs)} late${firstLateText}; ${evidence.sessionEvents?.length ?? 0} session events kept`,
+        ]),
     ...measurements(evidence).map((line) => `- ${line}`),
     `- **Termination:** ${evidence.sessions.map((session) => `${session.id} ${session.close?.confirmed === true ? "confirmed" : "unconfirmed"}${session.trail.length === 0 ? "" : ` (trail ${session.trail.map((entry) => entry.state).join(" > ")})`}`).join("; ")}`,
     `- **Criteria:** ${evidence.criteria.map((criterion) => `${criterion.passed ? "✓" : "✗"} ${criterion.name}`).join(" · ")}`,

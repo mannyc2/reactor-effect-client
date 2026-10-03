@@ -126,6 +126,10 @@ export const failedOf = (reason: FailureReason): NonNullable<Item["failed"]> => 
 
 export const StatsSample = Schema.Struct({
   atMs: Ms,
+  /** The session's state even when its peer cannot supply statistics. */
+  status: Schema.optionalKey(Schema.String),
+  /** The connection generation that owned this sample. */
+  generation: Schema.optionalKey(Schema.Int),
   local: Schema.optionalKey(Schema.String),
   remote: Schema.optionalKey(Schema.String),
   rttMs: Schema.optionalKey(Schema.Finite),
@@ -1381,6 +1385,30 @@ export const Evidence = Schema.Struct({
   outcomes: Schema.Array(Outcome),
   criteria: Schema.Array(Criterion),
   spans: Schema.Array(Span),
+  /** Timer lateness distinguishes a stalled runner from a reconnecting session. */
+  liveness: Schema.optionalKey(
+    Schema.Struct({
+      samples: Schema.Array(Schema.Struct({ atMs: Ms, lateMs: Schema.Finite })),
+      maxLateMs: Schema.Finite,
+    }),
+  ),
+  /** Allocation-time events survive a failure before the provider can begin observing. */
+  sessionEvents: Schema.Struct({
+    atMs: Ms,
+    generation: Schema.Int,
+    tag: Schema.Literals([
+      "Model",
+      "Status",
+      "Track",
+      "Decoded",
+      "Control",
+      "CommandError",
+      "Diagnostic",
+      "Moderation",
+    ]),
+    /** Only kinds, names, correlations and reason tags; never message data or text. */
+    detail: Schema.optionalKey(Schema.String),
+  }).pipe(Schema.Array, Schema.optionalKey),
   /** H3's contract as the deployment and its messages showed it. */
   contract: Schema.optionalKey(
     Schema.Struct({

@@ -138,6 +138,29 @@ export const make = Effect.fnUntraced(function* (initial: Evidence, file: string
   });
 });
 
+/** A stalled runner delays its own timer even when no session can supply statistics. */
+export const liveness = Effect.gen(function* () {
+  const run = yield* Run;
+  return yield* Effect.gen(function* () {
+    const before = yield* Clock.monotonicTimeNanos;
+    yield* Effect.sleep("1 second");
+    const after = yield* Clock.monotonicTimeNanos;
+    const lateMs = round(Number(after - before) / 1e6 - 1000);
+    const atMs = yield* run.now;
+    yield* run.update((evidence) => {
+      const previous = evidence.liveness;
+      const samples = previous?.samples ?? [];
+      return {
+        ...evidence,
+        liveness: {
+          samples: samples.length < 900 ? [...samples, { atMs, lateMs }] : samples,
+          maxLateMs: Math.max(previous?.maxLateMs ?? 0, lateMs),
+        },
+      };
+    });
+  }).pipe(Effect.forever);
+});
+
 /** Records a failed command's remote outcome, which the stop rules read. */
 export const recorded = <A, E, R>(command: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | Run> =>
   Effect.tapError(command, (error) =>
