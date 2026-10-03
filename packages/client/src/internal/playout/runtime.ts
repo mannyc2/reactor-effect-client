@@ -20,16 +20,11 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
-import * as SchemaIssue from "effect/SchemaIssue";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Tracer from "effect/Tracer";
 import type * as Playout from "../../Playout.js";
-import { metadataMaxChars, requestSeconds } from "../h3/profile.js";
-import { validateAudioReference, validateReference } from "../h3/references.js";
-import { Request } from "../h3/request.js";
 import { currentParent, spanOptions } from "../trace.js";
 import { AcquisitionFailure, CommandFailure, ReactorError } from "../../ReactorError.js";
 import type { ReactorFailure } from "../../ReactorError.js";
@@ -46,7 +41,6 @@ import {
 } from "./errors.js";
 import type { SubmitError } from "./errors.js";
 import * as Policy from "./policy.js";
-import * as Tag from "./tag.js";
 
 type Handle = {
   readonly started: Deferred.Deferred<Effect.Success<Playout.ItemHandle["started"]>>;
@@ -55,10 +49,13 @@ type Handle = {
 type Reply =
   | { readonly _tag: "Accepted"; readonly results: ReadonlyArray<Policy.EditReply> }
   | { readonly _tag: "Refused"; readonly refusal: Policy.Refusal };
-type Command = Extract<Policy.Action, { _tag: "Command" }>;
-type Input = { readonly input: Policy.Input; readonly parent?: Tracer.ExternalSpan | undefined };
-type QueuedCommand = {
-  readonly action: Command;
+type Command<Req extends Playout.ClipRequest> = Extract<Policy.Action<Req>, { _tag: "Command" }>;
+type Input<Req extends Playout.ClipRequest> = {
+  readonly input: Policy.Input<Req>;
+  readonly parent?: Tracer.ExternalSpan | undefined;
+};
+type QueuedCommand<Req extends Playout.ClipRequest> = {
+  readonly action: Command<Req>;
   readonly parent: Tracer.ExternalSpan | undefined;
 };
 
@@ -70,14 +67,16 @@ const millis = (input: Duration.Input | undefined, fallback: number): number =>
 
 const monotonic = Effect.map(Clock.monotonicTimeNanos, (nanos) => Number(nanos) / 1_000_000);
 
-type FillerClip = NonNullable<Policy.Config["filler"]>["clip"];
+type FillerClip<Req extends Playout.ClipRequest> = NonNullable<
+  Policy.Config<Req>["filler"]
+>["clip"];
 
 /**
  * The application's filler clips, each asking for the length it was asked for unless it names
- * one: the plan counts it at that, and H3 would build one without a length at its session's own.
+ * one: the plan counts it at that, and a provider may build one without a length at its session's own.
  */
 const sized =
-  (clip: FillerClip): FillerClip =>
+  <Req extends Playout.ClipRequest>(clip: FillerClip<Req>): FillerClip<Req> =>
   (context) => {
     const request = clip(context);
     return { ...request, seconds: request.seconds ?? context.seconds };
@@ -109,52 +108,6 @@ const closeScope = (
   exit: Exit.Exit<unknown, unknown>,
 ): Effect.Effect<void> => Scope.close(scope, exit).pipe(Effect.catchCause(reportDefects));
 
-/**
- * Where a request for the clip `tag` names falls outside H3's documented
- * limits, field by field, or undefined within them: its metadata counted as
- * sent, wrapped with the tag and H3's own identity. Each issue names its field
- * and the limit, never the value, which may be a prompt.
- */
-const requestIssues = (request: Request, tag: Playout.ClipTag): string | undefined => {
-  const decoded = Schema.decodeResult(Request)(request, { errors: "all" });
-  const refused = (field: string, index: number) => (error: ReactorError) => [
-    { path: [field, String(index)], message: error.message },
-  ];
-  const issues = Result.isFailure(decoded)
-    ? SchemaIssue.makeFormatterStandardSchemaV1()(decoded.failure.issue).issues.map((issue) => ({
-        path: (issue.path ?? []).map((segment) =>
-          String(Predicate.isObject(segment) ? segment.key : segment),
-        ),
-        message: issue.message,
-      }))
-    : [
-        ...(decoded.success.references ?? []).flatMap((reference, index) =>
-          Result.match(validateReference(reference), {
-            onFailure: refused("references", index),
-            onSuccess: () => [],
-          }),
-        ),
-        ...(decoded.success.audio ?? []).flatMap((reference, index) =>
-          Result.match(validateAudioReference(reference), {
-            onFailure: refused("audio", index),
-            onSuccess: () => [],
-          }),
-        ),
-        ...(Tag.fits({ tag, metadata: decoded.success.metadata })
-          ? []
-          : [
-              {
-                path: ["metadata"],
-                message: `exceeds ${String(metadataMaxChars)} characters once wrapped as sent`,
-              },
-            ]),
-      ];
-  if (issues.length === 0) return undefined;
-  return issues
-    .map(({ path, message }) => (path.length === 0 ? message : `${path.join(".")}: ${message}`))
-    .join("; ");
-};
-
 /** A stable fingerprint of a spec: byte payloads by length and a checksum, never by content. */
 const fingerprint = (value: unknown): string =>
   JSON.stringify(value, (_, field: unknown) => {
@@ -166,8 +119,12 @@ const fingerprint = (value: unknown): string =>
     return typeof field === "bigint" ? field.toString() : field;
   });
 
-export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>) {
-  const config: Policy.Config = {
+export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequest>(
+  options: Playout.Options<R, Req>,
+  model: Playout.ClipModel<Req>,
+) {
+  const config: Policy.Config<Req> = {
+    defaultSeconds: model.defaultSeconds,
     lanes: options.lanes.map((lane) => ({
       name: lane.name,
       conflict: lane.conflict ?? "queue",
@@ -180,12 +137,12 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
             floor: millis(options.filler.runway.floor, 0) / 1000,
             target: millis(options.filler.runway.target, 0) / 1000,
             clip: sized(options.filler.clip),
-            lengths: options.filler.lengths ?? requestSeconds,
+            lengths: options.filler.lengths ?? model.lengths,
             invalid: (request, index) => {
-              const issues = requestIssues(request, { _tag: "Filler", index });
-              return issues === undefined
+              const issues = model.check(request, { _tag: "Filler", index }).join("; ");
+              return issues === ""
                 ? undefined
-                : `filler clip ${String(index)} asked for a request outside H3's documented limits: ${issues}`;
+                : `filler clip ${String(index)} asked for a request outside ${model.name}'s documented limits: ${issues}`;
             },
             protect: options.filler.protect ?? "air",
           },
@@ -202,9 +159,9 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   const scope = yield* Effect.scope;
   const context = yield* Effect.context<R>();
   const acquisition = yield* currentParent;
-  const inbox = yield* Queue.unbounded<Input>();
+  const inbox = yield* Queue.unbounded<Input<Req>>();
   const events = yield* PubSub.unbounded<Playout.Event>();
-  const state = yield* Ref.make(Policy.initial);
+  const state = yield* Ref.make<Policy.State<Req>>(Policy.initial);
   const ids = yield* Ref.make(0);
   // What callers wait for, each resolved once and then forgotten: an edit's reply, a batch's
   // commit, a batch withdrawal's outcome, a drain.
@@ -224,13 +181,13 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     new Map<
       string,
       {
-        readonly source: Playout.Source;
+        readonly source: Playout.Source<Req>;
         readonly scope: Scope.Closeable;
-        readonly lane: Queue.Queue<QueuedCommand>;
+        readonly lane: Queue.Queue<QueuedCommand<Req>>;
       }
     >(),
   );
-  const onAir = yield* SubscriptionRef.make<Playout.Source | undefined>(undefined);
+  const onAir = yield* SubscriptionRef.make<Playout.Source<Req> | undefined>(undefined);
   // Why the playout stopped; it dies with a defect that stopped it.
   const failure = yield* Deferred.make<ReactorFailure | InvalidFiller>();
   /** Completes once the playout has stopped, however it stopped. */
@@ -247,7 +204,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
 
   const now = Effect.all({ mono: monotonic, wall: Clock.currentTimeMillis });
   const nextId = Ref.modify(ids, (id) => [id + 1, id + 1] as const);
-  const offer = (input: Policy.Input, parent?: Tracer.ExternalSpan) =>
+  const offer = (input: Policy.Input<Req>, parent?: Tracer.ExternalSpan) =>
     Queue.offer(inbox, { input, parent });
 
   const handle = (key: ItemKey): Effect.Effect<Handle> =>
@@ -307,7 +264,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     });
 
   /** Closes `source` and records its report. A close that dies leaves none: it is reported. */
-  const closeRecorded = (source: Playout.Source): Effect.Effect<void> =>
+  const closeRecorded = (source: Playout.Source<Req>): Effect.Effect<void> =>
     Effect.flatMap(Effect.exit(source.close), (closed) =>
       Exit.isSuccess(closed) ? record(closed.value) : reportDefects(closed.cause),
     );
@@ -326,7 +283,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     });
 
   /** What a command for a session already gone gets: it was never sent. */
-  const gone = (command: Policy.Command): Policy.CommandResult => ({
+  const gone = (command: Policy.Command<Req>): Policy.CommandResult => ({
     _tag: "Failed",
     cause: CommandFailure.from(ReactorError.fromCode("InvalidState", "the session is gone"), {
       operation: command._tag,
@@ -334,7 +291,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     }),
   });
 
-  const run = ({ action, parent }: QueuedCommand): Effect.Effect<Policy.CommandResult> =>
+  const run = ({ action, parent }: QueuedCommand<Req>): Effect.Effect<Policy.CommandResult> =>
     Effect.gen(function* () {
       const entry = (yield* Ref.get(sources)).get(action.sessionId);
       if (entry === undefined) return gone(action.command);
@@ -440,10 +397,27 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
         allocated: true,
       });
     }
+    if (source.model !== undefined && source.model.name !== model.name) {
+      // A source planned with another model's lengths and limits would air what this plan
+      // never counted; opening again gives the same source.
+      yield* closeRecorded(source);
+      yield* closeScope(child, Exit.void);
+      const mismatch = ReactorError.fromCode(
+        "InvalidState",
+        `an opened source runs ${source.model.name}, and this playout plans for ${model.name}`,
+      );
+      yield* Ref.set(lastOpenError, Result.succeed(mismatch));
+      return yield* offer({
+        _tag: "OpenFailed",
+        reason: mismatch.message,
+        fatal: true,
+        allocated: true,
+      });
+    }
     yield* Ref.set(lastOpenError, undefined);
     // The session's commands, one at a time and in order. Its worker lives in the session's
     // scope, so the lane ends with the session.
-    const lane = yield* Queue.unbounded<QueuedCommand>();
+    const lane = yield* Queue.unbounded<QueuedCommand<Req>>();
     yield* Effect.forever(
       Effect.flatMap(Queue.take(lane), (queued) =>
         Effect.flatMap(run(queued), (result) =>
@@ -491,7 +465,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
    * or the defect when there was no error.
    */
   const failureOf = Effect.fnUntraced(function* (
-    action: Extract<Policy.Action, { _tag: "Fail" }>,
+    action: Extract<Policy.Action<Req>, { _tag: "Fail" }>,
   ): Effect.fn.Return<Result.Result<ReactorFailure | InvalidFiller, Cause.Cause<never>>> {
     switch (action.cause) {
       case "filler":
@@ -511,7 +485,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     }
   });
 
-  const act = (action: Policy.Action): Effect.Effect<void> =>
+  const act = (action: Policy.Action<Req>): Effect.Effect<void> =>
     Effect.gen(function* () {
       switch (action._tag) {
         case "Command": {
@@ -605,7 +579,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     });
 
   const apply = (
-    input: Policy.Input,
+    input: Policy.Input<Req>,
     parent?: Tracer.ExternalSpan,
   ): Effect.Effect<number | undefined> =>
     Effect.gen(function* () {
@@ -666,7 +640,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       // Nothing falls due before the wake: a wait that ends short of it, on a clock coarser than
       // the wake, waits on.
       if (Option.isNone(input) && wake !== undefined && (yield* monotonic) < wake) continue;
-      const received = Option.getOrElse(input, (): Input => ({ input: { _tag: "Tick" } }));
+      const received = Option.getOrElse(input, (): Input<Req> => ({ input: { _tag: "Tick" } }));
       wake = yield* apply(received.input, received.parent);
     }
   }).pipe(
@@ -704,7 +678,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
   const spec = (
     input: {
       readonly key: string;
-      readonly request: Playout.ItemSpec["request"];
+      readonly request: Playout.ItemSpec<Req>["request"];
       readonly cues?: ReadonlyArray<Playout.Cue> | undefined;
       readonly continuity?: "previous" | undefined;
       readonly window?: Playout.Window | undefined;
@@ -712,13 +686,13 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       readonly follows?: Playout.ClipTag | undefined;
     },
     laneIndex: number,
-  ): Effect.Effect<Policy.Spec, InvalidItem> =>
+  ): Effect.Effect<Policy.Spec<Req>, InvalidItem> =>
     Effect.gen(function* () {
       const key = yield* itemKey(input.key);
       const bad = (message: string) => InvalidItem.make({ key, message });
-      const issues = requestIssues(input.request, { _tag: "Item", key });
-      if (issues !== undefined)
-        return yield* bad(`the request is outside H3's documented limits: ${issues}`);
+      const issues = model.check(input.request, { _tag: "Item", key }).join("; ");
+      if (issues !== "")
+        return yield* bad(`the request is outside ${model.name}'s documented limits: ${issues}`);
       const duration = (value: Duration.Input | undefined) =>
         value === undefined
           ? Effect.undefined
@@ -744,11 +718,11 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       );
       const notBeforeMs = yield* duration(input.window?.notBefore);
       const startByMs = yield* duration(input.window?.startBy);
-      const seconds = input.request.seconds ?? requestSeconds.min;
-      // Sent at the length the plan counts it at: H3 builds a request without one at its
-      // session's clip length, 15 s by default.
+      const seconds = input.request.seconds ?? model.defaultSeconds;
+      // Sent at the length the plan counts it at: a provider may build a request without
+      // a length at its own default.
       const request = { ...input.request, seconds };
-      const window: Policy.Spec["window"] =
+      const window: Policy.Spec<Req>["window"] =
         input.window === undefined
           ? undefined
           : {
@@ -756,11 +730,11 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
               ...(notBeforeMs === undefined ? {} : { notBeforeMs }),
               ...(startByMs === undefined ? {} : { startByMs }),
             };
-      const normalized: Policy.Spec["start"] =
+      const normalized: Policy.Spec<Req>["start"] =
         start._tag === "At"
           ? { _tag: "At", time: start.time, late: late ?? "nextBoundary" }
           : { _tag: start._tag };
-      const result: Policy.Spec = {
+      const result: Policy.Spec<Req> = {
         key,
         lane: laneIndex,
         request,
@@ -788,7 +762,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
    * Sends one edit batch. Its commit and each withdrawal's outcome are
    * registered first, since the policy may settle them in the step that accepts it.
    */
-  const submitEdits = (edits: ReadonlyArray<Policy.EditInput>, batch: boolean) =>
+  const submitEdits = (edits: ReadonlyArray<Policy.EditInput<Req>>, batch: boolean) =>
     Effect.gen(function* () {
       const id = yield* nextId;
       const reply = yield* Deferred.make<Reply>();
@@ -825,7 +799,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
    */
   const stoppedOutcome = (key: ItemKey): Effect.Effect<Playout.WithdrawOutcome> =>
     Effect.map(Ref.get(state), (value) => Policy.fate(value, key));
-  const toEdit = (edit: Playout.Edit): Effect.Effect<Policy.EditInput, InvalidItem> =>
+  const toEdit = (edit: Playout.Edit<Req>): Effect.Effect<Policy.EditInput<Req>, InvalidItem> =>
     Effect.gen(function* () {
       switch (edit._tag) {
         case "Submit": {
@@ -880,7 +854,7 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
           return { _tag: "Withdraw", key: yield* itemKey(edit.key) };
       }
     });
-  const edit = (input: ReadonlyArray<Playout.Edit>, batch: boolean) =>
+  const edit = (input: ReadonlyArray<Playout.Edit<Req>>, batch: boolean) =>
     Effect.gen(function* () {
       const edits = yield* Effect.forEach(input, toEdit);
       const { commit, outcomes, results } = yield* submitEdits(edits, batch);
@@ -920,36 +894,39 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
       return { commit, results: mapped };
     });
 
-  const service: Playout.Playout["Service"] = {
-    submit: Effect.fn("Playout.submit")(function* (item: Playout.ItemSpec) {
+  const service: Playout.Service<Req> = {
+    submit: Effect.fn("Playout.submit")(function* (item: Playout.ItemSpec<Req>) {
       const { results } = yield* edit([{ _tag: "Submit", item }], false);
       const [first] = results;
       return first?._tag === "Added"
         ? first.handle
         : yield* Effect.die("a submit returned no handle");
     }),
-    submitGroup: Effect.fn("Playout.submitGroup")(function* (group: Playout.GroupSpec) {
+    submitGroup: Effect.fn("Playout.submitGroup")(function* (group: Playout.GroupSpec<Req>) {
       const { results } = yield* edit([{ _tag: "SubmitGroup", group }], false);
       const [first] = results;
       return first?._tag === "AddedGroup"
         ? first.handle
         : yield* Effect.die("a group submit returned no handle");
     }),
-    insert: Effect.fn("Playout.insert")(function* (insert: Playout.InsertSpec) {
+    insert: Effect.fn("Playout.insert")(function* (insert: Playout.InsertSpec<Req>) {
       const { results } = yield* edit([{ _tag: "Insert", insert }], false);
       const [first] = results;
       return first?._tag === "Added"
         ? first.handle
         : yield* Effect.die("an insert returned no handle");
     }),
-    replace: Effect.fn("Playout.replace")(function* (key: ItemKey, next: Playout.ReplacementSpec) {
+    replace: Effect.fn("Playout.replace")(function* (
+      key: ItemKey,
+      next: Playout.ReplacementSpec<Req>,
+    ) {
       const { results } = yield* edit([{ _tag: "Replace", key, next }], false);
       const [first] = results;
       return first?._tag === "Added"
         ? first.handle
         : yield* Effect.die("a replace returned no handle");
     }),
-    edit: Effect.fn("Playout.edit")(function* (edits: ReadonlyArray<Playout.Edit>) {
+    edit: Effect.fn("Playout.edit")(function* (edits: ReadonlyArray<Playout.Edit<Req>>) {
       const { commit, results } = yield* edit(edits, true);
       return { results, committed: unlessStopped(commit, closed) };
     }),
@@ -970,11 +947,11 @@ export const make = Effect.fnUntraced(function* <R>(options: Playout.Options<R>)
     }),
     place: Effect.fn("Playout.place")(function* (probe: Playout.PlaceProbe) {
       const key = yield* itemKey(probe.key);
-      const seconds = probe.seconds ?? requestSeconds.min;
-      if (!Number.isFinite(seconds) || seconds < requestSeconds.min || seconds > requestSeconds.max)
+      const seconds = probe.seconds ?? model.defaultSeconds;
+      if (!Number.isFinite(seconds) || seconds < model.lengths.min || seconds > model.lengths.max)
         return yield* InvalidItem.make({
           key,
-          message: `seconds must be from ${requestSeconds.min} to ${requestSeconds.max}`,
+          message: `seconds must be from ${model.lengths.min} to ${model.lengths.max}`,
         });
       const submitIn =
         probe.submitIn === undefined

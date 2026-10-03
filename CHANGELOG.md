@@ -4,6 +4,15 @@ All notable changes to `reactor-effect-client`, `reactor-effect-browser` and `re
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Playout.ClipModel` and the `model` option of `Playout.make` and `LocalSource.open`, so a playout plans for a model other than H3 and a local renderer can air clips shorter than 5 s. H3 remains the default.
+- `Source.model`; the playout refuses a source whose model name differs from its own before sending commands.
+- `H3Source.model`, the H3 clip model and its documented request limits.
+- `Playout.Service<Req>` for application services that plan another model's requests.
+
 ## [0.10.0] - 2026-10-02
 
 0.10.0 moves the SDK to Effect 4.0.0 and adds `ViduS2Avatar`, a provider for Reactor's Vidu S2-Avatar, a character made from one photo who talks with a caller in a live call. Every package now peers on Effect `~4.0.0`, so a project on Effect 4.0.0 or a later 4.0.x patch can add it; a project on `4.0.0-rc.117` moves to Effect 4.0.0 first, including its own `effect/unstable/*` imports. The native Rust sources are unchanged since 0.9.2.

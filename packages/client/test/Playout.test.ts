@@ -2022,6 +2022,74 @@ layer(
 });
 
 layer(hosted)("local renderer", (it) => {
+  it.effect("airs a local renderer's clip shorter than H3's shortest, under its own model", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const speech: Playout.ClipModel<H3.Request> = {
+        name: "speech",
+        lengths: { min: 0.5, max: 30 },
+        defaultSeconds: 2,
+        check: () => [],
+      };
+      const presented = yield* Ref.make<ReadonlyArray<number>>([]);
+      const playout = yield* Playout.make({
+        model: speech,
+        open: LocalSource.open({
+          model: speech,
+          build: (local) => Effect.succeed({ value: local.request.prompt }),
+          present: (local) =>
+            Effect.andThen(
+              Ref.update(presented, (all) => [...all, local.seconds]),
+              Effect.sleep(Duration.seconds(local.seconds)),
+            ),
+        }),
+        lanes: [{ name: "speech" }],
+      });
+      const short = yield* playout.submit({
+        key: key("short"),
+        lane: "speech",
+        request: { prompt: "line", seconds: 2 },
+      });
+      assert.strictEqual((yield* short.outcome)._tag, "Ended");
+      const defaulted = yield* playout.submit({
+        key: key("defaulted"),
+        lane: "speech",
+        request: { prompt: "another line" },
+      });
+      assert.strictEqual((yield* defaulted.outcome)._tag, "Ended");
+      assert.deepStrictEqual(yield* Ref.get(presented), [2, 2]);
+    }),
+  );
+
+  it.effect("refuses a source that runs another model, before it airs anything", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const speech: Playout.ClipModel<H3.Request> = {
+        name: "speech",
+        lengths: { min: 0.5, max: 30 },
+        defaultSeconds: 2,
+        check: () => [],
+      };
+      const opens = yield* Ref.make(0);
+      const playout = yield* Playout.make({
+        model: speech,
+        open: Effect.andThen(
+          Ref.update(opens, (count) => count + 1),
+          LocalSource.open({ buildRatio: 0 }),
+        ),
+        lanes: [{ name: "speech" }],
+      });
+      const failure = yield* playout.failure.pipe(Effect.timeout("1 second"));
+      assert.strictEqual(failure._tag, "ReactorError");
+      if (failure._tag === "ReactorError") {
+        assert.strictEqual(failure.reason._tag, "InvalidState");
+        assert.include(failure.message, "H3");
+        assert.include(failure.message, "speech");
+      }
+      assert.strictEqual(yield* Ref.get(opens), 1);
+    }),
+  );
+
   it.effect("runs the same plan on a local renderer", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));

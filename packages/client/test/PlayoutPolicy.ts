@@ -7,6 +7,7 @@ import { ItemKey } from "../src/Playout.js";
 import { CommandFailure, ReactorError } from "../src/ReactorError.js";
 
 const config: Policy.Config = {
+  defaultSeconds: 5,
   lanes: [
     { name: "urgent", conflict: "queue", cut: true },
     { name: "line", conflict: "queue", cut: false },
