@@ -1148,7 +1148,15 @@ export const make = (spanName: string) =>
     C extends Clip,
     Name extends string,
     Version extends string,
-  >(session: Session, family: Family<Req, Captured, C, Name, Version>, options: H3.Options = {}) {
+  >(
+    session: Session,
+    family: Family<Req, Captured, C, Name, Version>,
+    options: H3.Options = {},
+  ): Effect.fn.Return<
+    Provider<Req, C, Name, Version>,
+    ReactorError | CommandFailure,
+    Crypto.Crypto | Scope.Scope
+  > {
     const child = yield* Scope.fork(yield* Effect.scope);
     return yield* build(session, family, options).pipe(
       Scope.provide(child),
