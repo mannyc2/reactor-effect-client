@@ -31,7 +31,7 @@ export class InvalidItem extends Schema.TaggedError<InvalidItem>()("InvalidItem"
 }) {}
 
 /**
- * The filler clip at `index` asked for a request outside H3's documented
+ * The filler clip at `index` asked for a request outside its model's documented
  * limits. The playout fails with it rather than skip the clip and leave the air
  * uncovered, since asking again would get the same request.
  */

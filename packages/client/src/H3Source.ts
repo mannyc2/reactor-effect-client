@@ -494,6 +494,7 @@ const fromSession = Effect.fnUntraced(function* (
     );
   return {
     sessionId: session.id,
+    model: clipModel,
     events,
     enqueue: (request, tag, continueFrom) =>
       Effect.gen(function* () {
