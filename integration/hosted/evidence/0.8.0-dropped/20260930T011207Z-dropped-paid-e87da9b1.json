@@ -1,0 +1,413 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "e87da9b1",
+  "check": "dropped",
+  "mode": "paid",
+  "startedAt": "2026-09-30T01:12:07.255Z",
+  "finishedAt": "2026-09-30T01:13:11.990Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "b64aff33e39343656f9428092d056a75ebba0c82",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.8.0",
+      "reactor-effect-native": "0.8.0",
+      "effect": "4.0.0-rc.117",
+      "@effect/platform-node": "4.0.0-rc.117"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "9390d1775d66cd0307c90b1db89c969d7adfd2592086ec1b07a5f7acdd614da4",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "maintainer's Linux workstation, network not described",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 1,
+    "totalUsd": 1,
+    "reservedBeforeUsd": 0,
+    "rate": {
+      "creditsPerSecond": 125,
+      "creditsPerDollar": 10000,
+      "per": "second"
+    },
+    "worstCaseUsd": 1,
+    "estimatedUsd": 0.8
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": "unlimited",
+      "expiresAt": 1790730867
+    }
+  ],
+  "sessions": [
+    {
+      "id": "8de21707-9d81-4ca2-9b52-3e2e16a0fd52",
+      "allocatedMs": 1210,
+      "close": {
+        "requestedMs": 64087,
+        "reportedMs": 64510,
+        "confirmed": true,
+        "termination": {
+          "attempted": true,
+          "responseReceived": true,
+          "confirmed": true,
+          "evidence": "terminal",
+          "deleteStatus": 200,
+          "state": "CLOSED"
+        }
+      },
+      "trail": [
+        {
+          "atMs": 64723,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 64723
+    }
+  ],
+  "milestones": [
+    {
+      "atMs": 2,
+      "step": "admitted",
+      "detail": "worst case $1.0000"
+    },
+    {
+      "atMs": 212,
+      "step": "minted"
+    },
+    {
+      "atMs": 214,
+      "step": "owner started"
+    },
+    {
+      "atMs": 3873,
+      "step": "owner connected",
+      "detail": "node v24.14.1, the isolated native peer"
+    },
+    {
+      "atMs": 3884,
+      "step": "owner killed"
+    },
+    {
+      "atMs": 3972,
+      "step": "read ACTIVE"
+    },
+    {
+      "atMs": 10085,
+      "step": "read INACTIVE"
+    },
+    {
+      "atMs": 64510,
+      "step": "closed",
+      "detail": "8de21707-9d81-4ca2-9b52-3e2e16a0fd52 confirmed"
+    },
+    {
+      "atMs": 64511,
+      "step": "dropped observed"
+    },
+    {
+      "atMs": 64723,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [],
+  "criteria": [
+    {
+      "name": "the owner connected",
+      "passed": true
+    },
+    {
+      "name": "the watch completed",
+      "passed": true
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "spans": [
+    {
+      "name": "Coordinator.mintToken",
+      "startMs": 2.2,
+      "durationMs": 209.6,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 3885.6,
+      "durationMs": 85.7,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 5875.3,
+      "durationMs": 213.7,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 7875.3,
+      "durationMs": 211.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 9876.4,
+      "durationMs": 208.7,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 11878.4,
+      "durationMs": 210.6,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 13876.1,
+      "durationMs": 217.4,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 15875.4,
+      "durationMs": 85.4,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 17875.4,
+      "durationMs": 213.4,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 19875.3,
+      "durationMs": 211.7,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 21875.4,
+      "durationMs": 209.4,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 23875.3,
+      "durationMs": 222.2,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 25875.4,
+      "durationMs": 214,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 27875.3,
+      "durationMs": 87.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 29876,
+      "durationMs": 212.1,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 31875.3,
+      "durationMs": 213.4,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 33875.4,
+      "durationMs": 213.4,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 35875.3,
+      "durationMs": 213.3,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 37875.3,
+      "durationMs": 85.2,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 39874.3,
+      "durationMs": 84.3,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 41875.2,
+      "durationMs": 215.7,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 43875.3,
+      "durationMs": 211.2,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 45875.1,
+      "durationMs": 213.2,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 47874.8,
+      "durationMs": 83.7,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 49874.3,
+      "durationMs": 212.2,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 51874.3,
+      "durationMs": 228.8,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 53875.3,
+      "durationMs": 215.9,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 55874.3,
+      "durationMs": 212.1,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 57874.3,
+      "durationMs": 214.1,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 59874.3,
+      "durationMs": 216.3,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 61874.3,
+      "durationMs": 214.2,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 63874.3,
+      "durationMs": 212.1,
+      "status": "ok",
+      "attributes": {}
+    },
+    {
+      "name": "Coordinator.terminate",
+      "startMs": 64086.8,
+      "durationMs": 422.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "8de21707-9d81-4ca2-9b52-3e2e16a0fd52",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      }
+    },
+    {
+      "name": "Coordinator.inspect",
+      "startMs": 64511.9,
+      "durationMs": 210.8,
+      "status": "ok",
+      "attributes": {}
+    }
+  ],
+  "dropped": {
+    "startedMs": 214,
+    "startedAt": "2026-09-30T01:12:07.480Z",
+    "ownerHost": "node v24.14.1, the isolated native peer",
+    "sessionId": "8de21707-9d81-4ca2-9b52-3e2e16a0fd52",
+    "allocatedAt": "2026-09-30T01:12:08.476Z",
+    "connectedMs": 3873,
+    "killedMs": 3874,
+    "killedAt": "2026-09-30T01:12:11.140Z",
+    "windowEndsMs": 63874,
+    "states": [
+      {
+        "state": "ACTIVE",
+        "firstMs": 3971,
+        "lastMs": 8087,
+        "reads": 3
+      },
+      {
+        "state": "INACTIVE",
+        "firstMs": 10085,
+        "lastMs": 64087,
+        "reads": 28
+      }
+    ],
+    "ended": {
+      "by": "key",
+      "atMs": 64509,
+      "at": "2026-09-30T01:13:11.775Z"
+    }
+  },
+  "verdict": "pass",
+  "reasons": [],
+  "missing": []
+}

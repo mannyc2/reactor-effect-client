@@ -256,7 +256,10 @@ const preflight = Command.make(
     // Minting allocates nothing; a token that grants more than asked refuses here.
     const grant = yield* coordinator.mintToken({
       modelName: model,
-      maxSessionDuration: `${Spend.plans[check].seconds} seconds`,
+      maxSessionDuration:
+        Spend.plans[check].seconds === "unlimited"
+          ? "unlimited"
+          : `${Spend.plans[check].seconds} seconds`,
       expiresAfter: `${Spend.tokenSecondsFor(check)} seconds`,
     });
     const granted = yield* Spend.provenGrant({
@@ -320,6 +323,10 @@ const owner = Command.make(
       Flag.withDescription("give each connection's native peer a child process; needs Node"),
       Flag.withDefault(false),
     ),
+    idle: Flag.Boolean("idle").pipe(
+      Flag.withDescription("connect and set up the session, playing nothing"),
+      Flag.withDefault(false),
+    ),
     queuedSeconds: Flag.Int("queued-seconds").pipe(
       Flag.withDescription("how long the clip queued behind the 15 s one asks for"),
       Flag.optional,
@@ -334,6 +341,7 @@ const owner = Command.make(
       lines: stdio.stdin.pipe(Stream.decodeText(), Stream.splitLines),
       host: `${runtime}, ${input.isolated ? "the isolated native peer" : "the native peer in process"}`,
       queuedSeconds: Option.getOrUndefined(input.queuedSeconds),
+      idle: input.idle,
     });
   }),
 ).pipe(

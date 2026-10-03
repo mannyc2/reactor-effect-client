@@ -32,6 +32,7 @@ import type * as Session from "reactor-effect-client/Session";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import { adoption } from "./checks/Adoption.js";
+import { dropped } from "./checks/Dropped.js";
 import { avatar } from "./checks/Avatar.js";
 import { character } from "./checks/Character.js";
 import { fastH3 } from "./checks/FastH3.js";
@@ -217,10 +218,11 @@ const mint = Effect.fnUntraced(function* (
   const run = yield* Run;
   const target = yield* Target;
   const coordinator = yield* CoordinatorClient.CoordinatorClient;
+  const cap = plans[check].seconds;
   const grant = yield* coordinator.mintToken({
     apiKey: target.apiKey,
     modelName: modelFor(check, target.mode).name,
-    maxSessionDuration: `${plans[check].seconds} seconds`,
+    maxSessionDuration: cap === "unlimited" ? cap : `${cap} seconds`,
     expiresAfter: `${expiresAfterSeconds} seconds`,
   });
   yield* run.secret(grant.jwt);
@@ -272,7 +274,7 @@ const capMs = (grant: CoordinatorClient.TokenGrant) =>
 const holding = Effect.fnUntraced(function* (
   sessionId: string,
   allocatedAt: number,
-  capEndsAt: number,
+  capEndsAt: number | undefined,
 ) {
   const run = yield* Run;
   yield* run.update((evidence) => ({
@@ -282,7 +284,9 @@ const holding = Effect.fnUntraced(function* (
       {
         id: sessionId,
         allocatedMs: allocatedAt - run.origin,
-        capEndsAt: DateTime.formatIso(DateTime.makeUnsafe(capEndsAt)),
+        ...(capEndsAt === undefined
+          ? {}
+          : { capEndsAt: DateTime.formatIso(DateTime.makeUnsafe(capEndsAt)) }),
         trail: [],
       },
     ],
@@ -2370,6 +2374,7 @@ const all = {
   adoption: adoption(pieces),
   show: show(pieces),
   unconnected: unconnected(pieces),
+  dropped: dropped(pieces),
   showreel: showreel(pieces),
   avatar: avatar(pieces),
   character: character(pieces),

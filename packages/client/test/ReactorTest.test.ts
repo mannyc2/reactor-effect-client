@@ -431,15 +431,41 @@ layer(
   );
 });
 
-// Reactor's docs: a session that loses its last connection lives 30 seconds, then ends. These
-// sessions do not reconnect themselves, so only the test brings a connection back.
+// The default follows hosted billing; a fault opts into Reactor's documented disconnect deadline.
+// These sessions do not reconnect themselves, so only the test brings a connection back.
 layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }), reconnect: false }))(
   "the reconnect window",
   (it) => {
+    it.effect("keeps a dropped session INACTIVE after 60 s until it is explicitly ended", () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
+        const test = yield* ReactorTest.ReactorTest;
+        yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(1) });
+        const session = yield* connect;
+        yield* session.changes.pipe(
+          Stream.filter((snapshot) => snapshot.status === "disconnected"),
+          Stream.runHead,
+        );
+        // The simulated clock measures the hosted behaviour the default must preserve.
+        yield* Effect.sleep("60 seconds");
+        assert.strictEqual(
+          (yield* test.sessions).find((info) => info.id === session.id)?.state,
+          "INACTIVE",
+        );
+        const report = yield* session.close;
+        assert.isTrue(report.remote.confirmed);
+        assert.strictEqual(
+          (yield* test.sessions).find((info) => info.id === session.id)?.state,
+          "CLOSED",
+        );
+      }),
+    );
+
     it.effect("ends a session 30 s after its connection drops with none back", () =>
       Effect.gen(function* () {
         yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
         const test = yield* ReactorTest.ReactorTest;
+        yield* test.inject({ _tag: "DisconnectEnds", after: Duration.seconds(30) });
         yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(1) });
         const session = yield* connect;
         yield* Effect.sleep("20 seconds");
@@ -453,12 +479,12 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }), recon
       }),
     );
 
-    // Paid run tokens 83d17eb7: hosted Reactor read INACTIVE 9 s after the owner was killed,
-    // and the session was still there to end. A session in its window can be reconnected.
+    // Hosted Reactor read INACTIVE 9 s after its owner died; a returning connection keeps it live.
     it.effect("reconnects a session that reads INACTIVE inside the window", () =>
       Effect.gen(function* () {
         yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
         const test = yield* ReactorTest.ReactorTest;
+        yield* test.inject({ _tag: "DisconnectEnds", after: Duration.seconds(30) });
         yield* test.inject({ _tag: "Disconnect", nth: 1, after: Duration.seconds(1) });
         const session = yield* connect;
         yield* Effect.sleep("10 seconds");

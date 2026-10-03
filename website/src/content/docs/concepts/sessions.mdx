@@ -312,8 +312,8 @@ generation, and the snapshot's `reconnecting` is true until a connection is read
 stops trying. `disconnected` without `reconnecting` is lasting, and `lastError` says why. Each
 failed attempt is a `Diagnostic` event.
 
-- `Reactor.layer({ reconnect: false })` leaves a dropped connection down; Reactor then ends the
-  session 30 seconds after its last connection dropped.
+- `Reactor.layer({ reconnect: false })` leaves a dropped connection down until `session.reconnect`.
+  The session may keep billing until it is terminated or its cap ends it.
 - `session.reconnect` opens a new generation now, from a ready connection or a lasting drop.
   While the session reconnects on its own, it joins that reconnect instead of starting another.
 
@@ -325,7 +325,13 @@ On hosted H3, a playout's connection was cut with 8.07 s of air secured. It was 
 <Aside type="caution" title="Reconnecting keeps a session billing">
 A session keeps billing through its drops. An owned session your application never closed, or
 one a viewer holds after its owner has gone, runs for as long as the process holding it does, to
-its cap if it has one.
+its cap if it has one. Reactor's [session docs](https://docs.reactor.inc/concepts/sessions) say it
+ends a session 30 seconds after its last connection drops. On hosted Reactor, a connected session
+whose owner was killed still read `INACTIVE` 60 seconds later. The API key ended it, and the
+dashboard billed 1m 3s, including the disconnected time
+([0.8.0-dropped](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dropped/summary.md),
+2026-09-30). End owned sessions with `session.close`, or use the key's
+`coordinator.terminate(sessionId)` after a crash, and cap them.
 </Aside>
 
 ## Commands
@@ -436,8 +442,10 @@ and `REACTOR_API_KEY` from the environment. A session's create and signaling req
 SDK in their `client_info`, as `sdk_type: "typescript-effect-independent"`.
 
 `CoordinatorClient.isTerminal(state)` is true only for `CLOSED`. Reactor reads `INACTIVE` for a
-session whose last connection has gone, and that session is still live and billed until Reactor
-ends it 30 seconds later, unless a connection returns.
+session whose last connection has gone, and that session is still live and billed. Reactor
+documents a 30-second end, but the hosted probe above found it still `INACTIVE` 60 seconds after
+its owner's kill and billed until the API key ended it. Confirm termination with `session.close`
+for an owned session or the key's `coordinator.terminate(sessionId)`, and cap sessions.
 
 ## Limits
 

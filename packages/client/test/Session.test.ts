@@ -1834,9 +1834,9 @@ layer(
         ["Timeout", [0, 250, 500, 1_000, 2_000, 4_000, 4_000, 4_000, 4_000, 4_000, 4_000]],
       );
       assert.approximately(stoppedAt - (drops[0] ?? 0), 30_000, 100);
-      // Reactor keeps a session 30 s after its last connection drops.
+      // The SDK's reconnect deadline does not terminate the dropped session.
       yield* Effect.sleep("30 seconds");
-      assert.strictEqual(yield* remoteState(session.id), "CLOSED");
+      assert.strictEqual(yield* remoteState(session.id), "INACTIVE");
     }).pipe(Effect.provideService(Random.Random, drawing(0.5))),
   );
 });
@@ -1869,9 +1869,9 @@ layer(
       // Its time ran out 30 s after the first drop, while the connection that dropped last was up.
       assert.isAbove(last - first, 30_000);
       assert.approximately(stoppedAt, last, 50);
-      // Reactor keeps a session 30 s after its last connection drops.
+      // Stopping the SDK's reconnect attempts leaves the dropped session live.
       yield* Effect.sleep("30 seconds");
-      assert.strictEqual(yield* remoteState(session.id), "CLOSED");
+      assert.strictEqual(yield* remoteState(session.id), "INACTIVE");
     }).pipe(Effect.provideService(Random.Random, drawing(0.5))),
   );
 });
@@ -1934,18 +1934,18 @@ layer(
 });
 
 layer(environment({ timing, reconnect: false }))("a dropped connection, reconnect off", (it) => {
-  it.effect("stays down, and Reactor ends the session 30 s later", () =>
+  it.effect("stays down while the dropped session remains live", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("50 millis"));
       const test = yield* ReactorTest.ReactorTest;
       yield* test.inject(drop);
       const session = yield* connect;
-      // Past Reactor's 30 s, in which a connection could have come back.
+      // Past Reactor's documented 30 s end, with no reconnect or termination.
       yield* Effect.sleep("40 seconds");
       const snapshot = yield* session.snapshot;
       assert.deepStrictEqual(
         [snapshot.status, snapshot.generation, yield* remoteState(session.id)],
-        ["disconnected", 1n, "CLOSED"],
+        ["disconnected", 1n, "INACTIVE"],
       );
     }),
   );
