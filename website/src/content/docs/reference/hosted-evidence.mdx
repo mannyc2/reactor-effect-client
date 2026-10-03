@@ -24,7 +24,7 @@ its worst case in a ledger before any token exists, and a ledger's total is capp
 
 ## Every run
 
-26 runs, 32 sessions, from 2026-09-24 to 2026-10-02. Every session ended with its termination
+29 runs, 35 sessions, from 2026-09-24 to 2026-10-03. Every session ended with its termination
 confirmed by an independent read.
 
 | Started (UTC)    | Code                 | Check               | Sessions | Estimate | Result                                                       |
@@ -55,6 +55,9 @@ confirmed by an independent read.
 | 2026-10-02 12:07 | checkout `b7ce932`   | `avatar`            | 1        | $0.406   | Pass, every criterion                                        |
 | 2026-10-02 12:49 | checkout `819d45b`   | `character`         | 1        | $0.028   | Fail: the native connection failed at the first command      |
 | 2026-10-02 12:58 | checkout `3239468`   | `character`         | 1        | $0.196   | Pass, every criterion                                        |
+| 2026-10-03 12:26 | 0.10.0, from npm     | `vertical`          | 1        | $0.455   | Pass, all seven criteria                                     |
+| 2026-10-03 12:27 | 0.10.0, from npm     | `tour`              | 1        | $1.295   | Pass, all 30 criteria                                        |
+| 2026-10-03 12:28 | 0.10.0, from npm     | `edits`             | 1        | $1.260   | Pass, every criterion                                        |
 
 The summaries, one per ledger:
 [0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md),
@@ -66,13 +69,15 @@ The summaries, one per ledger:
 [0.8.0-probe](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-probe/summary.md),
 [0.8.0-rc](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-rc/summary.md)
 [0.9.2-avatar](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.9.2-avatar/summary.md)
-and [0.9.2-character](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.9.2-character/summary.md).
+[0.9.2-character](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.9.2-character/summary.md)
+and [0.10.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.10.0/summary.md).
 
 - **Estimates** are the evidence's own, at the rate Reactor's pricing stated then: 125 credits a
   second, $0.0125. Up to 0.7.0 they count every started minute whole, so they are upper bounds;
   from 0.8.0 they count seconds. On 2026-09-30 the pricing lists 350 credits a second, so the same
   sessions would cost 2.8 times the per-second estimates today. The `avatar` and `character` runs
-  are at Vidu S2-Avatar's 70 credits a second, $0.007, counted by the second.
+  are at Vidu S2-Avatar's 70 credits a second, $0.007, counted by the second. The published
+  0.10.0 H3 runs use 350 credits a second, $0.035, counted by the second.
 - **Failures.** Each found cause was fixed before the check ran again to qualify. Most were the
   library's: 0.3.0-rc.0's acceptance, ICE pair and attach, 0.7.0's misplaced continued insert and
   doubled `stop`, and an `INACTIVE` session read as ended. Two were criteria of the checks' own
@@ -99,6 +104,13 @@ and [0.9.2-character](https://github.com/mannyc2/reactor-effect-client/blob/main
   moved it hours later; and the $1.09 between the readings around 0.8.0-probe fits neither.
 
 ## What the runs measured
+
+**Published 0.10.0 on Effect 4** ([0.10.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.10.0/summary.md),
+2026-10-03): `vertical`, `tour` and `edits` passed on the npm client and native packages with
+Effect 4.0.0, with all three sessions confirmed ended. The tour reconnected in 2.014 s,
+kept its Ready clip and received fresh media. The edits aired in their planned places,
+with 71–143 ms seams and no dark frame. The runner's one-second timer was at most 5.7 ms
+late. The three estimates total $3.010; dashboard charges have not yet been read.
 
 **Media and connection** ([0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md),
 [0.3.1](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.1/summary.md),
@@ -149,8 +161,8 @@ and [0.9.2-character](https://github.com/mannyc2/reactor-effect-client/blob/main
   passing `edits` and `show` runs, the picture at a continued seam changed 2.3–5.8 times the clip's
   own motion, and at their independent seams 11–20 times; a cut seam elsewhere measured 6.5 times.
 
-**Termination**: every one of the 32 sessions confirmed ended; where timed, `CLOSED` read
-0.63–0.86 s after the `DELETE`.
+**Termination**: every one of the 35 sessions confirmed ended. In the earlier 0.8.0 runs,
+where timed, `CLOSED` read 0.63–0.86 s after the `DELETE`.
 
 **The showreel** ([0.9.0-showreel](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.9.0-showreel/summary.md),
 2026-10-01): one `Playout` over one 70 s-capped session aired five 8-second scenes back to back,
