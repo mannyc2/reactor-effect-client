@@ -1,11 +1,11 @@
 /**
- * Reactor in a box: Reactor's coordinator and its H3 and Vidu S2-Avatar models
+ * Reactor in a box: Reactor's coordinator and its H3, FastH3 and Vidu S2-Avatar models
  * simulated in memory at the network edge, so an application and every SDK
  * layer above it run unchanged without a paid session. Provide `layer({ timing })` beneath
  * `Reactor.layer()` in place of an HTTP client and a host; `layerCoordinator`
  * is the coordinator's HTTP API alone, with no host.
  *
- * It models what H3 does, not how fast it does it: every delay comes from the
+ * It models what the models do, not how fast they do it: every delay comes from the
  * `timing` the caller chooses. A scenario test states the timing it relies on
  * with `Timing.fixed`; a simulation test draws from wide ranges with
  * `Timing.random`, reproducibly for its seed; `Timing.hosted` draws from
@@ -320,7 +320,8 @@ export const Timing = {
    * and speech ranges are still this simulation's.
    */
   hosted: {
-    label: "hosted H3, paid runs of 2026-09-27 and 2026-09-28; Vidu S2-Avatar, 2026-10-01",
+    label:
+      "hosted H3, paid runs of 2026-09-27 and 2026-09-28; Vidu S2-Avatar, 2026-10-01; FastH3 uses H3 Reference timings until measured",
     seed: 1,
     http: range(["200 millis", "300 millis"]),
     channel: range(["30 millis", "45 millis"]),
@@ -349,8 +350,10 @@ export const Options = Schema.Struct({
   /** The queue capacities H3's state reports. */
   generationCapacity: count(20),
   playoutCapacity: count(10),
+  /** Retained FastH3 history clips; Reactor states no capacity, so eight is unmeasured. */
+  fastH3History: count(8),
   /**
-   * The rate the pricing API publishes for H3, in credits a second, as it
+   * The rate the pricing API publishes for H3 and FastH3, in credits a second, as it
    * stated it on September 30, 2026: 350 at 10,000 a dollar is $0.035 a
    * second. Vidu S2-Avatar is published at the 70 its pricing stated on
    * October 1, 2026.

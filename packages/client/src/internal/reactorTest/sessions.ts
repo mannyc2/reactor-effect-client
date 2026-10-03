@@ -15,6 +15,7 @@ import * as Scope from "effect/Scope";
 import type { Billing, Entry, Options, SessionInfo } from "../../ReactorTest.js";
 import * as Call from "./call.js";
 import * as Faults from "./faults.js";
+import * as FastH3 from "./fastH3.js";
 import * as H3 from "./h3.js";
 import type { Link } from "./peer.js";
 import * as Playout from "./playout.js";
@@ -216,6 +217,19 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
         fps: H3.documented.fps,
         creditsPerSecond: options.creditsPerSecond,
         start: (sessionId, environment) => Runner.make(sessionId, environment, Playout.simulation),
+      },
+    ],
+    [
+      FastH3.documented.modelName,
+      {
+        tracks: [
+          { name: FastH3.documented.tracks.video, kind: "video", direction: "recvonly" },
+          { name: FastH3.documented.tracks.audio, kind: "audio", direction: "recvonly" },
+        ],
+        fps: FastH3.documented.fps,
+        creditsPerSecond: options.creditsPerSecond,
+        start: (sessionId, environment) =>
+          Runner.make(sessionId, environment, Playout.simulationOf(FastH3)),
       },
     ],
     [
@@ -562,7 +576,7 @@ export const make = Effect.fnUntraced(function* (options: Options, timing: Sampl
           return yield* refuse(
             404,
             "unknown_model",
-            "ReactorTest serves H3 and Vidu S2-Avatar only",
+            "ReactorTest serves H3, FastH3 and Vidu S2-Avatar only",
           );
         if (!grant.models.includes(model))
           return yield* refuse(403, "forbidden", "the token does not grant this model");
