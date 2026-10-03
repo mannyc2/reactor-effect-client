@@ -170,10 +170,16 @@ neither text. The example has not run on hosted Reactor itself.
 - **One command at a time.** A command waiting for its answer holds the next one, so `interrupt`
   sent during an `endCall` waits for it.
 - **No microphone from Node.** On Node and Bun the caller speaks through `say` only.
-- **A reconnect during a call has lost its media on hosted Reactor.** On the first paid run the
-  replacing connection carried the call's state and transcripts but none of its picture or voice,
-  though both tracks were resumed while the call was live. Don't count on a reconnect to bring a
-  live call's media back.
+- **Reconnect media has varied on hosted Reactor.** On 2026-10-03, one paid `rejoin` run of the
+  0.10.0 SDK recorded a 1.814 s reconnect interval during a live call. Generation 2 delivered its
+  first decoded video frame 76 ms and its first audio block 53 ms after reconnect; 246 frames and
+  804 blocks arrived in a 9.994 s observation window. The runner's greatest timer lateness was
+  0.3 ms, and no provider diagnostic or `Protocol` failure was recorded
+  ([the record](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.10.0-rejoin/summary.md)).
+  The 2026-10-01 probe reconnected because its picture was absent and resumed tracks differently:
+  one reconnect took 82 s, and a replacing connection carried state and transcripts
+  without picture or voice. This one successful run neither explains that failure nor establishes
+  reconnect reliability.
 - **Not yet qualified on hosted Reactor:** a caller's microphone or webcam, `callMode: "video"`,
   reference images, `persona` and `vad` updates, `personaEnhance`, and whether Reactor ends a Vidu
   session at its cap.
