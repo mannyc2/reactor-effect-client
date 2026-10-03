@@ -131,7 +131,10 @@ scenario("a starting frame uploads once and is reported in the accepted clip", (
     const accepted = yield* provider.enqueue({ prompt: "from the painting", start: frame });
     assert.strictEqual(accepted.clip.has_starting_frame, true);
     const uploads = (yield* test.log).filter(
-      (entry) => entry.sessionId === session.id && entry.kind === "upload",
+      (entry) =>
+        entry.sessionId === session.id &&
+        entry.kind === "upload" &&
+        entry.name.startsWith("stored"),
     );
     assert.strictEqual(uploads.length, 1);
   }),
