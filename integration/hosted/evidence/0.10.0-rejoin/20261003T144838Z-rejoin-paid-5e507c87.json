@@ -1,0 +1,1311 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "5e507c87",
+  "check": "rejoin",
+  "mode": "paid",
+  "startedAt": "2026-10-03T14:48:38.765Z",
+  "finishedAt": "2026-10-03T14:49:14.021Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "ab4a7924fd1963d1d3fa2cef63186d1ff032e42c",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.10.0",
+      "reactor-effect-native": "0.10.0",
+      "effect": "4.0.0",
+      "@effect/platform-node": "4.0.0"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "9390d1775d66cd0307c90b1db89c969d7adfd2592086ec1b07a5f7acdd614da4",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "Linux workstation, no VPN, outbound UDP open",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 0.84,
+    "totalUsd": 0.84,
+    "reservedBeforeUsd": 0,
+    "rate": {
+      "creditsPerSecond": 70,
+      "creditsPerDollar": 10000,
+      "per": "second"
+    },
+    "worstCaseUsd": 0.84,
+    "estimatedUsd": 0.245
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 120,
+      "expiresAt": 1791039098
+    }
+  ],
+  "sessions": [
+    {
+      "id": "1f225c34-be87-4a61-b811-a46527811d93",
+      "allocatedMs": 437,
+      "capEndsAt": "2026-10-03T14:50:39.214Z",
+      "close": {
+        "requestedMs": 34814,
+        "reportedMs": 35136,
+        "confirmed": true,
+        "report": {
+          "localClosed": true,
+          "allocation": "known",
+          "ownership": "owned",
+          "sessionId": "1f225c34-be87-4a61-b811-a46527811d93",
+          "remote": {
+            "attempted": true,
+            "responseReceived": true,
+            "confirmed": true,
+            "evidence": "terminal",
+            "deleteStatus": 200,
+            "state": "CLOSED"
+          },
+          "unpublishSubmitted": [],
+          "unresolvedPublications": [],
+          "localErrors": []
+        }
+      },
+      "trail": [
+        {
+          "atMs": 35243,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 35243
+    }
+  ],
+  "milestones": [
+    {
+      "atMs": 2,
+      "step": "admitted",
+      "detail": "worst case $0.8400"
+    },
+    {
+      "atMs": 106,
+      "step": "minted"
+    },
+    {
+      "atMs": 437,
+      "step": "allocated",
+      "detail": "1f225c34-be87-4a61-b811-a46527811d93"
+    },
+    {
+      "atMs": 2617,
+      "step": "session",
+      "detail": "ok"
+    },
+    {
+      "atMs": 2654,
+      "step": "make",
+      "detail": "ok"
+    },
+    {
+      "atMs": 5698,
+      "step": "createAvatar",
+      "detail": "ok"
+    },
+    {
+      "atMs": 8716,
+      "step": "startCall",
+      "detail": "ok"
+    },
+    {
+      "atMs": 8968,
+      "step": "reconnecting during the call"
+    },
+    {
+      "atMs": 10781,
+      "step": "reconnect",
+      "detail": "ok"
+    },
+    {
+      "atMs": 10784,
+      "step": "reconnect observed",
+      "detail": "ok"
+    },
+    {
+      "atMs": 10786,
+      "step": "decoded after reconnect",
+      "detail": "ok"
+    },
+    {
+      "atMs": 20782,
+      "step": "media after reconnect observed"
+    },
+    {
+      "atMs": 34813,
+      "step": "endCall",
+      "detail": "ok"
+    },
+    {
+      "atMs": 35136,
+      "step": "closed",
+      "detail": "1f225c34-be87-4a61-b811-a46527811d93 confirmed"
+    },
+    {
+      "atMs": 35137,
+      "step": "events unread",
+      "detail": "Closed"
+    },
+    {
+      "atMs": 35137,
+      "step": "rejoin observed"
+    },
+    {
+      "atMs": 35243,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [],
+  "criteria": [
+    {
+      "name": "the call went live with picture",
+      "passed": true
+    },
+    {
+      "name": "the reconnect returned within 30 s",
+      "passed": true
+    },
+    {
+      "name": "the session was confirmed ended",
+      "passed": true
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "spans": [
+    {
+      "name": "CoordinatorClient.mintToken",
+      "startMs": 3.1,
+      "durationMs": 103,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 108.6,
+      "durationMs": 2508.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.model.name": "reactor/vidu-s2-avatar",
+        "reactor.session.id": "1f225c34-be87-4a61-b811-a46527811d93"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 439.2,
+      "durationMs": 2178,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f225c34-be87-4a61-b811-a46527811d93"
+      },
+      "events": [
+        {
+          "name": "reactor.connect.described",
+          "atMs": 730.5
+        },
+        {
+          "name": "reactor.connect.prepared",
+          "atMs": 849.5
+        },
+        {
+          "name": "reactor.connect.registered",
+          "atMs": 965.1
+        },
+        {
+          "name": "reactor.connect.offered",
+          "atMs": 1490.9
+        },
+        {
+          "name": "reactor.connect.answered",
+          "atMs": 1909.7
+        },
+        {
+          "name": "reactor.connect.ready",
+          "atMs": 2615.1
+        }
+      ]
+    },
+    {
+      "name": "Session.command",
+      "startMs": 2622.5,
+      "durationMs": 28.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_b05bb214961d8165c97f920fdf806933_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f225c34-be87-4a61-b811-a46527811d93",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "ViduS2Avatar.createAvatar",
+      "startMs": 2654.8,
+      "durationMs": 3043.3,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Session.upload",
+      "startMs": 2655.1,
+      "durationMs": 644,
+      "status": "ok",
+      "attributes": {
+        "reactor.upload.mime_type": "image/jpeg",
+        "reactor.upload.size": 321196,
+        "reactor.session.id": "1f225c34-be87-4a61-b811-a46527811d93"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3299.6,
+      "durationMs": 2396.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "create_avatar",
+        "reactor.request.id": "data_b05bb214961d8165c97f920fdf806933_2",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f225c34-be87-4a61-b811-a46527811d93",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "ViduS2Avatar.startCall",
+      "startMs": 5699,
+      "durationMs": 3017.3,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 5699.9,
+      "durationMs": 26.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "start_call",
+        "reactor.request.id": "data_b05bb214961d8165c97f920fdf806933_3",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "1f225c34-be87-4a61-b811-a46527811d93",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.reconnect",
+      "startMs": 8969.2,
+      "durationMs": 1812.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "2",
+        "reactor.session.id": "1f225c34-be87-4a61-b811-a46527811d93"
+      },
+      "events": [
+        {
+          "name": "reactor.connect.described",
+          "atMs": 9082.6
+        },
+        {
+          "name": "reactor.connect.prepared",
+          "atMs": 9184.2
+        },
+        {
+          "name": "reactor.connect.registered",
+          "atMs": 9184.3
+        },
+        {
+          "name": "reactor.connect.offered",
+          "atMs": 9398.6
+        },
+        {
+          "name": "reactor.connect.answered",
+          "atMs": 9815.4
+        },
+        {
+          "name": "reactor.connect.ready",
+          "atMs": 10779.9
+        }
+      ]
+    },
+    {
+      "name": "Session.command",
+      "startMs": 20783.3,
+      "durationMs": 14029.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "end_call",
+        "reactor.request.id": "data_b05bb214961d8165c97f920fdf806933_4",
+        "reactor.connection.generation": "2",
+        "reactor.session.id": "1f225c34-be87-4a61-b811-a46527811d93",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.close",
+      "startMs": 34814.1,
+      "durationMs": 321.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "1f225c34-be87-4a61-b811-a46527811d93",
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      },
+      "events": []
+    },
+    {
+      "name": "CoordinatorClient.terminate",
+      "startMs": 34826.7,
+      "durationMs": 309,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "1f225c34-be87-4a61-b811-a46527811d93",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      },
+      "events": []
+    },
+    {
+      "name": "CoordinatorClient.inspect",
+      "startMs": 35138.9,
+      "durationMs": 104.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "1f225c34-be87-4a61-b811-a46527811d93"
+      },
+      "events": []
+    }
+  ],
+  "liveness": {
+    "samples": [
+      {
+        "atMs": 1004,
+        "lateMs": 0.2
+      },
+      {
+        "atMs": 2005,
+        "lateMs": 0.2
+      },
+      {
+        "atMs": 3005,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 4005,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 5005,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 6005,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 7005,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 8006,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 9006,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 10006,
+        "lateMs": 0.3
+      },
+      {
+        "atMs": 11006,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 12006,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 13007,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 14007,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 15007,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 16007,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 17007,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 18007,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 19007,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 20008,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 21008,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 22008,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 23008,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 24008,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 25008,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 26008,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 27009,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 28009,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 29009,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 30009,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 31009,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 32009,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 33010,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 34010,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 35010,
+        "lateMs": 0.3
+      }
+    ],
+    "maxLateMs": 0.3
+  },
+  "sessionEvents": [
+    {
+      "atMs": 443,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "connecting"
+    },
+    {
+      "atMs": 444,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "waiting"
+    },
+    {
+      "atMs": 1910,
+      "generation": 1,
+      "tag": "Track",
+      "detail": "main_video"
+    },
+    {
+      "atMs": 1910,
+      "generation": 1,
+      "tag": "Decoded",
+      "detail": "video main_video"
+    },
+    {
+      "atMs": 1910,
+      "generation": 1,
+      "tag": "Track",
+      "detail": "main_audio"
+    },
+    {
+      "atMs": 1910,
+      "generation": 1,
+      "tag": "Decoded",
+      "detail": "audio main_audio"
+    },
+    {
+      "atMs": 2618,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "ready"
+    },
+    {
+      "atMs": 2646,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 2651,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message session_state matched"
+    },
+    {
+      "atMs": 3802,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 5696,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "ack matched"
+    },
+    {
+      "atMs": 5697,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 5726,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 5726,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "ack matched"
+    },
+    {
+      "atMs": 7125,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 7126,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 8534,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 8715,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 8972,
+      "generation": 2,
+      "tag": "Status",
+      "detail": "connecting"
+    },
+    {
+      "atMs": 8980,
+      "generation": 2,
+      "tag": "Status",
+      "detail": "waiting"
+    },
+    {
+      "atMs": 9815,
+      "generation": 2,
+      "tag": "Track",
+      "detail": "main_video"
+    },
+    {
+      "atMs": 9815,
+      "generation": 2,
+      "tag": "Decoded",
+      "detail": "video main_video"
+    },
+    {
+      "atMs": 9815,
+      "generation": 2,
+      "tag": "Track",
+      "detail": "main_audio"
+    },
+    {
+      "atMs": 9815,
+      "generation": 2,
+      "tag": "Decoded",
+      "detail": "audio main_audio"
+    },
+    {
+      "atMs": 10783,
+      "generation": 2,
+      "tag": "Status",
+      "detail": "ready"
+    },
+    {
+      "atMs": 11373,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message transcript unsolicited"
+    },
+    {
+      "atMs": 11718,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 12724,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 13724,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 14726,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 15728,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 16730,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 17732,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 18733,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 19736,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 20737,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 20810,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 21203,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 34810,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message session_state unsolicited"
+    },
+    {
+      "atMs": 34812,
+      "generation": 2,
+      "tag": "Model",
+      "detail": "message call_ended matched"
+    },
+    {
+      "atMs": 34815,
+      "generation": 2,
+      "tag": "Status",
+      "detail": "closing"
+    },
+    {
+      "atMs": 35136,
+      "generation": 2,
+      "tag": "Status",
+      "detail": "closed"
+    }
+  ],
+  "network": {
+    "samples": [
+      {
+        "atMs": 2624,
+        "status": "ready",
+        "generation": 1,
+        "local": "relay",
+        "rttMs": 25
+      },
+      {
+        "atMs": 3627,
+        "status": "ready",
+        "generation": 1,
+        "local": "relay",
+        "rttMs": 25,
+        "receivedKbps": 276.9,
+        "fps": 4,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 4628,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 26,
+        "fps": 5,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 5630,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 33.7,
+        "fps": 5,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 6631,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 24,
+        "receivedKbps": 41.3,
+        "fps": 1,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 7633,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 38.6,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 8634,
+        "status": "ready",
+        "generation": 1,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 34.7,
+        "jitterMs": 1,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 9635,
+        "status": "waiting",
+        "generation": 2
+      },
+      {
+        "atMs": 10637,
+        "status": "waiting",
+        "generation": 2
+      },
+      {
+        "atMs": 11639,
+        "status": "ready",
+        "generation": 2,
+        "local": "relay",
+        "rttMs": 41,
+        "fps": 24,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 12641,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 26,
+        "fps": 25,
+        "jitterMs": 0,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 13642,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 28,
+        "receivedKbps": 1602.3,
+        "fps": 25,
+        "jitterMs": 4,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 14643,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 28,
+        "receivedKbps": 8728.6,
+        "fps": 24,
+        "jitterMs": 8,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 15645,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 9490.9,
+        "fps": 25,
+        "jitterMs": 13,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 16647,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 8304.5,
+        "fps": 25,
+        "jitterMs": 19,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 17648,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 6979.4,
+        "fps": 25,
+        "jitterMs": 9,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 18649,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 7352.3,
+        "fps": 24,
+        "jitterMs": 19,
+        "lossRatio": 0
+      },
+      {
+        "atMs": 19650,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 6607.2,
+        "fps": 25,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 20651,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 6827,
+        "fps": 25,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 21652,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 1456,
+        "fps": 8,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 22654,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 25,
+        "receivedKbps": 28.5,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 23655,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 29.1,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 24656,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 28.5,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 25657,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 47,
+        "receivedKbps": 28.5,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 26658,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 47,
+        "receivedKbps": 28,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 27659,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 47,
+        "receivedKbps": 29.1,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 28660,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 38,
+        "receivedKbps": 28.5,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 29661,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 38,
+        "receivedKbps": 28,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 30662,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 34,
+        "receivedKbps": 29.1,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 31663,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 34,
+        "receivedKbps": 29.5,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 32664,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 34,
+        "receivedKbps": 28,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 33665,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 28.5,
+        "jitterMs": 13,
+        "lossRatio": 0.0002
+      },
+      {
+        "atMs": 34666,
+        "status": "ready",
+        "generation": 2,
+        "local": "prflx",
+        "rttMs": 26,
+        "receivedKbps": 348.2,
+        "jitterMs": 12,
+        "lossRatio": 0.0002
+      }
+    ],
+    "pair": "prflx"
+  },
+  "rejoin": {
+    "photo": {
+      "bytes": 321196,
+      "type": "jpeg"
+    },
+    "allocatedMs": 437,
+    "steps": [
+      {
+        "name": "session",
+        "startedMs": -329,
+        "endedMs": 2180,
+        "outcome": "ok"
+      },
+      {
+        "name": "make",
+        "startedMs": 2183,
+        "endedMs": 2217,
+        "outcome": "ok"
+      },
+      {
+        "name": "createAvatar",
+        "startedMs": 2217,
+        "endedMs": 5261,
+        "outcome": "ok"
+      },
+      {
+        "name": "startCall",
+        "startedMs": 5261,
+        "endedMs": 8279,
+        "outcome": "ok"
+      },
+      {
+        "name": "reconnect",
+        "startedMs": 8532,
+        "endedMs": 10344,
+        "outcome": "ok"
+      },
+      {
+        "name": "decoded after reconnect",
+        "startedMs": 10349,
+        "endedMs": 10349,
+        "outcome": "ok"
+      },
+      {
+        "name": "endCall",
+        "startedMs": 20346,
+        "endedMs": 34376,
+        "outcome": "ok"
+      }
+    ],
+    "phases": [
+      {
+        "phase": "idle",
+        "atMs": 2219
+      },
+      {
+        "phase": "preparing_avatar",
+        "atMs": 3366
+      },
+      {
+        "phase": "avatar_ready",
+        "atMs": 5260
+      },
+      {
+        "phase": "starting",
+        "atMs": 5289
+      },
+      {
+        "phase": "warming_up",
+        "atMs": 6688
+      },
+      {
+        "phase": "live",
+        "atMs": 8279
+      },
+      {
+        "phase": "ending",
+        "atMs": 20374
+      },
+      {
+        "phase": "ended",
+        "atMs": 34374
+      }
+    ],
+    "diagnostics": [],
+    "call": {
+      "liveAtMs": 8280,
+      "generation": 1,
+      "observedMs": 250,
+      "firstFrameMs": 162,
+      "firstBlockMs": 1,
+      "video": {
+        "frames": 18,
+        "formats": [
+          "BGRA"
+        ],
+        "sizes": [
+          "640x360"
+        ],
+        "firstFrameMs": 2698,
+        "fps": 2.7,
+        "interval": {
+          "p50": 200,
+          "p95": 3200,
+          "max": 3200
+        },
+        "lit": 18,
+        "distinct": 4,
+        "lost": 0,
+        "gaps": 0
+      },
+      "audio": {
+        "blocks": 328,
+        "sampleRates": [
+          48000
+        ],
+        "channels": [
+          1
+        ],
+        "peakRms": 0,
+        "lost": 0
+      }
+    },
+    "reconnect": {
+      "startedMs": 8530,
+      "endedMs": 10344,
+      "outcome": "ok",
+      "fromGeneration": 1,
+      "generation": 2,
+      "phase": "live"
+    },
+    "after": {
+      "generation": 2,
+      "observedMs": 9994,
+      "firstFrameMs": 76,
+      "firstBlockMs": 53,
+      "video": {
+        "frames": 246,
+        "formats": [
+          "BGRA"
+        ],
+        "sizes": [
+          "640x360",
+          "928x1088"
+        ],
+        "firstFrameMs": 10857,
+        "fps": 24.7,
+        "interval": {
+          "p50": 40,
+          "p95": 45,
+          "max": 127
+        },
+        "lit": 246,
+        "distinct": 199,
+        "lost": 0,
+        "gaps": 0
+      },
+      "audio": {
+        "blocks": 804,
+        "sampleRates": [
+          48000
+        ],
+        "channels": [
+          1
+        ],
+        "peakRms": 0.2736,
+        "lost": 0
+      }
+    },
+    "end": {
+      "endReason": "ended_by_client",
+      "durationSeconds": 12
+    }
+  },
+  "verdict": "pass",
+  "reasons": [],
+  "missing": []
+}
