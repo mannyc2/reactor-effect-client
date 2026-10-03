@@ -139,14 +139,20 @@ const environment = Effect.gen(function* () {
     const found = yield* resolved(name);
     if (Option.isSome(found)) packages[name] = found.value.version;
   }
-  const commit = yield* git("rev-parse", "HEAD");
-  const status = yield* git("status", "--porcelain", "--untracked-files=no");
+  // Outside a checkout git prints no commit, only an error, and there is no tree to call clean.
+  const commit = Option.filter(
+    Option.map(yield* git("rev-parse", "HEAD"), (out) => out.trim()),
+    (hash) => hash.length > 0,
+  );
+  const status = Option.isSome(commit)
+    ? yield* git("status", "--porcelain", "--untracked-files=no")
+    : Option.none();
   const native = yield* nativeIdentity;
   return {
     // Bun's types declare its version on every runtime; only Bun's process has one.
     runtime: "bun" in process.versions ? `bun ${process.versions.bun}` : `node ${process.version}`,
     os: `${process.platform} ${process.arch}`,
-    ...(Option.isSome(commit) ? { commit: commit.value.trim() } : {}),
+    ...(Option.isSome(commit) ? { commit: commit.value } : {}),
     ...(Option.isSome(status) ? { dirty: status.value.trim().length > 0 } : {}),
     packages,
     ...(Option.isSome(native) ? { native: native.value } : {}),
