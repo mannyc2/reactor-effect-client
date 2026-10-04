@@ -45,6 +45,7 @@ import { unconnected } from "./checks/Unconnected.js";
 import type * as Evidence from "./Evidence.js";
 import { failedOf } from "./Evidence.js";
 import type { Item, Seam, StatsSample } from "./Evidence.js";
+import * as Family from "./Family.js";
 import * as Media from "./Media.js";
 import * as Probes from "./Probes.js";
 import { recorded, Run } from "./Run.js";
@@ -1576,8 +1577,8 @@ const summarize = (event: Session.SessionEvent): Omit<Logged, "atMs" | "sessionI
 };
 
 /** What a playout check has while its playout runs. */
-export interface Air {
-  readonly playout: Playout.Playout["Service"];
+export interface Air<Req extends Playout.ClipRequest = H3.Request> {
+  readonly playout: Playout.Service<Req>;
   readonly items: SubscriptionRef.SubscriptionRef<ReadonlyMap<string, Item>>;
   /** Every as-run event, in order. */
   readonly asRun: () => ReadonlyArray<{
@@ -1596,7 +1597,7 @@ export interface Air {
   readonly submit: (
     key: string,
     lane: string,
-    request: H3.Request,
+    request: Req,
   ) => Effect.Effect<Playout.ItemHandle, Playout.SubmitError, Run>;
   /** The first value `find` picks from the items as they change, until the deadline. */
   readonly when: <B>(
@@ -1630,17 +1631,26 @@ const recordPlayout = (fields: Partial<NonNullable<Evidence.Evidence["playout"]>
  * boundaries, as a show does. `renew` false keeps the one session for the
  * whole check: its grant ends it, so a replacement is never planned.
  */
-const onAir = Effect.fnUntraced(function* <A, E, R>(
+export interface AirOptions<Req extends Playout.ClipRequest = H3.Request> {
+  readonly lanes: ReadonlyArray<Playout.LaneSpec>;
+  readonly filler?: Playout.Options<never, Req>["filler"];
+  readonly sessions: number;
+  readonly renewal?: Playout.Options<never, Req>["renewal"];
+  readonly maxModerations?: number;
+  readonly maxBuildsInFlight?: number;
+}
+
+const onAirFor = Effect.fnUntraced(function* <
+  Req extends Family.RequestInput,
+  C extends H3.Clip,
+  A,
+  E,
+  R,
+>(
+  family: Family.Family<Req, C>,
   check: Check,
-  options: {
-    readonly lanes: ReadonlyArray<Playout.LaneSpec>;
-    readonly filler?: Playout.Options["filler"];
-    readonly sessions: number;
-    readonly renewal?: Playout.Options["renewal"];
-    readonly maxModerations?: number;
-    readonly maxBuildsInFlight?: number;
-  },
-  scenario: (air: Air) => Effect.Effect<A, E, R>,
+  options: AirOptions<Req>,
+  scenario: (air: Air<Req>) => Effect.Effect<A, E, R>,
 ) {
   const run = yield* Run;
   const target = yield* Target;
@@ -1673,7 +1683,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
               : error,
           ),
         );
-        const source = yield* H3Source.open({
+        const source = yield* family.open({
           tokens: CoordinatorClient.fixedTokens(grant),
           holdLastFrame: true,
           onAllocated: ({ session }) =>
@@ -1695,7 +1705,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
               );
             }),
         });
-        const wrapped: Playout.Source = {
+        const wrapped: Playout.Source<Req> = {
           ...source,
           ...(options.renewal === undefined ? { lifetime: Duration.infinity } : {}),
           // A failed playout closes its sessions on a fiber its scope may interrupt: the
@@ -1715,6 +1725,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
         return wrapped;
       });
       const playout = yield* Playout.make({
+        model: family.clipModel,
         open,
         lanes: options.lanes,
         ...(options.filler === undefined ? {} : { filler: options.filler }),
@@ -1795,7 +1806,7 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
         );
         return Playout.ItemKey.make(key);
       });
-      const air: Air = {
+      const air: Air<Req> = {
         playout,
         items,
         asRun: () => [...timeline],
@@ -1866,6 +1877,13 @@ const onAir = Effect.fnUntraced(function* <A, E, R>(
     }),
   );
 });
+
+/** The fixed H3 checks use the same playout workflow with H3's request type. */
+const onAir = <A, E, R>(
+  check: Check,
+  options: AirOptions,
+  scenario: (air: Air) => Effect.Effect<A, E, R>,
+) => onAirFor(Family.h3, check, options, scenario);
 
 const itemRequest = (seconds = clipSeconds): H3.Request => ({ prompt, seconds });
 
@@ -2344,6 +2362,7 @@ const pieces = {
   judge,
   mint,
   onAir,
+  onAirFor,
   readFresh,
   readInto,
   recordPlayout,
