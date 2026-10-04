@@ -2,11 +2,20 @@
 import { isTerminal } from "reactor-effect-client/CoordinatorClient";
 import type { AvatarWire, Evidence, StateReads } from "./Evidence.js";
 import { cleanupInstructions } from "./Evidence.js";
+import { models } from "./Spend.js";
 
 const seconds = (ms: number) => `${(ms / 1000).toFixed(2)} s`;
 const usd = (value: number | undefined) => (value === undefined ? "–" : `$${value.toFixed(3)}`);
 
 const listed = (names: ReadonlyArray<string>) => names.join(", ") || "none";
+
+const uploadReport = (value: {
+  readonly hasReferenceAudio: boolean | null;
+  readonly hasStartingFrame?: boolean;
+}) =>
+  value.hasStartingFrame === undefined
+    ? `has_reference_audio ${String(value.hasReferenceAudio)}`
+    : `has_starting_frame ${String(value.hasStartingFrame)}`;
 
 /** A read's state that says the session ran: a failed read, or one that found it gone, says nothing. */
 const running = (state: string) =>
@@ -28,7 +37,10 @@ const codesOf = (value: Readonly<Record<string, string>> | undefined) =>
     .join(", ") || "none";
 
 /** `tour`'s phases, a line each. */
-const tourLines = (tour: NonNullable<Evidence["tour"]>): ReadonlyArray<string> => {
+const tourLines = (
+  tour: NonNullable<Evidence["tour"]>,
+  model: string | undefined,
+): ReadonlyArray<string> => {
   const lines: Array<string> = [];
   const expires = tour.createExpiresMs;
   lines.push(
@@ -52,7 +64,7 @@ const tourLines = (tour: NonNullable<Evidence["tour"]>): ReadonlyArray<string> =
       `**Canvas:** asked ${tour.canvas.requested} (${tour.canvas.listed ? "listed" : "not listed"} in valid_commands); accepted ${tour.canvas.reply === undefined ? "nothing" : `${tour.canvas.reply.aspect} at ${tour.canvas.reply.width}x${tour.canvas.reply.height}`}; state ${tour.canvas.state?.aspect ?? "unread"}`,
     );
   const clip = (value: NonNullable<typeof tour.clip2>) =>
-    `accepted ${value.acceptance} in ${seconds(value.acceptedMs - value.submitMs)}${value.generatedMs === undefined ? "" : `, generated at ${seconds(value.generatedMs)}`}${value.startedMs === undefined ? "" : `, started at ${seconds(value.startedMs)}`}${value.ended === undefined ? "" : `, ended by ${value.ended}`}; ${value.references.uploads} upload(s); reports ${String(value.references.reportedImages ?? "no")} image and ${String(value.references.reportedAudio ?? "no")} audio reference(s), has_reference_audio ${String(value.references.hasReferenceAudio)}`;
+    `accepted ${value.acceptance} in ${seconds(value.acceptedMs - value.submitMs)}${value.generatedMs === undefined ? "" : `, generated at ${seconds(value.generatedMs)}`}${value.startedMs === undefined ? "" : `, started at ${seconds(value.startedMs)}`}${value.ended === undefined ? "" : `, ended by ${value.ended}`}; ${value.references.uploads} upload(s); ${value.references.hasStartingFrame === undefined ? `reports ${String(value.references.reportedImages ?? "no")} image and ${String(value.references.reportedAudio ?? "no")} audio reference(s), ` : ""}${uploadReport(value.references)}`;
   if (tour.clip1 !== undefined)
     lines.push(
       `**Clip 1:** ${clip(tour.clip1)}; seed ${tour.clip1.seed.sent} sent, ${String(tour.clip1.seed.echoed)} echoed, default ${String(tour.clip1.seed.defaultBefore)} before and ${String(tour.clip1.seed.defaultAfter)} after; ${tour.clip1.video?.frames ?? 0} frames while it played`,
@@ -75,7 +87,9 @@ const tourLines = (tour: NonNullable<Evidence["tour"]>): ReadonlyArray<string> =
   const failed = tour.failedBuild;
   if (failed !== undefined)
     lines.push(
-      `**Build past the text budget:** ${failed.promptChars} characters, ended by ${failed.ended ?? "nothing"}${failed.endedMs === undefined || failed.acceptedMs === undefined ? "" : ` ${seconds(failed.endedMs - failed.acceptedMs)} after its acceptance`}; waiting for it to generate failed with ${failed.generatedFailure ?? "nothing"}${failed.clipEnded === undefined ? "" : ` (${failed.clipEnded.lifecycle}, ${failed.clipEnded.sameClip ? "its own clip" : "another clip"})`}; reason ${failed.reasonChars ?? "?"} characters; ${failed.started ? "started" : "never started"}`,
+      model === models["fast-h3"].name
+        ? `**Enqueue past the text budget:** ${failed.promptChars} characters; ${failed.ended ?? "no refusal observed"}; failure ${failed.generatedFailure ?? "none"}; ${failed.started ? "started" : "never started"}`
+        : `**Build past the text budget:** ${failed.promptChars} characters, ended by ${failed.ended ?? "nothing"}${failed.endedMs === undefined || failed.acceptedMs === undefined ? "" : ` ${seconds(failed.endedMs - failed.acceptedMs)} after its acceptance`}; waiting for it to generate failed with ${failed.generatedFailure ?? "nothing"}${failed.clipEnded === undefined ? "" : ` (${failed.clipEnded.lifecycle}, ${failed.clipEnded.sameClip ? "its own clip" : "another clip"})`}; reason ${failed.reasonChars ?? "?"} characters; ${failed.started ? "started" : "never started"}`,
     );
   for (const recording of tour.recordings ?? [])
     lines.push(
@@ -183,7 +197,7 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
       );
     if (tokens.upload !== undefined)
       lines.push(
-        `**Refreshed call:** ${tokens.refreshedMs === undefined ? "no refresh" : `refreshed at ${seconds(tokens.refreshedMs)}`}; clip accepted ${tokens.upload.acceptedMs === undefined ? "never" : `in ${seconds(tokens.upload.acceptedMs - tokens.upload.startedMs)}`}, has_reference_audio ${String(tokens.upload.hasReferenceAudio)}`,
+        `**Refreshed call:** ${tokens.refreshedMs === undefined ? "no refresh" : `refreshed at ${seconds(tokens.refreshedMs)}`}; clip accepted ${tokens.upload.acceptedMs === undefined ? "never" : `in ${seconds(tokens.upload.acceptedMs - tokens.upload.startedMs)}`}, ${uploadReport(tokens.upload)}`,
       );
     lines.push(
       `**Refusals:** expired token ${tokens.expiredTokenStatus ?? "–"}, unbound token ${tokens.unboundTokenStatus ?? "–"}; API key termination ${tokens.apiKeyTermination === undefined ? "–" : `${tokens.apiKeyTermination.confirmed ? "confirmed" : "unconfirmed"} (DELETE ${String(tokens.apiKeyTermination.deleteStatus)})`}`,
@@ -247,7 +261,7 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
     );
   }
   const tour = evidence.tour;
-  if (tour !== undefined) lines.push(...tourLines(tour));
+  if (tour !== undefined) lines.push(...tourLines(tour, evidence.model));
   const adoption = evidence.adoption;
   if (adoption !== undefined) {
     const commands = (counts: Readonly<Record<string, number>> | undefined) =>
@@ -275,7 +289,7 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
     const resume = adoption.resume;
     if (resume !== undefined)
       lines.push(
-        `**Resume:** ${adoption.createExpiresMs === undefined ? "started" : `started ${seconds(resume.startedMs - adoption.createExpiresMs)} after the creating token expired`}, ready ${seconds(resume.attachedMs - resume.startedMs)} later, ${resume.ownership}; playing ${which(resume.playingClipId)}; ${resume.refreshedMs === undefined ? "no refresh" : `refreshed at ${seconds(resume.refreshedMs)}`}; ${resume.upload === undefined ? "no clip enqueued" : `clip accepted in ${seconds(resume.upload.acceptedMs - resume.upload.startedMs)}, has_reference_audio ${String(resume.upload.hasReferenceAudio)}`}; commands ${commands(resume.commands)}`,
+        `**Resume:** ${adoption.createExpiresMs === undefined ? "started" : `started ${seconds(resume.startedMs - adoption.createExpiresMs)} after the creating token expired`}, ready ${seconds(resume.attachedMs - resume.startedMs)} later, ${resume.ownership}; playing ${which(resume.playingClipId)}; ${resume.refreshedMs === undefined ? "no refresh" : `refreshed at ${seconds(resume.refreshedMs)}`}; ${resume.upload === undefined ? "no clip enqueued" : `clip accepted in ${seconds(resume.upload.acceptedMs - resume.upload.startedMs)}, ${uploadReport(resume.upload)}`}; commands ${commands(resume.commands)}`,
       );
     lines.push(
       `**Tokens:** ${adoption.mints.map((mint) => `${mint.kind} at ${seconds(mint.atMs)} living ${mint.lifetimeSeconds} s`).join("; ")}`,
