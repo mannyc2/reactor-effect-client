@@ -880,7 +880,7 @@ const verticalFor = Effect.fnUntraced(function* <
           "the first clip did not report its uploaded opening frame",
         ]);
         yield* judge("continuation and ending source reported", [
-          frames?.continued === true && frames.endedFrom === true,
+          frames?.continued === true && frames.endedFrom,
           "the following clip did not name the first as both its opening and ending source",
         ]);
         yield* judge("both clips started", [
