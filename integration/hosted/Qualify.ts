@@ -224,6 +224,7 @@ export const execute = (input: {
         runId,
         check: authorization.check,
         mode: target.mode,
+        model: model.name,
         startedAt,
         environment: yield* environment,
         budget: {

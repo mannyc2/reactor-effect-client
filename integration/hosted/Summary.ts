@@ -960,7 +960,7 @@ const section = (evidence: Evidence): string => {
   return [
     `### ${evidence.check}: ${evidence.verdict ?? "unfinished"} (${evidence.mode}, run ${evidence.runId}, ${evidence.startedAt})`,
     "",
-    `- **Environment:** ${packages}, ${environment.runtime}, ${environment.os}${environment.commit === undefined ? "" : `, commit ${environment.commit.slice(0, 8)}${environment.dirty === true ? " (dirty)" : ""}`}`,
+    `- **Environment:** ${packages}, ${environment.runtime}, ${environment.os}${evidence.model === undefined ? "" : `, model ${evidence.model}`}${environment.commit === undefined ? "" : `, commit ${environment.commit.slice(0, 8)}${environment.dirty === true ? " (dirty)" : ""}`}`,
     ...(environment.native === undefined
       ? []
       : [

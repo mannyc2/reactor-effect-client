@@ -1555,6 +1555,8 @@ export const Evidence = Schema.Struct({
   runId: Schema.String,
   check: Check,
   mode: Schema.Literals(["paid", "rehearsal"]),
+  /** The model the check's sessions ran; absent in older evidence. */
+  model: Schema.optionalKey(Schema.String),
   startedAt: Schema.String,
   finishedAt: Schema.optionalKey(Schema.String),
   environment: Schema.Struct({
