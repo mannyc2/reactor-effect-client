@@ -35,6 +35,8 @@
  * moves the phases before A+22, never the refresh, which runs on its own from
  * the session's creation, or the reconnect; the free mints come before the
  * session.
+ * FastH3 then runs the queue check's five playback boundaries on this same
+ * session before the API key ends it.
  */
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -1497,12 +1499,48 @@ const tourFor = Effect.fnUntraced(function* <Req extends Family.RequestInput, Cl
           }),
         );
 
+        if (family.key === "fast-h3")
+          yield* phase(
+            "queue playback boundaries",
+            40,
+            Effect.gen(function* () {
+              const stopped = yield* recorded(model.stop);
+              if (stopped._tag !== "Acknowledged")
+                return yield* ReactorError.fromCode(
+                  "Protocol",
+                  "stop answered with a payload before the queue observations",
+                );
+              yield* recorded(model.reset);
+              const cleared = yield* fresh;
+              if (
+                cleared.state.playing ||
+                cleared.state.playing_clip_id !== null ||
+                cleared.queue.generation.length > 0 ||
+                cleared.queue.playout.length > 0
+              )
+                return yield* ReactorError.fromCode(
+                  "InvalidState",
+                  "reset left playback or queued clips before the queue observations",
+                );
+              yield* pieces.queueOn(family, session, model, deadline);
+            }),
+          );
+
         // 16. The API key ends the session; the session's own close then confirms it. Only a
         // confirmed end is recorded as the session's; otherwise the check's cleanup ends it.
         yield* phase(
           "end with the API key",
           15,
           Effect.gen(function* () {
+            // A fresh token lets the session's own close run after the API key ends it.
+            if (family.key === "fast-h3")
+              yield* recorded(
+                session.upload(
+                  refreshName,
+                  "image/png",
+                  Media.grayPng({ width: 320, height: 180 }),
+                ),
+              );
             const requestedMs = yield* run.now;
             const termination = yield* (yield* keyed).terminate(session.id);
             yield* record((tour) => ({ ...tour, apiKeyTermination: termination }));

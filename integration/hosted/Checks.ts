@@ -1343,322 +1343,321 @@ interface Observed {
  * boundaries, at a set distance from the playing clip's end, and which clip
  * starts next.
  */
+const queueOn = Effect.fnUntraced(function* <Req extends Family.RequestInput, C extends H3.Clip>(
+  family: Family.Family<Req, C>,
+  session: Session.Session,
+  provider: Family.Provider<Req, C>,
+  deadline: number,
+) {
+  const run = yield* Run;
+  const marker = `hosted-qualification:${run.runId}:queue`;
+  const observed = yield* SubscriptionRef.make<ReadonlyArray<Observed>>([]);
+  yield* provider.events({ capacity: 4096 }).pipe(
+    Stream.runForEach((event) =>
+      Effect.gen(function* () {
+        if (event._tag !== "Message" || event.disposition !== "applied") return;
+        const message = event.message;
+        if (message.type === "unknown" || !("clip" in message.data)) return;
+        const clip = message.data.clip;
+        const atMs = yield* run.now;
+        yield* SubscriptionRef.update(observed, (all) =>
+          all.length >= 1024
+            ? all
+            : [
+                ...all,
+                {
+                  type: message.type,
+                  clipId: clip.clip_id,
+                  seconds: clip.seconds,
+                  metadata: clip.metadata,
+                  atMs,
+                },
+              ],
+        );
+      }),
+    ),
+    Effect.forkScoped,
+  );
+  const video = Media.videoLog();
+  const media = yield* session.decoded;
+  yield* readInto(media.video(family.tracks.video), video).pipe(Effect.forkScoped);
+  const seen = (type: string, clipId: string) =>
+    waitFor(
+      observed,
+      (all) => all.find((event) => event.type === type && event.clipId === clipId),
+      deadline,
+    );
+  const started = (all: ReadonlyArray<Observed>) =>
+    all.filter((event) => event.type === "clip_started");
+  // `sending` completes as the enqueue commits, just before it is written to the channel.
+  const submit = Effect.fnUntraced(function* (
+    name: string,
+    position?: number,
+    sending?: Deferred.Deferred<void>,
+  ) {
+    const submission = yield* provider.prepare(
+      family.request({
+        prompt: Family.prompt,
+        seconds: family.lengths.short,
+        metadata: `${marker}:${name}`,
+        ...(position === undefined ? {} : { position }),
+      }),
+      sending === undefined ? {} : { commit: () => Deferred.succeed(sending, undefined) },
+    );
+    const submittedMs = yield* run.now;
+    const acceptance = yield* recorded(submission.submit);
+    return { clipId: acceptance.clip.clip_id, submittedMs };
+  });
+  const readQueue = Effect.map(recorded(provider.getQueue), (reply) => reply.value);
+  /** An edit's outcome: `true` when the provider refused it. Its reason is provider text, never kept. */
+  const edit = (command: Effect.Effect<unknown, CommandFailure>) =>
+    recorded(command).pipe(
+      Effect.as(false),
+      Effect.catchIf(
+        (error) =>
+          error.reason._tag === "Remote" &&
+          "outcome" in error.context &&
+          error.context.outcome === "replied",
+        () => Effect.succeed(true),
+      ),
+    );
+
+  yield* recorded(provider.setAutoplay(false));
+  // H3 documents position zero as next, behind the build that is running; `first` is that
+  // build on a session with nothing else building.
+  const first = yield* submit("first");
+  const zero = yield* submit("position-zero", 0);
+  const tail = yield* submit("tail");
+  const generation = (yield* readQueue).generation;
+  const generationOrder = generation.map((clip) => clip.clip_id);
+  const place = (clipId: string) => generationOrder.indexOf(clipId);
+  if (family.key === "fast-h3")
+    yield* judge("position zero precedes a subsequently enqueued tail", [
+      place(zero.clipId) >= 0 && place(tail.clipId) >= 0 && place(zero.clipId) < place(tail.clipId),
+      "the position-zero clip and tail were not both present with zero before the tail",
+    ]);
+  else
+    yield* judge(
+      "position zero goes next, behind the build that is running",
+      [
+        place(zero.clipId) >= 0 && place(tail.clipId) >= place(zero.clipId),
+        "the position-zero clip was not ahead of the clip queued after it",
+      ],
+      [
+        place(first.clipId) <= place(zero.clipId),
+        "the position-zero clip went ahead of the build that was running",
+      ],
+    );
+  // A popped unbuilt clip must not generate or start afterward. H3 also infers
+  // a pop in flight from its queue head; FastH3's head does not name the GPU build.
+  const popped = first;
+  const wasBuilding = generationOrder[0] === popped.clipId;
+  const wasQueuedUnbuilt =
+    family.key === "fast-h3"
+      ? generation.some((clip) => clip.clip_id === popped.clipId && !clip.ready)
+      : undefined;
+  let popAccepted: boolean | undefined;
+  if (family.key === "fast-h3")
+    popAccepted = yield* provider
+      .pop(popped.clipId)
+      .pipe(recorded, Effect.match({ onFailure: () => false, onSuccess: () => true }));
+  else yield* provider.pop(popped.clipId).pipe(recorded, Effect.ignore);
+  const poppedMs = yield* run.now;
+  // A queue read sent right behind an enqueue, long before its reply: does it list the clip?
+  const ordering: Array<boolean> = [];
+  const builds = [zero, tail];
+  for (let index = 1; index <= 3; index++) {
+    const name = `ordering-${index}`;
+    const sending = yield* Deferred.make<void>();
+    const enqueue = yield* submit(name, undefined, sending).pipe(Effect.result, Effect.forkChild);
+    yield* Deferred.await(sending);
+    yield* Effect.sleep("1 millis");
+    const listed = yield* Effect.map(readQueue, (value) =>
+      [...value.generation, ...value.playout].some((clip) =>
+        clip.metadata.includes(`${marker}:${name}`),
+      ),
+    );
+    ordering.push(listed);
+    const accepted = yield* Fiber.join(enqueue);
+    if (accepted._tag === "Success") builds.push(accepted.success);
+  }
+  yield* judge("a queue read sent right behind an enqueue lists the new clip", [
+    ordering.every(Boolean),
+    `${ordering.filter((listed) => !listed).length} of ${ordering.length} reads did not list it`,
+  ]);
+  for (let index = 1; index <= 5; index++) builds.push(yield* submit(`clip-${index}`));
+  yield* run.mark("clips submitted");
+  yield* seen("clip_generated", zero.clipId);
+  yield* recorded(provider.setAutoplay(true));
+  yield* run.mark("autoplay on");
+
+  type Boundary = { -readonly [K in keyof Evidence.Boundary]: Evidence.Boundary[K] };
+  const recordedBoundaries: Array<Boundary> = [];
+  const acceptedPops: Array<string> = [];
+  const record = Effect.gen(function* () {
+    const all = yield* SubscriptionRef.get(observed);
+    const watched = new Set([popped.clipId, ...builds.map((build) => build.clipId)]);
+    const counts: Record<string, number> = {};
+    const mismatched: Record<string, number> = {};
+    for (const event of all) {
+      if (!watched.has(event.clipId)) continue;
+      bump(counts, event.type);
+      if (!event.metadata.includes(marker)) bump(mismatched, event.type);
+    }
+    const afterPop = all.filter((event) => event.clipId === popped.clipId && event.atMs > poppedMs);
+    yield* run.update((evidence) => ({
+      ...evidence,
+      queue: {
+        positionZero: {
+          buildingClipId: first.clipId,
+          requestedClipId: zero.clipId,
+          generationOrder,
+        },
+        poppedBuild: {
+          wasBuilding,
+          ...(wasQueuedUnbuilt === undefined ? {} : { wasQueuedUnbuilt }),
+          ...(popAccepted === undefined ? {} : { popAccepted }),
+          generatedAfterPop: afterPop.some((event) => event.type === "clip_generated"),
+          startedAfterPop: afterPop.some((event) => event.type === "clip_started"),
+        },
+        ordering,
+        boundaries: recordedBoundaries.map((boundary) => ({ ...boundary })),
+        builds: builds.flatMap(({ clipId, submittedMs }) => {
+          const generated = all.find(
+            (event) => event.type === "clip_generated" && event.clipId === clipId,
+          );
+          return generated === undefined ? [] : [round(generated.atMs - submittedMs)];
+        }),
+        metadata: { observed: counts, mismatched },
+      },
+    }));
+  });
+  yield* Effect.addFinalizer(() => Effect.ignore(record));
+  for (const [index, planned] of boundaries.entries()) {
+    const ending = yield* waitFor(observed, (all) => started(all)[index], deadline);
+    const endsAtMs = ending.atMs + ending.seconds * 1000;
+    const boundary: Boundary = {
+      edit: planned.edit,
+      aimMs: planned.aimMs,
+      endingClipId: ending.clipId,
+    };
+    recordedBoundaries.push(boundary);
+    if (planned.edit !== "none") {
+      // The queue is read just ahead, so the edit itself leaves on its aim.
+      yield* sleepUntil(endsAtMs - planned.aimMs - 600, deadline);
+      const played = new Set(
+        started(yield* SubscriptionRef.get(observed)).map((event) => event.clipId),
+      );
+      const waiting = (yield* readQueue).playout
+        .map((clip) => clip.clip_id)
+        .filter((id) => !played.has(id));
+      // Without two clips waiting the edit cannot show anything, so it is not staged.
+      const [firstWaiting, secondWaiting] = waiting;
+      if (firstWaiting !== undefined && secondWaiting !== undefined) {
+        const edited = planned.edit === "move" ? secondWaiting : firstWaiting;
+        yield* sleepUntil(endsAtMs - planned.aimMs, deadline);
+        boundary.sentMs = yield* run.now;
+        boundary.refused = yield* edit(
+          planned.edit === "move" ? provider.move(edited, 0) : provider.pop(edited),
+        );
+        boundary.editedClipId = edited;
+        boundary.expectedClipId = secondWaiting;
+        if (planned.edit === "pop" && !boundary.refused) acceptedPops.push(edited);
+      }
+      yield* run.mark(
+        `boundary ${index + 1}: ${planned.edit} ${planned.aimMs} ms before the end`,
+        boundary.sentMs === undefined
+          ? "not staged"
+          : boundary.refused === true
+            ? "refused"
+            : undefined,
+      );
+    }
+    const finished = yield* waitFor(
+      observed,
+      (all) =>
+        all.find(
+          (event) =>
+            (event.type === "clip_finished" || event.type === "clip_stopped") &&
+            event.clipId === ending.clipId,
+        ),
+      deadline,
+    );
+    const next = yield* waitFor(observed, (all) => started(all)[index + 1], deadline);
+    boundary.finishedMs = finished.atMs;
+    boundary.nextClipId = next.clipId;
+    boundary.nextStartedMs = next.atMs;
+  }
+  // The last seam's frames arrive after its clip starts.
+  yield* sleepUntil((recordedBoundaries.at(-1)?.nextStartedMs ?? 0) + seamMs, deadline);
+  for (const boundary of recordedBoundaries) {
+    if (boundary.finishedMs === undefined || boundary.nextStartedMs === undefined) continue;
+    const pause = video.pause(boundary.finishedMs - seamMs, boundary.nextStartedMs + seamMs);
+    if (pause !== undefined) boundary.pause = pause;
+  }
+  yield* record;
+  for (const [index, boundary] of recordedBoundaries.entries()) {
+    if (boundary.edit === "none" || boundary.aimMs < judgedAimMs) continue;
+    yield* judge(
+      `${boundary.edit} ${boundary.aimMs} ms before boundary ${index + 1}`,
+      [boundary.sentMs !== undefined, "the edit was not staged: fewer than two clips were waiting"],
+      [boundary.refused !== true, "the provider refused the edit"],
+      [boundary.nextClipId === boundary.expectedClipId, "a different clip started next"],
+    );
+  }
+  const startedIds = new Set(
+    started(yield* SubscriptionRef.get(observed)).map((event) => event.clipId),
+  );
+  yield* judge("popped clips never start", [
+    !acceptedPops.some((clipId) => startedIds.has(clipId)),
+    "a clip started after its pop was accepted",
+  ]);
+  const evidence = yield* run.evidence;
+  const poppedBuild = evidence.queue?.poppedBuild;
+  if (family.key === "fast-h3")
+    yield* judge(
+      "a popped unbuilt clip never generates or starts",
+      [
+        poppedBuild?.wasQueuedUnbuilt === true,
+        "the clip was not present and unbuilt in the generation queue before the pop",
+      ],
+      [poppedBuild?.popAccepted === true, "the provider did not accept the pop"],
+      [
+        poppedBuild?.generatedAfterPop !== true && poppedBuild?.startedAfterPop !== true,
+        "the popped clip generated or started after the pop's reply",
+      ],
+    );
+  else
+    yield* judge(
+      "pop the build in flight",
+      [
+        poppedBuild?.wasBuilding === true,
+        "the clip was not at the head of the generation queue before the pop",
+      ],
+      [
+        poppedBuild?.generatedAfterPop !== true && poppedBuild?.startedAfterPop !== true,
+        "the popped build generated or started after the pop's reply",
+      ],
+    );
+  const metadata = evidence.queue?.metadata;
+  yield* judge("observed clip metadata", [
+    metadata !== undefined &&
+      Object.keys(metadata.observed).length > 0 &&
+      Object.keys(metadata.mismatched).length === 0,
+    "a watched clip message had missing metadata, or none was observed",
+  ]);
+  yield* run.mark("queue observed");
+}, Effect.scoped);
+
 const queueFor = Effect.fnUntraced(function* <Req extends Family.RequestInput, C extends H3.Clip>(
   family: Family.Family<Req, C>,
 ) {
-  const run = yield* Run;
   const grant = yield* mint("queue");
-  const marker = `hosted-qualification:${run.runId}:queue`;
-  const observed = yield* SubscriptionRef.make<ReadonlyArray<Observed>>([]);
   yield* withSessions((grants) =>
     Effect.gen(function* () {
       const { session, deadline } = yield* create(grant, grants);
       const provider = yield* family.provider(session);
-      yield* provider.events({ capacity: 4096 }).pipe(
-        Stream.runForEach((event) =>
-          Effect.gen(function* () {
-            if (event._tag !== "Message" || event.disposition !== "applied") return;
-            const message = event.message;
-            if (message.type === "unknown" || !("clip" in message.data)) return;
-            const clip = message.data.clip;
-            const atMs = yield* run.now;
-            yield* SubscriptionRef.update(observed, (all) =>
-              all.length >= 1024
-                ? all
-                : [
-                    ...all,
-                    {
-                      type: message.type,
-                      clipId: clip.clip_id,
-                      seconds: clip.seconds,
-                      metadata: clip.metadata,
-                      atMs,
-                    },
-                  ],
-            );
-          }),
-        ),
-        Effect.forkScoped,
-      );
-      const video = Media.videoLog();
-      const media = yield* session.decoded;
-      yield* readInto(media.video(family.tracks.video), video).pipe(Effect.forkScoped);
-      const seen = (type: string, clipId: string) =>
-        waitFor(
-          observed,
-          (all) => all.find((event) => event.type === type && event.clipId === clipId),
-          deadline,
-        );
-      const started = (all: ReadonlyArray<Observed>) =>
-        all.filter((event) => event.type === "clip_started");
-      // `sending` completes as the enqueue commits, just before it is written to the channel.
-      const submit = Effect.fnUntraced(function* (
-        name: string,
-        position?: number,
-        sending?: Deferred.Deferred<void>,
-      ) {
-        const submission = yield* provider.prepare(
-          family.request({
-            prompt: Family.prompt,
-            seconds: family.lengths.short,
-            metadata: `${marker}:${name}`,
-            ...(position === undefined ? {} : { position }),
-          }),
-          sending === undefined ? {} : { commit: () => Deferred.succeed(sending, undefined) },
-        );
-        const submittedMs = yield* run.now;
-        const acceptance = yield* recorded(submission.submit);
-        return { clipId: acceptance.clip.clip_id, submittedMs };
-      });
-      const readQueue = Effect.map(recorded(provider.getQueue), (reply) => reply.value);
-      /** An edit's outcome: `true` when the provider refused it. Its reason is provider text, never kept. */
-      const edit = (command: Effect.Effect<unknown, CommandFailure>) =>
-        recorded(command).pipe(
-          Effect.as(false),
-          Effect.catchIf(
-            (error) =>
-              error.reason._tag === "Remote" &&
-              "outcome" in error.context &&
-              error.context.outcome === "replied",
-            () => Effect.succeed(true),
-          ),
-        );
-
-      yield* recorded(provider.setAutoplay(false));
-      // H3 documents position zero as next, behind the build that is running; `first` is that
-      // build on a session with nothing else building.
-      const first = yield* submit("first");
-      const zero = yield* submit("position-zero", 0);
-      const tail = yield* submit("tail");
-      const generation = (yield* readQueue).generation;
-      const generationOrder = generation.map((clip) => clip.clip_id);
-      const place = (clipId: string) => generationOrder.indexOf(clipId);
-      if (family.key === "fast-h3")
-        yield* judge("position zero precedes a subsequently enqueued tail", [
-          place(zero.clipId) >= 0 &&
-            place(tail.clipId) >= 0 &&
-            place(zero.clipId) < place(tail.clipId),
-          "the position-zero clip and tail were not both present with zero before the tail",
-        ]);
-      else
-        yield* judge(
-          "position zero goes next, behind the build that is running",
-          [
-            place(zero.clipId) >= 0 && place(tail.clipId) >= place(zero.clipId),
-            "the position-zero clip was not ahead of the clip queued after it",
-          ],
-          [
-            place(first.clipId) <= place(zero.clipId),
-            "the position-zero clip went ahead of the build that was running",
-          ],
-        );
-      // A popped unbuilt clip must not generate or start afterward. H3 also infers
-      // a pop in flight from its queue head; FastH3's head does not name the GPU build.
-      const popped = first;
-      const wasBuilding = generationOrder[0] === popped.clipId;
-      const wasQueuedUnbuilt =
-        family.key === "fast-h3"
-          ? generation.some((clip) => clip.clip_id === popped.clipId && !clip.ready)
-          : undefined;
-      let popAccepted: boolean | undefined;
-      if (family.key === "fast-h3")
-        popAccepted = yield* provider
-          .pop(popped.clipId)
-          .pipe(recorded, Effect.match({ onFailure: () => false, onSuccess: () => true }));
-      else yield* provider.pop(popped.clipId).pipe(recorded, Effect.ignore);
-      const poppedMs = yield* run.now;
-      // A queue read sent right behind an enqueue, long before its reply: does it list the clip?
-      const ordering: Array<boolean> = [];
-      const builds = [zero, tail];
-      for (let index = 1; index <= 3; index++) {
-        const name = `ordering-${index}`;
-        const sending = yield* Deferred.make<void>();
-        const enqueue = yield* submit(name, undefined, sending).pipe(
-          Effect.result,
-          Effect.forkChild,
-        );
-        yield* Deferred.await(sending);
-        yield* Effect.sleep("1 millis");
-        const listed = yield* Effect.map(readQueue, (value) =>
-          [...value.generation, ...value.playout].some((clip) =>
-            clip.metadata.includes(`${marker}:${name}`),
-          ),
-        );
-        ordering.push(listed);
-        const accepted = yield* Fiber.join(enqueue);
-        if (accepted._tag === "Success") builds.push(accepted.success);
-      }
-      yield* judge("a queue read sent right behind an enqueue lists the new clip", [
-        ordering.every(Boolean),
-        `${ordering.filter((listed) => !listed).length} of ${ordering.length} reads did not list it`,
-      ]);
-      for (let index = 1; index <= 5; index++) builds.push(yield* submit(`clip-${index}`));
-      yield* run.mark("clips submitted");
-      yield* seen("clip_generated", zero.clipId);
-      yield* recorded(provider.setAutoplay(true));
-      yield* run.mark("autoplay on");
-
-      type Boundary = { -readonly [K in keyof Evidence.Boundary]: Evidence.Boundary[K] };
-      const recordedBoundaries: Array<Boundary> = [];
-      const acceptedPops: Array<string> = [];
-      const record = Effect.gen(function* () {
-        const all = yield* SubscriptionRef.get(observed);
-        const watched = new Set([popped.clipId, ...builds.map((build) => build.clipId)]);
-        const counts: Record<string, number> = {};
-        const mismatched: Record<string, number> = {};
-        for (const event of all) {
-          if (!watched.has(event.clipId)) continue;
-          bump(counts, event.type);
-          if (!event.metadata.includes(marker)) bump(mismatched, event.type);
-        }
-        const afterPop = all.filter(
-          (event) => event.clipId === popped.clipId && event.atMs > poppedMs,
-        );
-        yield* run.update((evidence) => ({
-          ...evidence,
-          queue: {
-            positionZero: {
-              buildingClipId: first.clipId,
-              requestedClipId: zero.clipId,
-              generationOrder,
-            },
-            poppedBuild: {
-              wasBuilding,
-              ...(wasQueuedUnbuilt === undefined ? {} : { wasQueuedUnbuilt }),
-              ...(popAccepted === undefined ? {} : { popAccepted }),
-              generatedAfterPop: afterPop.some((event) => event.type === "clip_generated"),
-              startedAfterPop: afterPop.some((event) => event.type === "clip_started"),
-            },
-            ordering,
-            boundaries: recordedBoundaries.map((boundary) => ({ ...boundary })),
-            builds: builds.flatMap(({ clipId, submittedMs }) => {
-              const generated = all.find(
-                (event) => event.type === "clip_generated" && event.clipId === clipId,
-              );
-              return generated === undefined ? [] : [round(generated.atMs - submittedMs)];
-            }),
-            metadata: { observed: counts, mismatched },
-          },
-        }));
-      });
-      yield* Effect.addFinalizer(() => Effect.ignore(record));
-      for (const [index, planned] of boundaries.entries()) {
-        const ending = yield* waitFor(observed, (all) => started(all)[index], deadline);
-        const endsAtMs = ending.atMs + ending.seconds * 1000;
-        const boundary: Boundary = {
-          edit: planned.edit,
-          aimMs: planned.aimMs,
-          endingClipId: ending.clipId,
-        };
-        recordedBoundaries.push(boundary);
-        if (planned.edit !== "none") {
-          // The queue is read just ahead, so the edit itself leaves on its aim.
-          yield* sleepUntil(endsAtMs - planned.aimMs - 600, deadline);
-          const played = new Set(
-            started(yield* SubscriptionRef.get(observed)).map((event) => event.clipId),
-          );
-          const waiting = (yield* readQueue).playout
-            .map((clip) => clip.clip_id)
-            .filter((id) => !played.has(id));
-          // Without two clips waiting the edit cannot show anything, so it is not staged.
-          const [firstWaiting, secondWaiting] = waiting;
-          if (firstWaiting !== undefined && secondWaiting !== undefined) {
-            const edited = planned.edit === "move" ? secondWaiting : firstWaiting;
-            yield* sleepUntil(endsAtMs - planned.aimMs, deadline);
-            boundary.sentMs = yield* run.now;
-            boundary.refused = yield* edit(
-              planned.edit === "move" ? provider.move(edited, 0) : provider.pop(edited),
-            );
-            boundary.editedClipId = edited;
-            boundary.expectedClipId = secondWaiting;
-            if (planned.edit === "pop" && !boundary.refused) acceptedPops.push(edited);
-          }
-          yield* run.mark(
-            `boundary ${index + 1}: ${planned.edit} ${planned.aimMs} ms before the end`,
-            boundary.sentMs === undefined
-              ? "not staged"
-              : boundary.refused === true
-                ? "refused"
-                : undefined,
-          );
-        }
-        const finished = yield* waitFor(
-          observed,
-          (all) =>
-            all.find(
-              (event) =>
-                (event.type === "clip_finished" || event.type === "clip_stopped") &&
-                event.clipId === ending.clipId,
-            ),
-          deadline,
-        );
-        const next = yield* waitFor(observed, (all) => started(all)[index + 1], deadline);
-        boundary.finishedMs = finished.atMs;
-        boundary.nextClipId = next.clipId;
-        boundary.nextStartedMs = next.atMs;
-      }
-      // The last seam's frames arrive after its clip starts.
-      yield* sleepUntil((recordedBoundaries.at(-1)?.nextStartedMs ?? 0) + seamMs, deadline);
-      for (const boundary of recordedBoundaries) {
-        if (boundary.finishedMs === undefined || boundary.nextStartedMs === undefined) continue;
-        const pause = video.pause(boundary.finishedMs - seamMs, boundary.nextStartedMs + seamMs);
-        if (pause !== undefined) boundary.pause = pause;
-      }
-      yield* record;
-      for (const [index, boundary] of recordedBoundaries.entries()) {
-        if (boundary.edit === "none" || boundary.aimMs < judgedAimMs) continue;
-        yield* judge(
-          `${boundary.edit} ${boundary.aimMs} ms before boundary ${index + 1}`,
-          [
-            boundary.sentMs !== undefined,
-            "the edit was not staged: fewer than two clips were waiting",
-          ],
-          [boundary.refused !== true, "the provider refused the edit"],
-          [boundary.nextClipId === boundary.expectedClipId, "a different clip started next"],
-        );
-      }
-      const startedIds = new Set(
-        started(yield* SubscriptionRef.get(observed)).map((event) => event.clipId),
-      );
-      yield* judge("popped clips never start", [
-        !acceptedPops.some((clipId) => startedIds.has(clipId)),
-        "a clip started after its pop was accepted",
-      ]);
-      const evidence = yield* run.evidence;
-      const poppedBuild = evidence.queue?.poppedBuild;
-      if (family.key === "fast-h3")
-        yield* judge(
-          "a popped unbuilt clip never generates or starts",
-          [
-            poppedBuild?.wasQueuedUnbuilt === true,
-            "the clip was not present and unbuilt in the generation queue before the pop",
-          ],
-          [poppedBuild?.popAccepted === true, "the provider did not accept the pop"],
-          [
-            poppedBuild?.generatedAfterPop !== true && poppedBuild?.startedAfterPop !== true,
-            "the popped clip generated or started after the pop's reply",
-          ],
-        );
-      else
-        yield* judge(
-          "pop the build in flight",
-          [
-            poppedBuild?.wasBuilding === true,
-            "the clip was not at the head of the generation queue before the pop",
-          ],
-          [
-            poppedBuild?.generatedAfterPop !== true && poppedBuild?.startedAfterPop !== true,
-            "the popped build generated or started after the pop's reply",
-          ],
-        );
-      const metadata = evidence.queue?.metadata;
-      yield* judge("observed clip metadata", [
-        metadata !== undefined &&
-          Object.keys(metadata.observed).length > 0 &&
-          Object.keys(metadata.mismatched).length === 0,
-        "a watched clip message had missing metadata, or none was observed",
-      ]);
-      yield* run.mark("queue observed");
+      yield* queueOn(family, session, provider, deadline);
     }),
   );
 });
@@ -2520,6 +2519,7 @@ const pieces = {
   mint,
   onAir,
   onAirFor,
+  queueOn,
   readFresh,
   readInto,
   recordPlayout,

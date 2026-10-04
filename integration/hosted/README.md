@@ -31,7 +31,7 @@ A capability added after 0.3.0 gets one check of its own, run once against the p
 | `edits`       | H3, FastH3     | A group of three, two inserts and a batch withdrawal/insertion. Clips start in planned order and each seam is measured.                                                                                                                                                                                                                                                                                             |
 | `cut`         | H3, FastH3     | A cut lane stops a lower lane's clip once and starts next. An optional moderation prompt records its verdict and withdrawal or session end.                                                                                                                                                                                                                                                                         |
 | `tokens`      | H3, FastH3     | A session outlives its creating token, resumes on bound tokens, refreshes for uploads and ends. H3 uploads an image and audio; FastH3 uploads an opening frame.                                                                                                                                                                                                                                                     |
-| `tour`        | H3, FastH3     | One 90 s raw-API tour of tokens, canvas, seed, uploads and reuse, queue edits, stop/play, reset, text budget, recordings, reconnect and API-key termination. H3 observes an over-budget build failure; FastH3 requires a replied refusal at enqueue.                                                                                                                                                                |
+| `tour`        | H3, FastH3     | One 90 s raw-API tour of tokens, canvas, seed, uploads and reuse, queue edits, stop/play, reset, text budget, recordings, reconnect and API-key termination. FastH3 also runs the queue check's five playback boundaries on this session. H3 observes an over-budget build failure; FastH3 requires a replied refusal at enqueue.                                                                                   |
 | `adoption`    | H3, FastH3     | One 75 s session taken over by raw attach, then owned source resume after token expiry, using an isolated Node owner. Fresh frames, refreshed uploads, 401/403 refusals and termination are judged.                                                                                                                                                                                                                 |
 | `show`        | H3, FastH3     | Three 75 s sessions with filler, recovery, edits, one planned switch, timed cues, a deliberate session loss, carried work, cut/conflict lanes and drain.                                                                                                                                                                                                                                                            |
 | `unconnected` | H3             | Records what happens to a session nothing connects to, including billing and cleanup.                                                                                                                                                                                                                                                                                                                               |
@@ -53,6 +53,8 @@ The detailed timeline below describes the default H3 tour. With `--model fast-h3
 - **Judged, as H3's schema or the SDK documents them.** The canvas asked for and its size in `canvas_accepted` and the state; clip 1's correlated acceptance, lifecycle, live video, audio, `has_reference_audio` and metadata echo; clip 2 accepted on clip 1's uploads with nothing uploaded again, reporting one image and one audio reference; the queue read after a `move` to the front; a stop acknowledged, the playing clip stopped and nothing started with autoplay off until a `play` of the clip it names; a prompt past the text budget failing its clip with `clip_failed`, which the clip's operation reports as `ClipEnded`; a reset stopping the playing clip and leaving both queues empty; popped clips never built or started; the reconnect making the next generation, H3 answering on it with the ready clip kept, and fresh frames on it; the API key's termination and the session's own close confirmed; and, only once the end is confirmed, an attach to the ended session failing, and the key finding no unknown session: its read failing and its termination confirmed absent.
 - **Recorded, not judged.** The seed H3 echoes and its default before and after; a position-zero clip's place in the queue; each queue command's round trip and `refresh`'s outcome; whether the moved clip headed the generation queue when popped, which makes it the build in flight only by inference, and when clip 2 was built after that pop; what `reset` restores; the DELETE statuses, and which refusal the attach and the unknown session's read met, with their HTTP statuses; whether the deployment records (Reactor leaves recording to each deployment: `RecorderDisabled`, or the clip's markers and its download's size, never its content); and what the SDK reads from the echo of a three-session token and an uncapped one, which mint nothing that is used.
 - **Rehearsed.** ReactorTest answers as a disabled recorder does; a rehearsal test turns its recorder on so the download runs too, and another refuses clip 1's image, after which the later phases still run and the session still ends.
+
+FastH3 runs the standalone queue workflow on the Tour's session after its reconnect and original popped-clip judgments. An acknowledged stop and reset leave the active queues empty before the probe. All five boundary observations and queue criteria are kept. Before the API key ends the longer session, an upload refreshes its token while it is live, retaining authority for its own close afterward. A FastH3 qualification that runs this Tour needs no separate paid `queue`; the standalone check remains available for a queue-only investigation. The cap stays 90 s, so the combined run reserves $3.15 at the checked per-second rate, instead of $4.90 for separate Tour and Queue allocations. This saving has been rehearsed; hosted success remains unmeasured.
 
 ### Adoption
 
@@ -303,13 +305,13 @@ Use a built checkout with a staged addon whose source hash matches, as above. `-
 
 Qualification before publication uses separate `integration/hosted/evidence/0.11.0-dev-*` ledgers. The following reservations use the recorded October 3, 2026 rate of 350 credits per second and 10,000 credits per dollar; re-read pricing and run preflight before requesting approval for each ledger. Each amount, ledger and rate needs authorization. A failure, rerun or changed rate requires a new decision; reservations are never refunded.
 
-| Ledger         | Checks, in order                                                    | Reservation at that per-second rate |
-| -------------- | ------------------------------------------------------------------- | ----------------------------------- |
-| `0.11.0-dev-1` | FastH3 `vertical`, `queue`; H3 `edits`; optional FastH3 `turn` last | $7.00; $5.25 without `turn`         |
-| `0.11.0-dev-2` | FastH3 `takeover`, `resume`, `renewal`                              | $7.00                               |
-| `0.11.0-dev-3` | FastH3 `edits`, `cut`, `frames`, `tokens`                           | $7.00                               |
-| `0.11.0-dev-4` | FastH3 `show` alone                                                 | $7.875                              |
-| `0.11.0-dev-5` | FastH3 `adoption`, `tour`                                           | $5.775                              |
+| Ledger         | Checks, in order                                                | Reservation at that per-second rate |
+| -------------- | --------------------------------------------------------------- | ----------------------------------- |
+| `0.11.0-dev-1` | FastH3 `vertical`; H3 `edits`; optional FastH3 `turn` last      | $5.25; $3.50 without `turn`         |
+| `0.11.0-dev-2` | FastH3 `takeover`, `resume`, `renewal`                          | $7.00                               |
+| `0.11.0-dev-3` | FastH3 `edits`, `cut`, `frames`, `tokens`                       | $7.00                               |
+| `0.11.0-dev-4` | FastH3 `show` alone                                             | $7.875                              |
+| `0.11.0-dev-5` | FastH3 `adoption`, `tour` (including the full `queue` workflow) | $5.775                              |
 
 Run `turn` only on a network that blocks outbound UDP, and skip it if an earlier paid run in its ledger already selected a relay pair. Record a skip in the summary. FastH3 showreel, macOS and browser qualification need separate scope and spend decisions.
 
@@ -320,11 +322,11 @@ QUALIFY_LEDGER=integration/hosted/evidence/0.11.0-dev-1
 
 # Free preflight, before requesting this ledger's amount.
 bun --no-env-file integration/hosted/main.ts preflight --check vertical --model fast-h3 \
-  --total-budget-usd 7.00 --ledger "$QUALIFY_LEDGER"
+  --total-budget-usd 5.25 --ledger "$QUALIFY_LEDGER"
 
 # Only after authorization. Read each result before starting the next check.
 bun --no-env-file integration/hosted/main.ts run vertical --model fast-h3 \
-  --budget-usd 2.10 --total-budget-usd 7.00 --ledger "$QUALIFY_LEDGER" \
+  --budget-usd 2.10 --total-budget-usd 5.25 --ledger "$QUALIFY_LEDGER" \
   --network "<where, without addresses>" --i-authorize-paid-sessions
 bun --no-env-file integration/hosted/main.ts summarize "$QUALIFY_LEDGER" > "$QUALIFY_LEDGER/summary.md"
 ```
