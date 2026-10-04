@@ -689,7 +689,10 @@ const withReferences = (metadata: string): H3.Request => ({
  * `turn` must be carried by a relay pair; `audio` sends a reference image and a
  * reference audio clip, and the clip must report the audio.
  */
-export const vertical = Effect.fnUntraced(function* (check: "vertical" | "turn" | "audio") {
+const verticalFor = Effect.fnUntraced(function* <
+  Req extends Family.RequestInput,
+  C extends H3.Clip,
+>(family: Family.Family<Req, C>, check: "vertical" | "turn" | "audio") {
   const run = yield* Run;
   const grant = yield* mint(check);
   const marker = `hosted-qualification:${run.runId}`;
@@ -701,7 +704,7 @@ export const vertical = Effect.fnUntraced(function* (check: "vertical" | "turn" 
     Effect.gen(function* () {
       const { session, deadline } = yield* create(grant, grants);
       yield* run.mark("connected");
-      const provider = yield* H3.make(session);
+      const provider = yield* family.provider(session);
       yield* provider.events({ capacity: 4096 }).pipe(
         Stream.runForEach((event) => Effect.sync(() => tally.add(event))),
         Effect.catch((error) => Effect.sync(() => tally.failed(error))),
@@ -725,14 +728,19 @@ export const vertical = Effect.fnUntraced(function* (check: "vertical" | "turn" 
       const audioOffered = media.tracks.some(
         (track) => track.kind === "audio" && track.direction === "recvonly",
       );
-      yield* readInto(media.video(tracks.video), video).pipe(Effect.forkScoped);
-      if (audioOffered) yield* readInto(media.audio(tracks.audio), audio).pipe(Effect.forkScoped);
+      yield* readInto(media.video(family.tracks.video), video).pipe(Effect.forkScoped);
+      if (audioOffered)
+        yield* readInto(media.audio(family.tracks.audio), audio).pipe(Effect.forkScoped);
       // H3 holds a generated clip until it is played, unless autoplay is on.
       yield* recorded(provider.setAutoplay(true));
-      const request: H3.Request =
+      const request =
         check === "audio"
-          ? withReferences(marker)
-          : { prompt, seconds: clipSeconds, metadata: marker };
+          ? family.withUploads(marker)
+          : family.request({
+              prompt: Family.prompt,
+              seconds: family.lengths.short,
+              metadata: marker,
+            });
       const submission = yield* provider.prepare(request);
       const submitMs = yield* run.now;
       const acceptance = yield* recorded(submission.submit);
@@ -760,8 +768,8 @@ export const vertical = Effect.fnUntraced(function* (check: "vertical" | "turn" 
             ...(check === "audio"
               ? {
                   references: {
-                    images: request.references?.length ?? 0,
-                    audio: request.audio?.length ?? 0,
+                    images: family.uploadCounts.images,
+                    audio: family.uploadCounts.audio,
                     reportedAudio: clip.reference_audio_count ?? null,
                     hasReferenceAudio: clip.has_reference_audio ?? null,
                   },
@@ -860,6 +868,11 @@ export const vertical = Effect.fnUntraced(function* (check: "vertical" | "turn" 
       );
     }),
   );
+});
+
+export const vertical = Effect.fnUntraced(function* (check: "vertical" | "turn" | "audio") {
+  const run = yield* Run;
+  return yield* Family.withFamily(run, (family) => verticalFor(family, check));
 });
 
 /**
