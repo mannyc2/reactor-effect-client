@@ -1712,7 +1712,7 @@ export const Evidence = Schema.Struct({
     }),
   ),
   /**
-   * `queue`: H3's own queue, raw: queue reads right behind an enqueue, position
+   * `queue`: the model's own queue, raw: reads right behind an enqueue, position
    * zero, a popped build, and a move or pop before each of five boundaries.
    */
   queue: Schema.optionalKey(
@@ -1727,6 +1727,9 @@ export const Evidence = Schema.Struct({
       poppedBuild: Schema.optionalKey(
         Schema.Struct({
           wasBuilding: Schema.Boolean,
+          /** FastH3's generation head does not identify its active GPU build. */
+          wasQueuedUnbuilt: Schema.optionalKey(Schema.Boolean),
+          popAccepted: Schema.optionalKey(Schema.Boolean),
           generatedAfterPop: Schema.Boolean,
           startedAfterPop: Schema.Boolean,
         }),
