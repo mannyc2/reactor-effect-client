@@ -17,8 +17,8 @@ import { ReactorTest } from "reactor-effect-client";
 import type { Evidence } from "../Evidence.js";
 import { cleanupInstructions } from "../Evidence.js";
 import { execute, staleBuild } from "../Qualify.js";
-import type { Check } from "../Spend.js";
-import { ceilingFor, checks, holdsFor, maxTotalUsd } from "../Spend.js";
+import type { Check, Plan } from "../Spend.js";
+import { ceilingFor, checks, holdsFor, maxTotalUsd, plans } from "../Spend.js";
 import { summarize } from "../Summary.js";
 import * as Target from "../Target.js";
 
@@ -98,21 +98,10 @@ const failed = (criterion: string) => (evidence: Evidence) => {
 
 for (const check of checks) rehearse(`${check} passes`, { check, judge: passes });
 
-// The requested family seam includes every allowed check even before its registry is implemented.
-for (const check of [
-  "vertical",
-  "turn",
-  "queue",
-  "takeover",
-  "resume",
-  "renewal",
-  "edits",
-  "cut",
-  "show",
-  "tokens",
-  "adoption",
-  "tour",
-] as const)
+for (const check of checks.filter((check) => {
+  const plan: Plan = plans[check];
+  return plan.models?.includes("fast-h3") === true;
+}))
   rehearse(`${check} passes on FastH3`, {
     check,
     model: "fast-h3",
