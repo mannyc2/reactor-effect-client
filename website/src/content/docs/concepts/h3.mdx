@@ -90,7 +90,8 @@ facts for FastH3 (`reactor/fast-h3`). Create the session with `model: FastH3.mod
 observes a session it neither allocates nor closes. `H3.make` checks the deployment's declared
 commands rather than identifying the model and can admit a FastH3 deployment. Use `FastH3.make`
 for FastH3's frame arguments; it refuses an H3 deployment with `UnsupportedCapability` before
-sending model commands. FastH3 has no playout source yet.
+sending model commands. [FastH3Source](/reactor-effect-client/guides/fasth3/) opens and owns a
+FastH3 session for the playout.
 
 Its `Request` takes `prompt`, optional `seconds`, `seed`, `position` and `metadata`. Optional
 `start` picks an image reference or `{ continueFrom: clipId }`; optional `end` picks an image or

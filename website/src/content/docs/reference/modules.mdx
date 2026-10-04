@@ -31,6 +31,7 @@ host and loads no native code.
 | `ViduS2Avatar`      | The Vidu S2-Avatar provider over a session: an avatar and its calls            |
 | `Playout`           | A keyed schedule in priority lanes, aired across sessions it renews            |
 | `H3Source`          | A paid H3 session as a playout source                                          |
+| `FastH3Source`      | A paid FastH3 session as a playout source, with built retained continuation hints |
 | `LocalSource`       | A playout source rendered in this process by your own hooks                    |
 | `Media`             | Decoded frames and platform tracks of one connection generation                |
 | `Peer`              | The transport port a host implements                                           |
@@ -72,8 +73,9 @@ See [Sessions and tokens](/reactor-effect-client/concepts/sessions/).
 `reactor-effect-client/FastH3`. `make`, `Provider` and `Options`; `modelName`, `tracks`,
 `documentedVersion`, `source`, `requestSeconds` and `canvases`; the `Request`, `Clip`, `Queue`
 and `State` Schemas; `Acceptance`, `Submission`, `ProviderSnapshot` and the clip's operation facts.
-Frames or clip ids supply a clip's opener and closer. There is no FastH3 playout source yet.
-See [FastH3](/reactor-effect-client/concepts/h3/#fasth3).
+Frames or clip ids supply a clip's opener and closer. `FastH3Source` opens and owns a session for
+the playout. See [FastH3](/reactor-effect-client/concepts/h3/#fasth3) and
+[Air FastH3 through the playout](/reactor-effect-client/guides/fasth3/).
 
 ### `ViduS2Avatar`
 

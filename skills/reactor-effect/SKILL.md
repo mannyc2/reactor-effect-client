@@ -12,7 +12,7 @@ models. A session is a scoped Effect resource; H3, FastH3 and Vidu S2-Avatar are
 **Packages** (one version for all, published to npm):
 
 - `reactor-effect-client`: `Reactor`, `Session`, `CoordinatorClient`, `H3`, `FastH3`, `ViduS2Avatar`,
-  `H3Source`, `LocalSource`, `Playout`, `Media`, `Peer`, `ReactorError`, `ReactorTest`. Portable: Node, Bun and
+  `H3Source`, `FastH3Source`, `LocalSource`, `Playout`, `Media`, `Peer`, `ReactorError`, `ReactorTest`. Portable: Node, Bun and
   browsers.
 - `reactor-effect-browser`: `BrowserPeer.layer` on `RTCPeerConnection`, `BrowserMedia` for tracks.
 - `reactor-effect-native`: `NativePeer.layer()`, or `NativePeer.layerIsolated()` under Node, on a
@@ -102,6 +102,8 @@ const program = Effect.gen(function* () {
   and `Random`, so `TestClock` drives them.
 
 ## Keeping a channel on air: `Playout`
+
+For FastH3, use `Playout.make({ model: FastH3Source.model, open: FastH3Source.open({ tokens }) })` with an application-owned `Playout.Service<FastH3.Request>` tag. Automatic continuations use only built, retained clips; hosted qualification is pending.
 
 `Playout.layer({ open, lanes, filler, renewal })` where `open` is
 `H3Source.open({ tokens: coordinator.tokens({ ... }) })`. Submit keyed items with

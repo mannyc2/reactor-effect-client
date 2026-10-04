@@ -1,0 +1,146 @@
+---
+title: Air FastH3 through the playout
+description: "Drive FastH3 clips with frame or clip openers and closers, and air them through a renewing playout."
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+FastH3 (`reactor/fast-h3`) builds video clips from a prompt, with an optional opening and closing
+frame or clip. `FastH3` is its provider over a connected session; `FastH3Source` opens and owns a
+session for `Playout`, so the same channel can carry on across session caps.
+
+## The pieces
+
+**The session.** `reactor.create({ model: FastH3.modelName, tokens })` opens one, as for H3.
+Reactor bills from ready until the session ends, including time between clips. The pricing read
+before the paid probe on October 3, 2026 stated 350 credits a second, at 10,000 credits a dollar:
+$0.035 per second, as H3. At that recorded rate, a two-minute cap bounds one session at $4.20.
+A renewing channel keeps opening sessions and bills their overlap too.
+[Cost control](/reactor-effect-client/guides/cost-control/) shows how to bound the whole channel.
+
+**The provider.** `FastH3.make(session)` reads the deployment, state and queue, then observes that
+session. `snapshot` is its latest view; `changes` streams each view. `prepare(request)` captures a
+request without dispatching it; the returned submission's `submit` sends it once. `enqueue(request)`
+does both and returns acceptance evidence. The provider neither allocates nor closes the session.
+Its commands and [clip operations](/reactor-effect-client/concepts/h3/#a-clips-operation-facts) follow H3's
+API, with FastH3's own request and clip fields.
+
+**The request.** A `FastH3.Request` has `prompt`, optional `seconds`, `seed`, `position` and
+`metadata`. `start` takes an image frame or `{ continueFrom: clipId }`; `end` takes an image frame
+or `{ endFrom: clipId }`. Choose at most one opener and one closer. Frames use H3's tagged image
+references: `{ _tag: "Bytes", bytes }`, `{ _tag: "Uploaded", file }`, or an image already validated
+with `H3.validateReference`. FastH3 has no reference-image list.
+
+**The source.** `FastH3Source.open({ tokens, onAllocated })` mints a token, allocates the session,
+runs `onAllocated` with its owner record before connecting, and sets it up for the playout. Its
+lifetime is what remains of the token's session cap; without a cap it is unending. `resume` adopts
+a recorded FastH3 allocation and preserves its canvas, queue and playback. Closing the source's
+scope closes its owned session. The [source concept](/reactor-effect-client/concepts/sources/)
+explains allocation records and supervision.
+
+## A FastH3 playout
+
+Give `Playout.make` both the FastH3 model and opener. To make it a service, declare a tag for the
+FastH3 request type and construct it with `Layer.effect`:
+
+```ts
+import { Context, Effect, Layer } from "effect";
+import { CoordinatorClient, FastH3, FastH3Source, Playout } from "reactor-effect-client";
+
+class Channel extends Context.Service<Channel, Playout.Service<FastH3.Request>>()(
+  "app/FastH3Channel",
+) {}
+
+const ChannelLive = Layer.effect(
+  Channel,
+  Effect.gen(function* () {
+    const coordinator = yield* CoordinatorClient.CoordinatorClient;
+    const tokens = coordinator.tokens({
+      modelName: FastH3.modelName,
+      maxSessionDuration: "2 minutes",
+    });
+    return yield* Playout.make({
+      model: FastH3Source.model,
+      open: FastH3Source.open({ tokens }),
+      lanes: [{ name: "main" }],
+    });
+  }),
+);
+
+const submitClip = Effect.gen(function* () {
+  const channel = yield* Channel;
+  return yield* channel.submit({
+    key: Playout.ItemKey.make("greenhouse"),
+    lane: "main",
+    request: { prompt: "A slow dolly shot through a sunlit greenhouse full of ferns" },
+  });
+});
+```
+
+Compose `ChannelLive` with the coordinator, Reactor and host layers at the application's entry
+point, as in [the channel guide](/reactor-effect-client/guides/channel/). Read the channel's
+`events`, `video` and `audio` through your `Channel` tag. Closing the layer ends the channel and
+its sessions. `Playout.Playout` and `Playout.layer` remain the H3 service; a FastH3 channel uses
+its own tag as above.
+
+Playout sends an item without `seconds` at 5.167 seconds, FastH3's rounded minimum of 124 frames
+at 24 fps. Calling the provider or source directly with no `seconds` preserves the session's
+length setting, initially 14.375 seconds.
+
+## Continuation and renewal
+
+Set `continuity: "previous"` on an item to ask the playout to continue its preceding clip. It
+chooses hints only from built clips retained as playing, ready in `playout`, or in `history` on
+the same physical session. History supplies frames for continuation but cannot play. Generation
+entries and failed clips are excluded. The playout retains its order across renewal and does not
+carry an automatically chosen continuation hint to another session.
+
+A request's explicit `start` takes precedence over that hint; its own `end` is also preserved.
+Caller-specified clip IDs remain request input: naming an unbuilt clip can create a dependency,
+and FastH3 documents a refusal to pop an unbuilt anchor while dependent clips remain. The
+built-only rule applies to automatically chosen playout hints.
+
+The source checks a hint against its latest lists before dispatch. If it is already missing,
+the source omits it from the single submission and annotates the current span with
+`reactor.continuation: "dropped"`. If the source clip disappears between that check and the send,
+the provider's actual failure and dispatch outcome are returned unchanged. No enqueue-failure
+handler refreshes the lists or sends another enqueue.
+
+## Offline and hosted evidence
+
+`ReactorTest` simulates FastH3's queues, retained history, dependencies, commands and synthetic
+media. Its FastH3 timing profile borrows H3's timings. Use `Timing.fixed` for reproducible tests.
+A rehearsal is evidence about the simulator.
+
+One paid [raw-session probe on October 3, 2026](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.10.0-fasth3/summary.md)
+read FastH3's deployment and queues, observed lengths aligning upward, continued from a played
+clip retained in history, and confirmed its session closed. It did not run `FastH3`,
+`FastH3Source` or a FastH3 playout, and did not establish history capacity, dependent build order,
+or video drain timing.
+
+<Aside type="caution" title="Not yet qualified on hosted Reactor">
+  The provider and playout source have no hosted qualification run. A `Started` fact means the model
+  reported a start; it does not prove that a viewer saw a frame or that an encoder emitted it.
+</Aside>
+
+## Pitfalls and limits
+
+- **Lengths align upward.** Requests range from 5.167 to 14.375 seconds on a grid of 124 frames,
+  then steps of 17, at 24 fps. The probe built 5.5 seconds as 5.875 seconds, 6 as 6.583 seconds,
+  and 10 as 10.125 seconds, although Reactor's documentation describes the nearest grid length.
+  These samples do not measure every length or tie; plan with the next length up.
+- **Continuity is a request.** Built, retained automatic hints avoid dependencies on unbuilt
+  anchors; an explicit caller opener can still name one. As-run does not claim proved visual
+  continuity.
+- **An uncertain enqueue stays uncertain.** The probe received an `ack` for an unknown source,
+  preceded by a separate, uncorrelated `command_error`. An `ack` without acceptance evidence
+  leaves the provider's enqueue outcome `unknown`; a correlated `Remote` refusal remains
+  `replied`. Lost replies, interruption after dispatch, observation overflow and session retirement
+  can also leave acceptance unresolved. The source does not resend; later metadata evidence may
+  still identify the accepted clip.
+- **Stopping and video drain differ.** Reactor documents that FastH3 with flush off may drain for
+  about two seconds before freezing. This source adds no compensation for that delay. The probe's
+  `clip_stopped` arrived 0.13 seconds after stop, but the frozen-tail drain was unmeasured, and
+  `ReactorTest` does not prove that timing.
+- **No reference-image list.** FastH3 takes its opening and closing frames through `start` and
+  `end`. The probe's undeclared `reference_images` key received a correlated refusal.

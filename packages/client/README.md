@@ -103,21 +103,22 @@ the rest.
 Each module is its own subpath, `reactor-effect-client/<Module>`, and the root exports every one as
 a namespace. Nothing under `internal/` is reachable.
 
-| Module                                                                                    | What it is                                                                                              |
-| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| [`Reactor`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)           | The service that acquires sessions: `create` allocates one this process owns, `attach` joins one        |
-| [`Session`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)           | One session: status, events, commands, uploads, recordings, media, reconnects and its close report      |
-| [`CoordinatorClient`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/) | Reactor's HTTP API: pricing, tokens (`tokens`, `fixedTokens`), inspection, termination, recordings      |
-| [`H3`](https://mannyc2.github.io/reactor-effect-client/concepts/h3/)                      | The H3 provider over a session: its state and queue, commands, acceptance and reference validation      |
-| [`FastH3`](https://mannyc2.github.io/reactor-effect-client/concepts/h3/#fasth3)           | The FastH3 provider over a session: frames or clip ids as opener and closer, commands and acceptance    |
-| [`ViduS2Avatar`](https://mannyc2.github.io/reactor-effect-client/guides/avatar/)          | The Vidu S2-Avatar provider over a session: an avatar from a photo, its calls and transcripts           |
-| [`Playout`](https://mannyc2.github.io/reactor-effect-client/concepts/playout/)            | Airs keyed items in priority lanes across sessions it renews, and reports what aired                    |
-| [`H3Source`](https://mannyc2.github.io/reactor-effect-client/concepts/sources/)           | A paid H3 session as a playout source: `open`, `resume` and the owner record `Allocation`               |
-| [`LocalSource`](https://mannyc2.github.io/reactor-effect-client/concepts/sources/)        | A playout source rendered in this process by the application's hooks                                    |
-| [`Media`](https://mannyc2.github.io/reactor-effect-client/concepts/media/)                | Decoded frames and platform tracks of one connection generation, and `recorder`                         |
-| [`Peer`](https://mannyc2.github.io/reactor-effect-client/reference/modules/)              | The transport port a host implements, and the `PeerFactory` service                                     |
-| [`ReactorError`](https://mannyc2.github.io/reactor-effect-client/concepts/errors/)        | Every failure the client raises, its tagged reason and its dispatch outcome                             |
-| [`ReactorTest`](https://mannyc2.github.io/reactor-effect-client/guides/testing-offline/)  | Reactor simulated in memory: the coordinator, peers, H3, FastH3 and Vidu S2-Avatar, on the Effect clock |
+| Module                                                                                    | What it is                                                                                                   |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| [`Reactor`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)           | The service that acquires sessions: `create` allocates one this process owns, `attach` joins one             |
+| [`Session`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)           | One session: status, events, commands, uploads, recordings, media, reconnects and its close report           |
+| [`CoordinatorClient`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/) | Reactor's HTTP API: pricing, tokens (`tokens`, `fixedTokens`), inspection, termination, recordings           |
+| [`H3`](https://mannyc2.github.io/reactor-effect-client/concepts/h3/)                      | The H3 provider over a session: its state and queue, commands, acceptance and reference validation           |
+| [`FastH3`](https://mannyc2.github.io/reactor-effect-client/concepts/h3/#fasth3)           | The FastH3 provider over a session: frames or clip ids as opener and closer, commands and acceptance         |
+| [`ViduS2Avatar`](https://mannyc2.github.io/reactor-effect-client/guides/avatar/)          | The Vidu S2-Avatar provider over a session: an avatar from a photo, its calls and transcripts                |
+| [`Playout`](https://mannyc2.github.io/reactor-effect-client/concepts/playout/)            | Airs keyed items in priority lanes across sessions it renews, and reports what aired                         |
+| [`H3Source`](https://mannyc2.github.io/reactor-effect-client/concepts/sources/)           | A paid H3 session as a playout source: `open`, `resume` and the owner record `Allocation`                    |
+| [`FastH3Source`](https://mannyc2.github.io/reactor-effect-client/guides/fasth3/)          | A paid FastH3 session as a playout source: `open`, `resume` and `model`; not yet qualified on hosted Reactor |
+| [`LocalSource`](https://mannyc2.github.io/reactor-effect-client/concepts/sources/)        | A playout source rendered in this process by the application's hooks                                         |
+| [`Media`](https://mannyc2.github.io/reactor-effect-client/concepts/media/)                | Decoded frames and platform tracks of one connection generation, and `recorder`                              |
+| [`Peer`](https://mannyc2.github.io/reactor-effect-client/reference/modules/)              | The transport port a host implements, and the `PeerFactory` service                                          |
+| [`ReactorError`](https://mannyc2.github.io/reactor-effect-client/concepts/errors/)        | Every failure the client raises, its tagged reason and its dispatch outcome                                  |
+| [`ReactorTest`](https://mannyc2.github.io/reactor-effect-client/guides/testing-offline/)  | Reactor simulated in memory: the coordinator, peers, H3, FastH3 and Vidu S2-Avatar, on the Effect clock      |
 
 Each module's doc comments state its options' defaults and bounds.
 
