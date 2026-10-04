@@ -17,9 +17,15 @@ import type { Connection, Message, Model, Runner, Simulation } from "./runner.js
 
 type Clip = Pick<H3.Clip, "clip_id" | "frames" | "seconds">;
 type Output<M extends Message> =
-  | Exclude<H3.Output, { readonly _tag: "Reply" | "Broadcast" | "Play" | "Flush" }>
+  | Exclude<H3.Output, { readonly _tag: "Reply" | "Broadcast" | "Play" | "Flush" | "Continuation" }>
   | { readonly _tag: "Reply"; readonly requestId: string; readonly message: M }
   | { readonly _tag: "Broadcast"; readonly message: M }
+  | {
+      readonly _tag: "Continuation";
+      readonly clipId: string;
+      readonly from: string | undefined;
+      readonly applied: boolean;
+    }
   | {
       readonly _tag: "Play";
       readonly clip: Clip;
@@ -191,7 +197,7 @@ const start = Effect.fnUntraced(function* <
             kind: "build",
             name: output.applied ? "continued" : "independent",
             clipId: output.clipId,
-            continuedFrom: output.from,
+            ...(output.from === undefined ? {} : { continuedFrom: output.from }),
           });
       }
     }).pipe(Effect.asVoid);

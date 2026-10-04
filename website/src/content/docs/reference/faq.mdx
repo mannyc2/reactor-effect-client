@@ -28,9 +28,10 @@ reactor-effect is for Effect applications, and adds:
 
 H3 Reference Turbo Realtime (`reactor/h3-reference-to-video-turbo-realtime`), FastH3
 (`reactor/fast-h3`) and Vidu S2-Avatar (`reactor/vidu-s2-avatar`) each have a provider, and
-`ReactorTest` simulates all three. Only H3 has a playout source. FastH3 has one paid raw `Session`
-probe; its provider has not been qualified on hosted Reactor. Other models can use `Reactor` and
-`Session`, which take any model name. See [FastH3](/reactor-effect-client/concepts/h3/#fasth3),
+`ReactorTest` simulates all three. H3 and FastH3 have playout sources. FastH3 has one paid raw
+`Session` probe; its provider and playout source have not been qualified on hosted Reactor.
+Other models can use `Reactor` and `Session`, which take any model name. See
+[Air FastH3 through the playout](/reactor-effect-client/guides/fasth3/),
 [A talking character](/reactor-effect-client/guides/avatar/) and
 [Limits](/reactor-effect-client/reference/limits/#models).
 

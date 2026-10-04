@@ -36,7 +36,8 @@ command, for a cause not yet known.
 FastH3 has one paid raw `Session` probe
 ([2026-10-03](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.10.0-fasth3/summary.md)).
 It measured sample lengths and read the state, queues and history; it refused the undeclared
-`reference_images: []` key. The FastH3 provider has not been qualified on hosted Reactor.
+`reference_images: []` key. This probe did not use the FastH3 provider or playout source;
+neither has been qualified on hosted Reactor.
 
 **Locally and in CI only:**
 
@@ -71,7 +72,7 @@ deployment reports its version as `v0.0.0`.
 
 `Reactor`, `Session` and the hosts are not specific to H3: `reactor.create` takes any model name,
 and `session.command(name, data)` sends any command. H3, FastH3 and Vidu S2-Avatar have providers;
-only H3 has a playout source. Create each session with its provider's `modelName`.
+H3 and FastH3 have playout sources. Create each session with its provider's `modelName`.
 `H3.make` checks declared commands rather than identifying the model, so it can admit a FastH3
 deployment; use `FastH3.make` to send FastH3's frame arguments. `FastH3.make` refuses an H3
 deployment with `UnsupportedCapability` before sending model commands.
@@ -138,6 +139,14 @@ including the acceptance envelope. Reactor enforces the 1,024-token prompt budge
 The paid probe sampled this length rule; it did not measure every length, history capacity,
 dependent build order or the documented stop drain. See
 [FastH3](/reactor-effect-client/concepts/h3/#fasth3).
+
+`FastH3Source.model` plans a playout item without `seconds` at 5.167 s; calling the provider or
+source directly preserves the session's length setting, initially 14.375 s. Automatic continuity
+uses only built playing, playout or history clips on the same session, excluding failed clips and
+generation entries. An explicit `start` wins. A missing hint is dropped before the single send
+with `reactor.continuation: "dropped"`; post-send failures and dispatch outcomes pass through
+unchanged, with no failure-triggered refresh or resend. See
+[Air FastH3 through the playout](/reactor-effect-client/guides/fasth3/).
 
 ## Security
 
