@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Effect, Exit, Schema } from "effect";
+import { Cause, Effect, Exit, Schema } from "effect";
 import * as Spend from "../Spend.js";
 
 // H3's published rate: 350 credits a second, stated per second, on September 30, 2026.
@@ -115,18 +115,41 @@ describe("the spending gates", () => {
     }),
   );
 
-  // The requested spend seam keeps FastH3's paid cap separate from its rehearsal stand-in.
-  it.effect("fasth3 reserves one FastH3 session and rehearses on H3", () =>
+  // The requested spend seam uses the model ReactorTest now serves directly.
+  it.effect("fasth3 reserves one FastH3 session and rehearses on FastH3", () =>
     Effect.sync(() => {
       assert.strictEqual(Spend.plans.fasth3.model.name, "reactor/fast-h3");
       assert.strictEqual(Spend.plans.fasth3.sessions, 1);
       assert.strictEqual(Spend.plans.fasth3.seconds, 50);
       assert.strictEqual(Spend.ceilingFor("fasth3"), 2.1);
-      assert.strictEqual(
-        Spend.modelFor("fasth3", "rehearsal").name,
-        "reactor/h3-reference-to-video-turbo-realtime",
-      );
+      assert.strictEqual(Spend.modelFor("fasth3").name, "reactor/fast-h3");
     }),
+  );
+
+  // The requested model seam refuses a check on an unsupported model before admission.
+  it.effect(
+    "the model axis refuses FastH3 audio and admits its vertical at the reviewed ceiling",
+    () =>
+      Effect.gen(function* () {
+        const audio = yield* Effect.exit(
+          Spend.authorize({ check: "audio", model: "fast-h3", budgetUsd: 2.1, totalUsd: 10 }),
+        );
+        assert.isTrue(Exit.isFailure(audio));
+        if (Exit.isFailure(audio)) {
+          const error = Cause.squash(audio.cause);
+          assert.isTrue(Schema.is(Spend.Refused)(error));
+          if (Schema.is(Spend.Refused)(error))
+            assert.strictEqual(error.message, "audio runs on h3 only");
+        }
+        const vertical = yield* Spend.authorize({
+          check: "vertical",
+          model: "fast-h3",
+          budgetUsd: 2.1,
+          totalUsd: 10,
+        });
+        assert.strictEqual(vertical.model, "fast-h3");
+        assert.strictEqual(Spend.ceilingFor("vertical", "fast-h3"), 2.1);
+      }),
   );
 
   // dropped's session has no cap; its reviewed hold reserves 80 s before cleanup retries.

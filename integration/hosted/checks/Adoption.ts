@@ -59,7 +59,7 @@ import type { AdoptionRecord } from "../Evidence.js";
 import * as Media from "../Media.js";
 import * as Probes from "../Probes.js";
 import { describe, recorded, Run } from "../Run.js";
-import { acceptGrant, plans, provenGrant, tokenSecondsFor } from "../Spend.js";
+import { acceptGrant, provenGrant, tokenSecondsFor } from "../Spend.js";
 import { Target } from "../Target.js";
 
 const tracks = H3.h3ReferenceTurboRealtime.tracks;
@@ -542,7 +542,7 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
             // it creates none.
             const unbound = yield* coordinator.mintToken({
               apiKey: target.apiKey,
-              modelName: plans.adoption.model.name,
+              modelName: run.model.name,
               maxSessionDuration: "1 second",
               expiresAfter: "15 seconds",
             });

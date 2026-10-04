@@ -10,7 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, layer } from "@effect/vitest";
 import { Effect, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { nodeOwnerArgs } from "../Target.js";
+import * as Target from "../Target.js";
 
 layer(NodeServices.layer)("the paid adoption owner", (it) => {
   it.effect(
@@ -23,7 +23,7 @@ layer(NodeServices.layer)("the paid adoption owner", (it) => {
         const { output, exitCode } = yield* Effect.scoped(
           Effect.gen(function* () {
             const handle = yield* spawner.spawn(
-              ChildProcess.make("node", [...nodeOwnerArgs(script), "--help"]),
+              ChildProcess.make("node", [...Target.nodeOwnerArgs(script), "--help"]),
             );
             return yield* Effect.all(
               {
@@ -36,7 +36,20 @@ layer(NodeServices.layer)("the paid adoption owner", (it) => {
         );
         assert.strictEqual(exitCode, 0, output);
         assert.include(output, "--isolated");
+        assert.include(output, "--model");
       }),
     30_000,
+  );
+
+  // The requested paid-owner seam carries the selected model and decimal clip length to the child.
+  it.effect("passes the model and a decimal queued length in the owner's arguments", () =>
+    Effect.sync(() => {
+      assert.deepStrictEqual(Target.ownerArgs({ model: "fast-h3", queuedSeconds: 14.375 }), [
+        "--queued-seconds",
+        "14.375",
+        "--model",
+        "fast-h3",
+      ]);
+    }),
   );
 });

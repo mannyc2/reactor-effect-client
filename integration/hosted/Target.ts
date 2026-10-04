@@ -34,7 +34,7 @@ import { ReactorError } from "reactor-effect-client/ReactorError";
 import * as ReactorTest from "reactor-effect-client/ReactorTest";
 import * as NativePeer from "reactor-effect-native/NativePeer";
 import * as Media from "./Media.js";
-import { Refused, sessionSeconds } from "./Spend.js";
+import { Refused, sessionSeconds, type ModelKey } from "./Spend.js";
 
 export const prompt = "A slow camera move across a sunlit table with a glass of water.";
 
@@ -93,6 +93,7 @@ export interface Photo {
 }
 
 export interface OwnerOptions {
+  readonly model?: ModelKey | undefined;
   /**
    * A paid owner runs under Node (`node` on the PATH, 22.18 or newer) with each
    * connection's native peer in a child process of its own; a rehearsal's
@@ -221,6 +222,16 @@ export const nodeOwnerArgs = (script: string): ReadonlyArray<string> => [
   "--isolated",
 ];
 
+/** Model and clip length passed to either paid owner's runtime. */
+export const ownerArgs = (
+  options: Pick<OwnerOptions, "model" | "queuedSeconds">,
+): ReadonlyArray<string> => [
+  ...(options.queuedSeconds === undefined
+    ? []
+    : ["--queued-seconds", String(options.queuedSeconds)]),
+  ...(options.model === undefined ? [] : ["--model", options.model]),
+];
+
 /** How long a killed owner may take to exit before the check stops waiting for it. */
 const ownerExitWait = Duration.seconds(5);
 
@@ -306,6 +317,7 @@ const opened = Effect.fnUntraced(function* (
 export const own = (input: {
   readonly grant: CoordinatorClient.TokenGrant;
   readonly marker: string;
+  readonly model?: ModelKey | undefined;
   readonly queuedSeconds?: number | undefined;
   readonly allocated?: ((allocation: H3Source.Allocation) => Effect.Effect<void>) | undefined;
   readonly announce: (streaming: Streaming) => Effect.Effect<void>;
@@ -444,10 +456,7 @@ export const paid = (input: {
         owner: (grant, marker, options) =>
           Effect.gen(function* () {
             const owner = yield* spawnOwner({
-              flags:
-                options?.queuedSeconds === undefined
-                  ? []
-                  : ["--queued-seconds", String(options.queuedSeconds)],
+              flags: ownerArgs(options ?? {}),
               isolated: options?.isolated === true,
               grant,
               line: yield* Schema.encodeEffect(Schema.fromJsonString(OwnerGrant))({
@@ -501,6 +510,7 @@ export const ownerProcess = <E>(input: {
   /** Its runtime and native peer. */
   readonly host: string;
   readonly queuedSeconds?: number | undefined;
+  readonly model?: ModelKey | undefined;
   readonly idle: boolean;
 }) =>
   Effect.gen(function* () {
@@ -534,6 +544,7 @@ export const ownerProcess = <E>(input: {
       grant,
       marker: owned.marker,
       queuedSeconds: input.queuedSeconds,
+      model: input.model,
       allocated,
       announce: report,
     });
@@ -648,6 +659,7 @@ export const rehearsal = (input: {
                 grant,
                 marker,
                 queuedSeconds: options?.queuedSeconds,
+                model: options?.model,
                 allocated: options?.onAllocated,
                 announce,
               }),

@@ -3,12 +3,15 @@
  * gathers, and why.
  *
  *   bun integration/hosted/main.ts rehearse <check> [--faults '<json>'] [--ledger <dir>] \
- *     [--moderation-prompt-file <path>] [--avatar-image <path>]
+ *     [--moderation-prompt-file <path>] [--avatar-image <path>] \
+ *     [--model h3|fast-h3]
  *   bun integration/hosted/main.ts preflight [--check <check>] --total-budget-usd 3.50 \
- *     --ledger <dir>
+ *     --ledger <dir> \
+ *     [--model h3|fast-h3]
  *   bun integration/hosted/main.ts run <check> --budget-usd 1.75 --total-budget-usd 3.50 \
  *     --ledger <dir> --network "<where, without addresses>" --i-authorize-paid-sessions \
- *     [--moderation-prompt-file <path>] [--avatar-image <path>]
+ *     [--moderation-prompt-file <path>] [--avatar-image <path>] \
+ *     [--model h3|fast-h3]
  *   bun integration/hosted/main.ts summarize <file or ledger>...
  *
  * A run exits 0 when it passes, 1 when it fails, and 2 when it refused before
@@ -54,6 +57,10 @@ class Failed extends Schema.TaggedError<Failed>("reactor-effect-integration/host
 ) {}
 
 const check = Argument.Literals("check", Spend.checks);
+const model = Flag.Literals("model", ["h3", "fast-h3"]).pipe(
+  Flag.withDescription("the H3-family model a check runs, H3 by default"),
+  Flag.optional,
+);
 const ledger = Flag.String("ledger").pipe(
   Flag.withDescription("the evidence directory: the ledger"),
 );
@@ -131,6 +138,7 @@ const rehearse = Command.make(
   "rehearse",
   {
     check,
+    model,
     ledger: ledger.pipe(Flag.optional),
     faults: Flag.String("faults").pipe(
       Flag.withSchema(ReactorTest.Fault.pipe(Schema.Array, Schema.fromJsonString)),
@@ -146,12 +154,15 @@ const rehearse = Command.make(
       : yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
           prefix: "reactor-rehearsal-",
         });
+    const key = Option.getOrUndefined(input.model);
+    const authorization = yield* Spend.authorize({
+      check: input.check,
+      model: key,
+      budgetUsd: Math.min(Spend.ceilingFor(input.check, key), Spend.maxTotalUsd),
+      totalUsd: Spend.maxTotalUsd,
+    });
     const evidence = yield* execute({
-      authorization: {
-        check: input.check,
-        budgetUsd: Spend.ceilingFor(input.check),
-        totalUsd: Spend.maxTotalUsd,
-      },
+      authorization,
       ledger: directory,
     });
     return yield* report(evidence);
@@ -182,6 +193,7 @@ const paid = Command.make(
   "run",
   {
     check,
+    model,
     ledger,
     budget: Flag.Finite("budget-usd"),
     total: Flag.Finite("total-budget-usd"),
@@ -196,6 +208,7 @@ const paid = Command.make(
   Effect.fnUntraced(function* (input) {
     const authorization = yield* Spend.authorize({
       check: input.check,
+      model: Option.getOrUndefined(input.model),
       budgetUsd: input.budget,
       totalUsd: input.total,
     });
@@ -231,6 +244,7 @@ const paid = Command.make(
 const preflight = Command.make(
   "preflight",
   {
+    model,
     check: Flag.Literals("check", Spend.checks).pipe(
       Flag.withDescription("the check whose model's rate and token are read"),
       Flag.withDefault("vertical"),
@@ -240,14 +254,21 @@ const preflight = Command.make(
   },
   Effect.fnUntraced(function* (input) {
     const { check } = input;
-    const model = Spend.plans[check].model.name;
+    const key = Option.getOrUndefined(input.model);
+    const authorization = yield* Spend.authorize({
+      check,
+      model: key,
+      budgetUsd: Math.min(Spend.ceilingFor(check, key), input.total),
+      totalUsd: input.total,
+    });
+    const model = Spend.modelFor(check, key).name;
     const earlier = yield* Ledger.entries(input.ledger);
     const reservedUsd = earlier.reduce((total, run) => total + Ledger.reserved(run), 0);
     const coordinator = yield* CoordinatorClient.CoordinatorClient;
     const rate = yield* CoordinatorClient.modelRate(yield* coordinator.pricing, model);
     const worst = yield* Spend.admit({
       rate,
-      authorization: { check, budgetUsd: Spend.ceilingFor(check), totalUsd: input.total },
+      authorization,
       reservedUsd,
     });
     yield* Console.log(
@@ -278,7 +299,11 @@ const preflight = Command.make(
       `node ${owner.node} runs adoption's owner: it started on ${owner.host} and exited ${owner.exitCode} without a grant`,
     );
     // Free questions about tokens and the key: each allocates nothing.
-    for (const probe of yield* Probes.run({ apiUrl: coordinator.apiUrl, apiKey: yield* apiKey }))
+    for (const probe of yield* Probes.run({
+      apiUrl: coordinator.apiUrl,
+      apiKey: yield* apiKey,
+      model,
+    }))
       yield* Console.log(
         `probe: ${yield* Schema.encodeEffect(Schema.fromJsonString(Probe))(probe)}`,
       );
@@ -319,6 +344,7 @@ const summarizeRuns = Command.make(
 const owner = Command.make(
   "owner",
   {
+    model,
     isolated: Flag.Boolean("isolated").pipe(
       Flag.withDescription("give each connection's native peer a child process; needs Node"),
       Flag.withDefault(false),
@@ -327,7 +353,7 @@ const owner = Command.make(
       Flag.withDescription("connect and set up the session, playing nothing"),
       Flag.withDefault(false),
     ),
-    queuedSeconds: Flag.Int("queued-seconds").pipe(
+    queuedSeconds: Flag.Finite("queued-seconds").pipe(
       Flag.withDescription("how long the clip queued behind the 15 s one asks for"),
       Flag.optional,
     ),
@@ -341,6 +367,7 @@ const owner = Command.make(
       lines: stdio.stdin.pipe(Stream.decodeText(), Stream.splitLines),
       host: `${runtime}, ${input.isolated ? "the isolated native peer" : "the native peer in process"}`,
       queuedSeconds: Option.getOrUndefined(input.queuedSeconds),
+      model: Option.getOrUndefined(input.model),
       idle: input.idle,
     });
   }),

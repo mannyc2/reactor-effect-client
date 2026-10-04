@@ -52,7 +52,6 @@ import {
   acceptGrant,
   billedUsd,
   provenGrant,
-  modelFor,
   plans,
   sessionSeconds,
   tokenSecondsFor,
@@ -222,7 +221,7 @@ const mint = Effect.fnUntraced(function* (
   const cap = plans[check].seconds;
   const grant = yield* coordinator.mintToken({
     apiKey: target.apiKey,
-    modelName: modelFor(check, target.mode).name,
+    modelName: run.model.name,
     maxSessionDuration: cap === "unlimited" ? cap : `${cap} seconds`,
     expiresAfter: `${expiresAfterSeconds} seconds`,
   });
@@ -253,7 +252,7 @@ const binder = Effect.fnUntraced(function* (
     const sentAt = yield* Clock.currentTimeMillis;
     const token = yield* coordinator.mintToken({
       apiKey: target.apiKey,
-      modelName: modelFor(run.check, target.mode).name,
+      modelName: run.model.name,
       bind: [sessionId],
       expiresAfter: `${expiresAfterSeconds} seconds`,
     });
@@ -352,7 +351,7 @@ const create = Effect.fnUntraced(function* (grant: CoordinatorClient.TokenGrant,
   let deadline = 0;
   const session = yield* recorded(
     reactor.create({
-      model: plans[run.check].model.name,
+      model: run.model.name,
       tokens: CoordinatorClient.fixedTokens(grant),
       onAllocated: (allocation) =>
         Effect.gen(function* () {
@@ -1062,7 +1061,11 @@ export const tokens = Effect.gen(function* () {
     }));
   });
   // Free: minting allocates nothing, and the key probes name no real session.
-  const probes = yield* Probes.run({ apiUrl: target.apiUrl, apiKey: target.apiKey });
+  const probes = yield* Probes.run({
+    apiUrl: target.apiUrl,
+    apiKey: target.apiKey,
+    model: run.model.name,
+  });
   yield* record((tokens) => ({ ...tokens, probes: [...probes] }));
   yield* run.mark("probed");
   const createSentAt = yield* Clock.currentTimeMillis;
@@ -1159,7 +1162,7 @@ export const tokens = Effect.gen(function* () {
         const unboundSentAt = yield* Clock.currentTimeMillis;
         const unbound = yield* coordinator.mintToken({
           apiKey: target.apiKey,
-          modelName: plans.tokens.model.name,
+          modelName: run.model.name,
           // It could create one session of a second; it creates none.
           maxSessionDuration: "1 second",
           expiresAfter: "15 seconds",

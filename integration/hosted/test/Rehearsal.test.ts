@@ -26,6 +26,7 @@ const rehearse = (
   name: string,
   input: {
     readonly check: Check;
+    readonly model?: "h3" | "fast-h3";
     readonly faults?: ReadonlyArray<ReactorTest.Fault>;
     readonly moderationPrompt?: string;
     readonly adoptAfterMs?: number;
@@ -55,7 +56,8 @@ const rehearse = (
           const evidence = yield* execute({
             authorization: {
               check: input.check,
-              budgetUsd: ceilingFor(input.check),
+              ...(input.model === undefined ? {} : { model: input.model }),
+              budgetUsd: ceilingFor(input.check, input.model),
               totalUsd: maxTotalUsd,
             },
             ledger,
@@ -95,6 +97,30 @@ const failed = (criterion: string) => (evidence: Evidence) => {
 };
 
 for (const check of checks) rehearse(`${check} passes`, { check, judge: passes });
+
+// The requested family seam includes every allowed check even before its registry is implemented.
+for (const check of [
+  "vertical",
+  "turn",
+  "queue",
+  "takeover",
+  "resume",
+  "renewal",
+  "edits",
+  "cut",
+  "show",
+  "tokens",
+  "adoption",
+  "tour",
+] as const)
+  rehearse(`${check} passes on FastH3`, {
+    check,
+    model: "fast-h3",
+    judge: (evidence) => {
+      passes(evidence);
+      assert.propertyVal(evidence, "model", "reactor/fast-h3");
+    },
+  });
 
 const hasFfprobe = spawnSync("ffprobe", ["-version"]).status === 0;
 

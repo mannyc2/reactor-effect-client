@@ -54,6 +54,7 @@ layer(FetchHttpClient.layer)("a request with the API key", (it) => {
       const [first] = yield* Probes.run({
         apiUrl: coordinator,
         apiKey: Redacted.make("reactor-test-key"),
+        model: "reactor/h3-reference-to-video-turbo-realtime",
       });
       assert.deepStrictEqual(first?.shape, [
         "expires_at: number",
@@ -75,6 +76,7 @@ layer(FetchHttpClient.layer)("a request with the API key", (it) => {
       const probes = yield* Probes.run({
         apiUrl: coordinator,
         apiKey: Redacted.make("reactor-test-key"),
+        model: "reactor/h3-reference-to-video-turbo-realtime",
       });
       assert.deepStrictEqual(
         probes.map((probe) => [probe.status, probe.code]),
