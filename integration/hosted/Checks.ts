@@ -20,7 +20,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
-import * as H3 from "reactor-effect-client/H3";
+import type * as H3 from "reactor-effect-client/H3";
 import type * as FastH3 from "reactor-effect-client/FastH3";
 import { recorder } from "reactor-effect-client/Media";
 import type { Recorded, VideoFrame } from "reactor-effect-client/Media";
@@ -58,11 +58,9 @@ import {
   tokenSecondsFor,
   workSecondsFor,
 } from "./Spend.js";
-import { prompt, Target } from "./Target.js";
+import { Target } from "./Target.js";
 
 const round = (value: number, places = 1) => Math.round(value * 10 ** places) / 10 ** places;
-/** Every playout and queue clip asks for this long: a short build, a boundary every few seconds. */
-const clipSeconds = 5;
 /** Around a boundary, frames are looked for from this long before the end to twice it after the start. */
 const seamMs = 1_500;
 
@@ -674,13 +672,7 @@ const recordSessionEvents = Effect.fnUntraced(function* (
 });
 
 /** A clip with a reference image and reference audio: H3 takes audio only beside an image or a continuation. */
-const withReferences = (metadata: string): H3.Request => ({
-  prompt: `Picture 1 is a plain gray backdrop. Audio 1 is a low, steady hum under the scene. ${prompt}`,
-  seconds: clipSeconds,
-  metadata,
-  references: [{ _tag: "Bytes", bytes: Media.grayPng({ width: 256, height: 144 }) }],
-  audio: [{ _tag: "Bytes", bytes: Media.tone({ seconds: 3, sampleRate: 48_000, frequency: 220 }) }],
-});
+const withReferences = Family.h3.withUploads;
 
 /**
  * One session end to end through the public API: pricing, allocation,
@@ -1962,7 +1954,10 @@ const onAir = <A, E, R>(
   scenario: (air: Air) => Effect.Effect<A, E, R>,
 ) => onAirFor(Family.h3, check, options, scenario);
 
-const itemRequest = (seconds = clipSeconds): H3.Request => ({ prompt, seconds });
+const itemRequest = <Req extends Family.RequestInput, C extends H3.Clip>(
+  family: Family.Family<Req, C>,
+  seconds = family.lengths.short,
+): Req => family.request({ prompt: Family.prompt, seconds });
 
 /** The planned order of `edits`: the line, the two inserts, and the batch's insert. */
 const plannedEdits = ["p1", "p2", "xc", "xn", "p3", "y"] as const;
@@ -1974,114 +1969,120 @@ const plannedEdits = ["p1", "p2", "xc", "xn", "p3", "y"] as const;
  * inserts a clip after the third, sent to take effect about a second before
  * the third ends. Every seam's pause and join are measured.
  */
-export const edits = onAir("edits", { lanes: [{ name: "line" }], sessions: 1 }, (air) =>
-  Effect.gen(function* () {
-    const run = yield* Run;
-    const startedOf = (key: string) => air.when((all) => all.get(key)?.startedMs);
-    yield* recorded(
-      air.playout.submitGroup({
-        key: Playout.ItemKey.make("line"),
-        lane: "line",
-        parts: [
-          { key: yield* air.track("p1"), request: itemRequest() },
-          { key: yield* air.track("p2"), request: itemRequest() },
-          { key: yield* air.track("p3"), request: itemRequest() },
-        ],
-      }),
-    );
-    yield* air.submit("w1", "line", itemRequest());
-    yield* run.mark("line submitted");
-    yield* startedOf("p1");
-    // A continued build takes about 2.5 times an independent one on hosted H3, so xc
-    // continues from p2, which gives it p2's whole length to build in.
-    yield* recorded(
-      air.playout.insert({
-        key: yield* air.track("xc"),
-        request: itemRequest(),
-        after: Playout.ItemKey.make("p2"),
-        continuity: "previous",
-      }),
-    );
-    yield* recorded(
-      air.playout.insert({
-        key: yield* air.track("xn"),
-        request: itemRequest(),
-        before: Playout.ItemKey.make("p3"),
-      }),
-    );
-    yield* run.mark("inserted");
-    // The batch goes one measured build plus a second before p3 ends.
-    const p3Started = yield* startedOf("p3");
-    const p3 = yield* air.when((all) => all.get("p3"));
-    const perSecond = (yield* air.playout.state).estimates.build?.median ?? 0.42;
-    const endsMs = p3Started + (p3.seconds ?? clipSeconds) * 1000;
-    yield* sleepUntil(endsMs - 1000 - perSecond * clipSeconds * 1000, air.deadline());
-    const submittedMs = yield* run.now;
-    const batch = yield* recorded(
-      air.playout.edit([
-        { _tag: "Withdraw", key: Playout.ItemKey.make("w1") },
-        {
-          _tag: "Insert",
-          insert: {
-            key: yield* air.track("y"),
-            request: itemRequest(),
-            after: Playout.ItemKey.make("p3"),
+const editsFor = <Req extends Family.RequestInput, C extends H3.Clip>(
+  family: Family.Family<Req, C>,
+) =>
+  onAirFor(family, "edits", { lanes: [{ name: "line" }], sessions: 1 }, (air) =>
+    Effect.gen(function* () {
+      const clipSeconds = family.lengths.short;
+      const run = yield* Run;
+      const startedOf = (key: string) => air.when((all) => all.get(key)?.startedMs);
+      yield* recorded(
+        air.playout.submitGroup({
+          key: Playout.ItemKey.make("line"),
+          lane: "line",
+          parts: [
+            { key: yield* air.track("p1"), request: itemRequest(family) },
+            { key: yield* air.track("p2"), request: itemRequest(family) },
+            { key: yield* air.track("p3"), request: itemRequest(family) },
+          ],
+        }),
+      );
+      yield* air.submit("w1", "line", itemRequest(family));
+      yield* run.mark("line submitted");
+      yield* startedOf("p1");
+      // A continued build takes about 2.5 times an independent one on hosted H3, so xc
+      // continues from p2, which gives it p2's whole length to build in.
+      yield* recorded(
+        air.playout.insert({
+          key: yield* air.track("xc"),
+          request: itemRequest(family),
+          after: Playout.ItemKey.make("p2"),
+          continuity: "previous",
+        }),
+      );
+      yield* recorded(
+        air.playout.insert({
+          key: yield* air.track("xn"),
+          request: itemRequest(family),
+          before: Playout.ItemKey.make("p3"),
+        }),
+      );
+      yield* run.mark("inserted");
+      // The batch goes one measured build plus a second before p3 ends.
+      const p3Started = yield* startedOf("p3");
+      const p3 = yield* air.when((all) => all.get("p3"));
+      const perSecond = (yield* air.playout.state).estimates.build?.median ?? 0.42;
+      const endsMs = p3Started + (p3.seconds ?? clipSeconds) * 1000;
+      yield* sleepUntil(endsMs - 1000 - perSecond * clipSeconds * 1000, air.deadline());
+      const submittedMs = yield* run.now;
+      const batch = yield* recorded(
+        air.playout.edit([
+          { _tag: "Withdraw", key: Playout.ItemKey.make("w1") },
+          {
+            _tag: "Insert",
+            insert: {
+              key: yield* air.track("y"),
+              request: itemRequest(family),
+              after: Playout.ItemKey.make("p3"),
+            },
           },
+        ]),
+      );
+      const committed = yield* batch.committed.pipe(
+        Effect.andThen(run.now),
+        Effect.option,
+        Effect.forkScoped,
+      );
+      yield* run.mark("batch submitted");
+      yield* sleepUntil((yield* startedOf("y")) + 2 * seamMs + 250, air.deadline());
+      const committedMs = Option.getOrUndefined(yield* Fiber.join(committed));
+      const all = yield* SubscriptionRef.get(air.items);
+      const order = air.starts();
+      const seams: Array<Seam> = [];
+      for (let index = 0; index + 1 < order.length; index++) {
+        const ending = order[index];
+        const next = order[index + 1];
+        if (ending !== undefined && next !== undefined)
+          seams.push(yield* air.seam(ending, next, next === "xc"));
+      }
+      yield* recordPlayout({ seams });
+      const p3End = all.get("p3")?.endedMs;
+      yield* recordPlayout({
+        batch: {
+          submittedMs,
+          ...(committedMs === undefined ? {} : { committedMs }),
+          ...(p3End === undefined ? {} : { boundaryMs: p3End }),
         },
-      ]),
-    );
-    const committed = yield* batch.committed.pipe(
-      Effect.andThen(run.now),
-      Effect.option,
-      Effect.forkScoped,
-    );
-    yield* run.mark("batch submitted");
-    yield* sleepUntil((yield* startedOf("y")) + 2 * seamMs + 250, air.deadline());
-    const committedMs = Option.getOrUndefined(yield* Fiber.join(committed));
-    const all = yield* SubscriptionRef.get(air.items);
-    const order = air.starts();
-    const seams: Array<Seam> = [];
-    for (let index = 0; index + 1 < order.length; index++) {
-      const ending = order[index];
-      const next = order[index + 1];
-      if (ending !== undefined && next !== undefined)
-        seams.push(yield* air.seam(ending, next, next === "xc"));
-    }
-    yield* recordPlayout({ seams });
-    const p3End = all.get("p3")?.endedMs;
-    yield* recordPlayout({
-      batch: {
-        submittedMs,
-        ...(committedMs === undefined ? {} : { committedMs }),
-        ...(p3End === undefined ? {} : { boundaryMs: p3End }),
-      },
-    });
-    yield* judge("inserts and the batch air in their planned places", [
-      order.join(",") === plannedEdits.join(","),
-      `started in the order ${order.join(", ")}`,
-    ]);
-    yield* judge(
-      "a batch takes effect before its boundary",
-      [committedMs !== undefined, "the batch never took effect"],
-      [
-        p3End === undefined || committedMs === undefined || committedMs < p3End,
-        "the batch took effect after the playing clip ended",
-      ],
-    );
-    const w1 = all.get("w1");
-    yield* judge(
-      "a batch's withdrawn clip never starts",
-      [w1?.startedMs === undefined, "the withdrawn clip started"],
-      [w1?.dropped === "withdrawn", `the withdrawn clip ended ${w1?.last ?? "untracked"}`],
-    );
-    yield* judge("every seam measured", [
-      seams.length >= plannedEdits.length - 1 &&
-        seams.every((seam) => seam.pause !== undefined && seam.jump !== undefined),
-      "a boundary has no pause or join measurement",
-    ]);
-    yield* run.mark("edits observed");
-  }),
-);
+      });
+      yield* judge("inserts and the batch air in their planned places", [
+        order.join(",") === plannedEdits.join(","),
+        `started in the order ${order.join(", ")}`,
+      ]);
+      yield* judge(
+        "a batch takes effect before its boundary",
+        [committedMs !== undefined, "the batch never took effect"],
+        [
+          p3End === undefined || committedMs === undefined || committedMs < p3End,
+          "the batch took effect after the playing clip ended",
+        ],
+      );
+      const w1 = all.get("w1");
+      yield* judge(
+        "a batch's withdrawn clip never starts",
+        [w1?.startedMs === undefined, "the withdrawn clip started"],
+        [w1?.dropped === "withdrawn", `the withdrawn clip ended ${w1?.last ?? "untracked"}`],
+      );
+      yield* judge("every seam measured", [
+        seams.length >= plannedEdits.length - 1 &&
+          seams.every((seam) => seam.pause !== undefined && seam.jump !== undefined),
+        "a boundary has no pause or join measurement",
+      ]);
+      yield* run.mark("edits observed");
+    }),
+  );
+
+export const edits = Effect.flatMap(Run, (run) => Family.withFamily(run, editsFor));
 
 /** How long a held, flagged item is watched for a verdict or its session's end. */
 const moderationWaitMs = 12_000;
@@ -2118,7 +2119,11 @@ const sessionEventText = (event: Playout.SessionEvent): string => {
  * session and the playout do. The playout may open no second session, and
  * fails after one moderation.
  */
-const moderate = (air: Air, flagged: Redacted.Redacted<string>) =>
+const moderate = <Req extends Family.RequestInput, C extends H3.Clip>(
+  family: Family.Family<Req, C>,
+  air: Air<Req>,
+  flagged: Redacted.Redacted<string>,
+) =>
   Effect.gen(function* () {
     const run = yield* Run;
     const target = yield* Target;
@@ -2144,9 +2149,16 @@ const moderate = (air: Air, flagged: Redacted.Redacted<string>) =>
       ),
       Effect.forkScoped,
     );
-    yield* air.submit("guard", "line", itemRequest(15));
+    yield* air.submit("guard", "line", itemRequest(family, family.lengths.long));
     const submittedMs = yield* run.now;
-    yield* air.submit("flagged", "line", { prompt: Redacted.value(flagged), seconds: clipSeconds });
+    yield* air.submit(
+      "flagged",
+      "line",
+      family.request({
+        prompt: Redacted.value(flagged),
+        seconds: family.lengths.short,
+      }),
+    );
     yield* run.mark("flagged item queued behind the guard");
     // The session ended under the item: the playout lost it, or a verdict said so.
     const ended = () =>
@@ -2278,9 +2290,12 @@ const moderate = (air: Air, flagged: Redacted.Redacted<string>) =>
  * the long one once it is Ready, with one `stop`, and start next. With a
  * moderation prompt, a held item carrying it follows.
  */
-export const cut = Effect.gen(function* () {
+const cutFor = Effect.fnUntraced(function* <Req extends Family.RequestInput, C extends H3.Clip>(
+  family: Family.Family<Req, C>,
+) {
   const flagged = (yield* Target).moderationPrompt;
-  return yield* onAir(
+  return yield* onAirFor(
+    family,
     "cut",
     {
       lanes: [{ name: "urgent", cut: true }, { name: "line" }],
@@ -2291,11 +2306,11 @@ export const cut = Effect.gen(function* () {
     (air) =>
       Effect.gen(function* () {
         const run = yield* Run;
-        yield* air.submit("long", "line", itemRequest(15));
+        yield* air.submit("long", "line", itemRequest(family, family.lengths.long));
         const longStarted = yield* air.when((all) => all.get("long")?.startedMs);
         yield* sleepUntil(longStarted + 2_500, air.deadline());
         const cutFromMs = yield* run.now;
-        yield* air.submit("cutter", "urgent", itemRequest());
+        yield* air.submit("cutter", "urgent", itemRequest(family));
         yield* run.mark("cutter submitted");
         const cutterStarted = yield* air.when((all) => all.get("cutter")?.startedMs);
         yield* sleepUntil(cutterStarted + 2 * seamMs + 250, air.deadline());
@@ -2321,10 +2336,12 @@ export const cut = Effect.gen(function* () {
           [stops === 1, `${stops} stops were sent for one cut`],
         );
         yield* run.mark("cut observed");
-        if (flagged !== undefined) yield* moderate(air, flagged);
+        if (flagged !== undefined) yield* moderate(family, air, flagged);
       }),
   );
 });
+
+export const cut = Effect.flatMap(Run, (run) => Family.withFamily(run, cutFor));
 
 /**
  * Renewal across two capped sessions: the playout opens the replacement 40 s
@@ -2333,88 +2350,98 @@ export const cut = Effect.gen(function* () {
  * ended. A plays on the first session, B on the second; then an accepted
  * drain, and both sessions end.
  */
-export const renewal = onAir(
-  "renewal",
-  { lanes: [{ name: "line" }], sessions: 2, renewal: { lead: "40 seconds", grace: "250 millis" } },
-  (air) =>
-    Effect.gen(function* () {
-      const run = yield* Run;
-      const sessionEvents = yield* SubscriptionRef.make<
-        ReadonlyArray<{ readonly atMs: number; readonly event: Playout.SessionEvent }>
-      >([]);
-      yield* air.playout.events.pipe(
-        Stream.runForEach((event) =>
-          event._tag === "Session"
-            ? Effect.flatMap(run.now, (atMs) =>
-                SubscriptionRef.update(sessionEvents, (all) => [
-                  ...all,
-                  { atMs, event: event.event },
-                ]),
-              )
-            : Effect.void,
-        ),
-        Effect.forkScoped,
-      );
-      yield* air.submit("A", "line", itemRequest());
-      yield* run.mark("A submitted");
-      yield* air.when((all) => all.get("A")?.endedMs);
-      const first = (yield* SubscriptionRef.get(air.items)).get("A")?.sessionId;
-      yield* waitFor(
-        sessionEvents,
-        (all) => all.find(({ event }) => event._tag === "Opened" && event.sessionId !== first),
-        air.deadline(),
-      );
-      yield* run.mark("replacement opened");
-      yield* air.submit("B", "line", itemRequest());
-      yield* run.mark("B submitted");
-      yield* air.playout
-        .drain({ finish: "accepted" })
-        .pipe(Effect.timeout(yield* until(air.deadline())));
-      const drainedMs = yield* run.now;
-      yield* run.mark("drained");
-      const all = yield* SubscriptionRef.get(air.items);
-      const events = yield* SubscriptionRef.get(sessionEvents);
-      const switches = events.flatMap(({ atMs, event }) =>
-        event._tag === "Switched"
-          ? [{ atMs, from: event.from, to: event.to, decision: event.decision }]
-          : [],
-      );
-      // The playout's one picture carries each session's clip in turn.
-      const framesWhile = (key: string) => {
-        const aired = all.get(key);
-        return aired?.startedMs === undefined || aired.endedMs === undefined
-          ? 0
-          : air.video.framesBetween(aired.startedMs, aired.endedMs);
-      };
-      const framesByItem = { A: framesWhile("A"), B: framesWhile("B") };
-      yield* recordPlayout({ switches, framesByItem, drainedMs });
-      const a = all.get("A");
-      const b = all.get("B");
-      yield* judge("A then B finish", [
-        a?.termination === "finished" &&
-          b?.termination === "finished" &&
-          (a.startedMs ?? 0) < (b.startedMs ?? 0),
-        `A ended ${a?.termination ?? a?.last ?? "untracked"}, B ${b?.termination ?? b?.last ?? "untracked"}`,
-      ]);
-      yield* judge("B airs on the replacement", [
-        a?.sessionId !== undefined && b?.sessionId !== undefined && a.sessionId !== b.sessionId,
-        "A and B aired on the same session",
-      ]);
-      yield* judge(
-        "one planned switch",
-        [switches.length === 1, `${switches.length} switches`],
-        [
-          !events.some(({ event }) => event._tag === "Replaced"),
-          "a session was replaced before a planned switch",
-        ],
-      );
-      yield* judge("video from both sessions", [
-        framesByItem.A > 0 && framesByItem.B > 0,
-        `the playout's picture carried ${framesByItem.A} frames of A and ${framesByItem.B} of B`,
-      ]);
-      yield* run.mark("renewal observed");
-    }),
-);
+const renewalFor = <Req extends Family.RequestInput, C extends H3.Clip>(
+  family: Family.Family<Req, C>,
+) =>
+  onAirFor(
+    family,
+    "renewal",
+    {
+      lanes: [{ name: "line" }],
+      sessions: 2,
+      renewal: { lead: "40 seconds", grace: "250 millis" },
+    },
+    (air) =>
+      Effect.gen(function* () {
+        const run = yield* Run;
+        const sessionEvents = yield* SubscriptionRef.make<
+          ReadonlyArray<{ readonly atMs: number; readonly event: Playout.SessionEvent }>
+        >([]);
+        yield* air.playout.events.pipe(
+          Stream.runForEach((event) =>
+            event._tag === "Session"
+              ? Effect.flatMap(run.now, (atMs) =>
+                  SubscriptionRef.update(sessionEvents, (all) => [
+                    ...all,
+                    { atMs, event: event.event },
+                  ]),
+                )
+              : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+        yield* air.submit("A", "line", itemRequest(family));
+        yield* run.mark("A submitted");
+        yield* air.when((all) => all.get("A")?.endedMs);
+        const first = (yield* SubscriptionRef.get(air.items)).get("A")?.sessionId;
+        yield* waitFor(
+          sessionEvents,
+          (all) => all.find(({ event }) => event._tag === "Opened" && event.sessionId !== first),
+          air.deadline(),
+        );
+        yield* run.mark("replacement opened");
+        yield* air.submit("B", "line", itemRequest(family));
+        yield* run.mark("B submitted");
+        yield* air.playout
+          .drain({ finish: "accepted" })
+          .pipe(Effect.timeout(yield* until(air.deadline())));
+        const drainedMs = yield* run.now;
+        yield* run.mark("drained");
+        const all = yield* SubscriptionRef.get(air.items);
+        const events = yield* SubscriptionRef.get(sessionEvents);
+        const switches = events.flatMap(({ atMs, event }) =>
+          event._tag === "Switched"
+            ? [{ atMs, from: event.from, to: event.to, decision: event.decision }]
+            : [],
+        );
+        // The playout's one picture carries each session's clip in turn.
+        const framesWhile = (key: string) => {
+          const aired = all.get(key);
+          return aired?.startedMs === undefined || aired.endedMs === undefined
+            ? 0
+            : air.video.framesBetween(aired.startedMs, aired.endedMs);
+        };
+        const framesByItem = { A: framesWhile("A"), B: framesWhile("B") };
+        yield* recordPlayout({ switches, framesByItem, drainedMs });
+        const a = all.get("A");
+        const b = all.get("B");
+        yield* judge("A then B finish", [
+          a?.termination === "finished" &&
+            b?.termination === "finished" &&
+            (a.startedMs ?? 0) < (b.startedMs ?? 0),
+          `A ended ${a?.termination ?? a?.last ?? "untracked"}, B ${b?.termination ?? b?.last ?? "untracked"}`,
+        ]);
+        yield* judge("B airs on the replacement", [
+          a?.sessionId !== undefined && b?.sessionId !== undefined && a.sessionId !== b.sessionId,
+          "A and B aired on the same session",
+        ]);
+        yield* judge(
+          "one planned switch",
+          [switches.length === 1, `${switches.length} switches`],
+          [
+            !events.some(({ event }) => event._tag === "Replaced"),
+            "a session was replaced before a planned switch",
+          ],
+        );
+        yield* judge("video from both sessions", [
+          framesByItem.A > 0 && framesByItem.B > 0,
+          `the playout's picture carried ${framesByItem.A} frames of A and ${framesByItem.B} of B`,
+        ]);
+        yield* run.mark("renewal observed");
+      }),
+  );
+
+export const renewal = Effect.flatMap(Run, (run) => Family.withFamily(run, renewalFor));
 
 /**
  * The pieces of these checks that a check in a module of its own reuses. This
