@@ -1272,7 +1272,9 @@ interface Observed {
  * boundaries, at a set distance from the playing clip's end, and which clip
  * starts next.
  */
-export const queue = Effect.gen(function* () {
+const queueFor = Effect.fnUntraced(function* <Req extends Family.RequestInput, C extends H3.Clip>(
+  family: Family.Family<Req, C>,
+) {
   const run = yield* Run;
   const grant = yield* mint("queue");
   const marker = `hosted-qualification:${run.runId}:queue`;
@@ -1280,7 +1282,7 @@ export const queue = Effect.gen(function* () {
   yield* withSessions((grants) =>
     Effect.gen(function* () {
       const { session, deadline } = yield* create(grant, grants);
-      const provider = yield* H3.make(session);
+      const provider = yield* family.provider(session);
       yield* provider.events({ capacity: 4096 }).pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
@@ -1309,7 +1311,7 @@ export const queue = Effect.gen(function* () {
       );
       const video = Media.videoLog();
       const media = yield* session.decoded;
-      yield* readInto(media.video(tracks.video), video).pipe(Effect.forkScoped);
+      yield* readInto(media.video(family.tracks.video), video).pipe(Effect.forkScoped);
       const seen = (type: string, clipId: string) =>
         waitFor(
           observed,
@@ -1325,12 +1327,12 @@ export const queue = Effect.gen(function* () {
         sending?: Deferred.Deferred<void>,
       ) {
         const submission = yield* provider.prepare(
-          {
-            prompt,
-            seconds: clipSeconds,
+          family.request({
+            prompt: Family.prompt,
+            seconds: family.lengths.short,
             metadata: `${marker}:${name}`,
             ...(position === undefined ? {} : { position }),
-          },
+          }),
           sending === undefined ? {} : { commit: () => Deferred.succeed(sending, undefined) },
         );
         const submittedMs = yield* run.now;
@@ -1357,24 +1359,42 @@ export const queue = Effect.gen(function* () {
       const first = yield* submit("first");
       const zero = yield* submit("position-zero", 0);
       const tail = yield* submit("tail");
-      const generationOrder = (yield* readQueue).generation.map((clip) => clip.clip_id);
+      const generation = (yield* readQueue).generation;
+      const generationOrder = generation.map((clip) => clip.clip_id);
       const place = (clipId: string) => generationOrder.indexOf(clipId);
-      yield* judge(
-        "position zero goes next, behind the build that is running",
-        [
-          place(zero.clipId) >= 0 && place(tail.clipId) >= place(zero.clipId),
-          "the position-zero clip was not ahead of the clip queued after it",
-        ],
-        [
-          place(first.clipId) <= place(zero.clipId),
-          "the position-zero clip went ahead of the build that was running",
-        ],
-      );
+      if (family.key === "fast-h3")
+        yield* judge("position zero precedes a subsequently enqueued tail", [
+          place(zero.clipId) >= 0 &&
+            place(tail.clipId) >= 0 &&
+            place(zero.clipId) < place(tail.clipId),
+          "the position-zero clip and tail were not both present with zero before the tail",
+        ]);
+      else
+        yield* judge(
+          "position zero goes next, behind the build that is running",
+          [
+            place(zero.clipId) >= 0 && place(tail.clipId) >= place(zero.clipId),
+            "the position-zero clip was not ahead of the clip queued after it",
+          ],
+          [
+            place(first.clipId) <= place(zero.clipId),
+            "the position-zero clip went ahead of the build that was running",
+          ],
+        );
       // A build popped while it runs must never reach playout; the clip behind it shows
       // how long the popped build keeps the build slot.
       const popped = first;
       const wasBuilding = generationOrder[0] === popped.clipId;
-      yield* provider.pop(popped.clipId).pipe(recorded, Effect.ignore);
+      const wasQueuedUnbuilt =
+        family.key === "fast-h3"
+          ? generation.some((clip) => clip.clip_id === popped.clipId && !clip.ready)
+          : undefined;
+      let popAccepted: boolean | undefined;
+      if (family.key === "fast-h3")
+        popAccepted = yield* provider
+          .pop(popped.clipId)
+          .pipe(recorded, Effect.match({ onFailure: () => false, onSuccess: () => true }));
+      else yield* provider.pop(popped.clipId).pipe(recorded, Effect.ignore);
       const poppedMs = yield* run.now;
       // A queue read sent right behind an enqueue, long before its reply: does it list the clip?
       const ordering: Array<boolean> = [];
@@ -1433,6 +1453,8 @@ export const queue = Effect.gen(function* () {
             },
             poppedBuild: {
               wasBuilding,
+              ...(wasQueuedUnbuilt === undefined ? {} : { wasQueuedUnbuilt }),
+              ...(popAccepted === undefined ? {} : { popAccepted }),
               generatedAfterPop: afterPop.some((event) => event.type === "clip_generated"),
               startedAfterPop: afterPop.some((event) => event.type === "clip_started"),
             },
@@ -1533,17 +1555,31 @@ export const queue = Effect.gen(function* () {
       ]);
       const evidence = yield* run.evidence;
       const poppedBuild = evidence.queue?.poppedBuild;
-      yield* judge(
-        "pop the build in flight",
-        [
-          poppedBuild?.wasBuilding === true,
-          "the clip was not at the head of the generation queue before the pop",
-        ],
-        [
-          poppedBuild?.generatedAfterPop !== true && poppedBuild?.startedAfterPop !== true,
-          "the popped build generated or started after the pop's reply",
-        ],
-      );
+      if (family.key === "fast-h3")
+        yield* judge(
+          "a popped unbuilt clip never generates or starts",
+          [
+            poppedBuild?.wasQueuedUnbuilt === true,
+            "the clip was not present and unbuilt in the generation queue before the pop",
+          ],
+          [poppedBuild?.popAccepted === true, "the provider did not accept the pop"],
+          [
+            poppedBuild?.generatedAfterPop !== true && poppedBuild?.startedAfterPop !== true,
+            "the popped clip generated or started after the pop's reply",
+          ],
+        );
+      else
+        yield* judge(
+          "pop the build in flight",
+          [
+            poppedBuild?.wasBuilding === true,
+            "the clip was not at the head of the generation queue before the pop",
+          ],
+          [
+            poppedBuild?.generatedAfterPop !== true && poppedBuild?.startedAfterPop !== true,
+            "the popped build generated or started after the pop's reply",
+          ],
+        );
       const metadata = evidence.queue?.metadata;
       yield* judge("observed clip metadata", [
         metadata !== undefined &&
@@ -1555,6 +1591,8 @@ export const queue = Effect.gen(function* () {
     }),
   );
 });
+
+export const queue = Effect.flatMap(Run, (run) => Family.withFamily(run, queueFor));
 
 /** An event a playout's session published, as the evidence may keep it: no provider text. */
 interface Logged {
