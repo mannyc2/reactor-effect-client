@@ -258,7 +258,7 @@ export const TokensRecord = Schema.Struct({
   video: Schema.optionalKey(VideoSummary),
   /** When the next bound token was minted for a call, the refresh. */
   refreshedMs: Schema.optionalKey(Ms),
-  /** A clip enqueued on the refreshed token with a reference image and reference audio. */
+  /** A clip enqueued on the refreshed token with the family's uploads. */
   upload: Schema.optionalKey(
     Schema.Struct({
       startedMs: Ms,
@@ -267,6 +267,7 @@ export const TokensRecord = Schema.Struct({
       audio: Schema.Int,
       reportedAudio: Schema.NullOr(Schema.Int),
       hasReferenceAudio: Schema.NullOr(Schema.Boolean),
+      hasStartingFrame: Schema.optionalKey(Schema.Boolean),
     }),
   ),
   /** Reading the session with the creating token after it expired: 401 is documented. */
@@ -351,7 +352,7 @@ export const AdoptionRecord = Schema.Struct({
       video: Schema.optionalKey(VideoSummary),
       /** When the next bound token was minted for a call, the refresh. */
       refreshedMs: Schema.optionalKey(Ms),
-      /** A clip enqueued on the refreshed token with a reference image and reference audio. */
+      /** A clip enqueued on the refreshed token with the family's uploads. */
       upload: Schema.optionalKey(
         Schema.Struct({
           startedMs: Ms,
@@ -360,6 +361,7 @@ export const AdoptionRecord = Schema.Struct({
           audio: Schema.Int,
           reportedAudio: Schema.NullOr(Schema.Int),
           hasReferenceAudio: Schema.NullOr(Schema.Boolean),
+          hasStartingFrame: Schema.optionalKey(Schema.Boolean),
         }),
       ),
       /** Commands it sent the model, by name. */
@@ -464,6 +466,7 @@ const TourClip = Schema.Struct({
     reportedImages: Schema.NullOr(Schema.Int),
     reportedAudio: Schema.NullOr(Schema.Int),
     hasReferenceAudio: Schema.NullOr(Schema.Boolean),
+    hasStartingFrame: Schema.optionalKey(Schema.Boolean),
   }),
 });
 

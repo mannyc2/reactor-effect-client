@@ -21,6 +21,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
+import type * as FastH3 from "reactor-effect-client/FastH3";
 import * as H3Source from "reactor-effect-client/H3Source";
 import { recorder } from "reactor-effect-client/Media";
 import type { Recorded, VideoFrame } from "reactor-effect-client/Media";
@@ -544,7 +545,7 @@ const contractTally = () => {
         bump(echoes, message.type === "unknown" ? message.name : message.type);
     },
     failed: (error: ReactorError) => bump(diagnostics, `observation:${error.reason._tag}`),
-    summary: (provider: H3.Provider) => ({
+    summary: (provider: { readonly contract: H3.Contract | FastH3.Contract }) => ({
       deploymentTitle: provider.contract.deployment.title,
       deploymentVersion: provider.contract.deployment.version,
       documentedVersion: provider.contract.documentedVersion,

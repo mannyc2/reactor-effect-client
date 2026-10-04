@@ -15,11 +15,10 @@ import { ReactorError } from "reactor-effect-client/ReactorError";
 import type { AcquisitionFailure, CommandFailure } from "reactor-effect-client/ReactorError";
 import type * as Session from "reactor-effect-client/Session";
 import * as Media from "./Media.js";
-import type { Model } from "./Spend.js";
+import type { Model, ModelKey } from "./Spend.js";
 
 export const prompt = "A slow camera move across a sunlit table with a glass of water.";
 
-export type Key = "h3" | "fast-h3";
 export type RequestInput = Pick<
   H3.Request,
   "prompt" | "seconds" | "metadata" | "seed" | "position"
@@ -54,7 +53,7 @@ export type UploadFacts =
   | { readonly _tag: "Frame"; readonly hasStartingFrame: boolean };
 
 export interface Family<Req extends RequestInput, C extends H3.Clip> {
-  readonly key: Key;
+  readonly key: ModelKey;
   readonly modelName: string;
   readonly documentedVersion: string;
   readonly tracks: { readonly video: string; readonly audio: string };
