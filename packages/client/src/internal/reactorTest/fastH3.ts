@@ -233,11 +233,11 @@ export type Output =
   | { readonly _tag: "Halt"; readonly token: number }
   /** The video flushes to black at a boundary. */
   | { readonly _tag: "Flush"; readonly clip: Clip }
-  /** A retained source supplied the frames for this build. */
+  /** A build starts with its retained clip source, or independently. */
   | {
       readonly _tag: "Continuation";
       readonly clipId: string;
-      readonly from: string;
+      readonly from: string | undefined;
       readonly applied: boolean;
     };
 
@@ -391,8 +391,12 @@ export const step = ({
     );
     if (next === undefined) return;
     const sources = sourcesOf(next);
-    if (sources[0] !== undefined)
-      emit({ _tag: "Continuation", clipId: next.clip_id, from: sources[0], applied: true });
+    emit({
+      _tag: "Continuation",
+      clipId: next.clip_id,
+      from: sources[0],
+      applied: sources.length > 0,
+    });
     const t = token();
     set({ building: { clipId: next.clip_id, token: t, discarded: false } });
     emit({ _tag: "Build", token: t, seconds: next.seconds, continued: sources.length > 0 });
