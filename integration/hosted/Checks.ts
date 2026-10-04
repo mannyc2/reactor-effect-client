@@ -22,7 +22,6 @@ import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import type * as FastH3 from "reactor-effect-client/FastH3";
-import * as H3Source from "reactor-effect-client/H3Source";
 import { recorder } from "reactor-effect-client/Media";
 import type { Recorded, VideoFrame } from "reactor-effect-client/Media";
 import * as Playout from "reactor-effect-client/Playout";
@@ -49,7 +48,7 @@ import * as Family from "./Family.js";
 import * as Media from "./Media.js";
 import * as Probes from "./Probes.js";
 import { recorded, Run } from "./Run.js";
-import type { Check } from "./Spend.js";
+import type { Check, ModelKey } from "./Spend.js";
 import {
   acceptGrant,
   billedUsd,
@@ -375,8 +374,9 @@ const owned = Effect.fnUntraced(function* (
   grant: CoordinatorClient.TokenGrant,
   marker: string,
   grants: Grants,
+  model: ModelKey,
 ) {
-  const owner = yield* (yield* Target).owner(grant, marker);
+  const owner = yield* (yield* Target).owner(grant, marker, { model });
   const sessionId = owner.allocation.sessionId;
   grants.set(sessionId, grant);
   const cap = capMs(grant);
@@ -881,7 +881,10 @@ export const vertical = Effect.fnUntraced(function* (check: "vertical" | "turn" 
  * ends the session through the dead owner's record; `resume` adopts it with
  * `H3Source.resume` and ends it by closing the resumed source.
  */
-export const takeover = Effect.fnUntraced(function* (check: "takeover" | "resume") {
+const takeoverFor = Effect.fnUntraced(function* <
+  Req extends Family.RequestInput,
+  C extends H3.Clip,
+>(family: Family.Family<Req, C>, check: "takeover" | "resume") {
   const run = yield* Run;
   const target = yield* Target;
   const grant = yield* mint(check);
@@ -893,7 +896,7 @@ export const takeover = Effect.fnUntraced(function* (check: "takeover" | "resume
   yield* withSessions(
     (grants) =>
       Effect.gen(function* () {
-        const { owner, sessionId, deadline } = yield* owned(grant, marker, grants);
+        const { owner, sessionId, deadline } = yield* owned(grant, marker, grants, family.key);
         const ownerStreamingMs = yield* run.now;
         yield* owner.kill;
         const killedMs = yield* run.now;
@@ -911,7 +914,7 @@ export const takeover = Effect.fnUntraced(function* (check: "takeover" | "resume
             const reactor = yield* adopting(sessionId, killedMs);
             if (check === "takeover") {
               const session = yield* reactor.attach({ sessionId, tokens: bound });
-              const provider = yield* H3.make(session);
+              const provider = yield* family.provider(session);
               const attachMs = (yield* run.now) - takenMs;
               yield* run.mark("attached");
               const facts = factsOf(yield* provider.snapshot);
@@ -921,7 +924,7 @@ export const takeover = Effect.fnUntraced(function* (check: "takeover" | "resume
               ].find((clip) => clip.clip_id === owner.queued);
               const media = yield* session.decoded;
               const attachedMs = yield* run.now;
-              yield* readFresh(media.video(tracks.video), video, deadline);
+              yield* readFresh(media.video(family.tracks.video), video, deadline);
               return {
                 attachMs,
                 attachedMs,
@@ -929,10 +932,12 @@ export const takeover = Effect.fnUntraced(function* (check: "takeover" | "resume
                 metadataPreserved: queued?.metadata.includes(`${marker}:queued`) === true,
               };
             }
-            const source = yield* H3Source.resume({
-              allocation: owner.allocation,
-              tokens: bound,
-            }).pipe(Effect.provideService(Reactor.Reactor, reactor));
+            const source = yield* family
+              .resume({
+                allocation: owner.allocation,
+                tokens: bound,
+              })
+              .pipe(Effect.provideService(Reactor.Reactor, reactor));
             const attachMs = (yield* run.now) - takenMs;
             yield* run.mark("resumed");
             const state = yield* source.events.pipe(
@@ -1029,6 +1034,11 @@ export const takeover = Effect.fnUntraced(function* (check: "takeover" | "resume
   );
 });
 
+export const takeover = Effect.fnUntraced(function* (check: "takeover" | "resume") {
+  const run = yield* Run;
+  return yield* Family.withFamily(run, (family) => takeoverFor(family, check));
+});
+
 /** How long `tokens`' creating token lives: enough to connect and stream, not to outlive the session. */
 const createSeconds = 20;
 /** How long each bound token lives in `tokens`, so one is refreshed while the session runs. */
@@ -1100,7 +1110,12 @@ export const tokens = Effect.gen(function* () {
   yield* withSessions(
     (sessions) =>
       Effect.gen(function* () {
-        const { owner, sessionId, deadline } = yield* owned(grant, marker, sessions);
+        const { owner, sessionId, deadline } = yield* owned(
+          grant,
+          marker,
+          sessions,
+          Family.familyOf(run).key,
+        );
         yield* owner.kill;
         const ownerKilledMs = yield* run.now;
         const createExpiresMs = grant.expiresAt * 1000 - run.origin;
