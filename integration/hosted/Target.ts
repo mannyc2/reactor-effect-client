@@ -38,8 +38,6 @@ import * as Family from "./Family.js";
 import * as Media from "./Media.js";
 import { models, Refused, sessionSeconds, type ModelKey } from "./Spend.js";
 
-export const prompt = "A slow camera move across a sunlit table with a glass of water.";
-
 /** What the takeover's owner reports once it streams: its record, and the clips it queued. */
 export const Streaming = Schema.Struct({
   allocation: H3Source.Allocation,

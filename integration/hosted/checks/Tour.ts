@@ -65,7 +65,7 @@ import * as Media from "../Media.js";
 import { unknownSession } from "../Probes.js";
 import { recorded, Run } from "../Run.js";
 import { acceptGrant, plans, provenBind, provenGrant, Refused } from "../Spend.js";
-import { prompt, Target } from "../Target.js";
+import { Target } from "../Target.js";
 
 const round = (value: number) => Math.round(value * 10) / 10;
 
@@ -90,9 +90,10 @@ const refreshName = "refresh.png";
  * prompt guide puts at roughly 8,000 characters of English prose: 220 beats
  * of about 75 characters each.
  */
-const overBudget = Array.from({ length: 220 }, (_, beat) => `Beat ${beat + 1}: ${prompt}`).join(
-  " ",
-);
+const overBudget = Array.from(
+  { length: 220 },
+  (_, beat) => `Beat ${beat + 1}: ${Family.prompt}`,
+).join(" ");
 /** The commands the tour sends the model. */
 const sent = [
   "enqueue",
@@ -661,7 +662,7 @@ const tourFor = Effect.fnUntraced(function* <Req extends Family.RequestInput, Cl
         ) {
           const submission = yield* model.prepare({
             ...family.request({
-              prompt,
+              prompt: Family.prompt,
               seconds: family.lengths.short,
               metadata: `${marker}:${name}`,
             }),

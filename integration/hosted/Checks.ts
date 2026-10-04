@@ -671,9 +671,6 @@ const recordSessionEvents = Effect.fnUntraced(function* (
   );
 });
 
-/** A clip with a reference image and reference audio: H3 takes audio only beside an image or a continuation. */
-const withReferences = Family.h3.withUploads;
-
 /**
  * One session end to end through the public API: pricing, allocation,
  * connection, a clip from submission to playback, its media, and termination.
@@ -683,7 +680,20 @@ const withReferences = Family.h3.withUploads;
 const verticalFor = Effect.fnUntraced(function* <
   Req extends Family.RequestInput,
   C extends H3.Clip,
->(family: Family.Family<Req, C>, check: "vertical" | "turn" | "audio") {
+>(
+  family: Family.Family<Req, C>,
+  input:
+    | { readonly name: "vertical" | "turn" | "audio" }
+    | {
+        readonly name: "frames";
+        readonly follow: (clipId: string, marker: string) => Req;
+        readonly facts: (
+          first: C,
+          following: C,
+        ) => NonNullable<NonNullable<Evidence.Evidence["clip"]>["frames"]>;
+      },
+) {
+  const check = input.name;
   const run = yield* Run;
   const grant = yield* mint(check);
   const marker = `hosted-qualification:${run.runId}`;
@@ -725,7 +735,7 @@ const verticalFor = Effect.fnUntraced(function* <
       // H3 holds a generated clip until it is played, unless autoplay is on.
       yield* recorded(provider.setAutoplay(true));
       const request =
-        check === "audio"
+        check === "audio" || check === "frames"
           ? family.withUploads(marker)
           : family.request({
               prompt: Family.prompt,
@@ -737,6 +747,8 @@ const verticalFor = Effect.fnUntraced(function* <
       const acceptance = yield* recorded(submission.submit);
       tally.watch(acceptance.clip.clip_id, marker);
       const clip = acceptance.clip;
+      let frames: NonNullable<NonNullable<Evidence.Evidence["clip"]>["frames"]> | undefined;
+      let followingStarted = false;
       const lifecycle: { generatedMs?: number; startedMs?: number; endedMs?: number } = {};
       const record = Effect.gen(function* () {
         const summary = video.summary();
@@ -756,6 +768,7 @@ const verticalFor = Effect.fnUntraced(function* <
             acceptedMs: evidence.clip?.acceptedMs ?? submitMs,
             ...lifecycle,
             echoes: tally.echoes,
+            ...(frames === undefined ? {} : { frames }),
             ...(check === "audio"
               ? {
                   references: {
@@ -823,6 +836,16 @@ const verticalFor = Effect.fnUntraced(function* <
         .reached("started")
         .pipe(Effect.andThen(reached("startedMs")), Effect.timeout(yield* until(deadline)));
       yield* run.mark("clip started");
+      if (input.name === "frames") {
+        yield* operation.reached("generated").pipe(Effect.timeout(yield* until(deadline)));
+        const next = yield* provider.prepare(input.follow(clip.clip_id, marker));
+        const accepted = yield* recorded(next.submit);
+        frames = input.facts(clip, accepted.clip);
+        const following = yield* provider.operation(next);
+        yield* following.reached("started").pipe(Effect.timeout(yield* until(deadline)));
+        followingStarted = true;
+        yield* run.mark("following clip started");
+      }
       yield* Effect.sleep(yield* window(deadline));
       yield* record;
       const evidence = yield* run.evidence;
@@ -851,6 +874,20 @@ const verticalFor = Effect.fnUntraced(function* <
           `the clip reports has_reference_audio ${String(references?.hasReferenceAudio ?? "absent")} and ${String(references?.reportedAudio ?? "no")} audio reference(s) for ${String(references?.audio ?? 0)} sent`,
         ]);
       }
+      if (check === "frames") {
+        yield* judge("starting frame reported", [
+          frames?.starting === true,
+          "the first clip did not report its uploaded opening frame",
+        ]);
+        yield* judge("continuation and ending source reported", [
+          frames?.continued === true && frames.endedFrom === true,
+          "the following clip did not name the first as both its opening and ending source",
+        ]);
+        yield* judge("both clips started", [
+          lifecycle.startedMs !== undefined && followingStarted,
+          "both clips were not observed starting",
+        ]);
+      }
       const pair = evidence.network?.pair;
       yield* judge(
         check === "turn" ? "relay pair selected" : "ICE pair selected",
@@ -863,7 +900,23 @@ const verticalFor = Effect.fnUntraced(function* <
 
 export const vertical = Effect.fnUntraced(function* (check: "vertical" | "turn" | "audio") {
   const run = yield* Run;
-  return yield* Family.withFamily(run, (family) => verticalFor(family, check));
+  return yield* Family.withFamily(run, (family) => verticalFor(family, { name: check }));
+});
+
+const frames = verticalFor(Family.fastH3, {
+  name: "frames",
+  follow: (clipId, marker) => ({
+    prompt: Family.prompt,
+    seconds: Family.fastH3.lengths.short,
+    metadata: `${marker}:following`,
+    start: { continueFrom: clipId },
+    end: { endFrom: clipId },
+  }),
+  facts: (first, following) => ({
+    starting: first.has_starting_frame,
+    continued: following.continue_from_clip_id === first.clip_id,
+    endedFrom: following.ending_from_clip_id === first.clip_id,
+  }),
 });
 
 /**
@@ -2481,7 +2534,6 @@ const pieces = {
   waitFor,
   watch,
   window,
-  withReferences,
   withSessions,
   withToken,
 };
@@ -2491,6 +2543,7 @@ const all = {
   vertical: vertical("vertical"),
   turn: vertical("turn"),
   audio: vertical("audio"),
+  frames,
   takeover: takeover("takeover"),
   resume: takeover("resume"),
   queue,

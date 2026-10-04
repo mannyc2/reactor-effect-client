@@ -1670,6 +1670,14 @@ export const Evidence = Schema.Struct({
           hasReferenceAudio: Schema.NullOr(Schema.Boolean),
         }),
       ),
+      /** FastH3's uploaded opener and the following clip's source identities. */
+      frames: Schema.optionalKey(
+        Schema.Struct({
+          starting: Schema.Boolean,
+          continued: Schema.Boolean,
+          endedFrom: Schema.Boolean,
+        }),
+      ),
     }),
   ),
   media: Schema.optionalKey(
@@ -1804,6 +1812,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   vertical: ["contract", "server", "clip", "media", "network"],
   turn: ["contract", "server", "clip", "media", "network"],
   audio: ["contract", "server", "clip", "media", "network"],
+  frames: ["contract", "server", "clip", "media", "network"],
   takeover: ["takeover"],
   resume: ["takeover"],
   queue: ["queue"],

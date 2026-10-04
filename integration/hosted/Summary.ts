@@ -88,7 +88,7 @@ const tourLines = (
   if (failed !== undefined)
     lines.push(
       model === models["fast-h3"].name
-        ? `**Enqueue past the text budget:** ${failed.promptChars} characters; ${failed.ended ?? "no refusal observed"}; failure ${failed.generatedFailure ?? "none"}; ${failed.started ? "started" : "never started"}`
+        ? `**Enqueue past the text budget:** ${failed.promptChars} characters; enqueue failure ${failed.generatedFailure ?? "none observed"}; ${failed.started ? "started" : "never started"}`
         : `**Build past the text budget:** ${failed.promptChars} characters, ended by ${failed.ended ?? "nothing"}${failed.endedMs === undefined || failed.acceptedMs === undefined ? "" : ` ${seconds(failed.endedMs - failed.acceptedMs)} after its acceptance`}; waiting for it to generate failed with ${failed.generatedFailure ?? "nothing"}${failed.clipEnded === undefined ? "" : ` (${failed.clipEnded.lifecycle}, ${failed.clipEnded.sameClip ? "its own clip" : "another clip"})`}; reason ${failed.reasonChars ?? "?"} characters; ${failed.started ? "started" : "never started"}`,
     );
   for (const recording of tour.recordings ?? [])
@@ -133,6 +133,10 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
     lines.push(
       `**Clip:** accepted ${clip.acceptance} in ${seconds(clip.acceptedMs - clip.submitMs)}${clip.generatedMs === undefined ? "" : `, generated at ${seconds(clip.generatedMs)}`}${clip.startedMs === undefined ? "" : `, started at ${seconds(clip.startedMs)}`}`,
     );
+  if (clip?.frames !== undefined)
+    lines.push(
+      `**Frames:** uploaded opener ${clip.frames.starting}; next clip continued from the first ${clip.frames.continued} and ended on it ${clip.frames.endedFrom}`,
+    );
   const media = evidence.media;
   if (media !== undefined)
     lines.push(
@@ -155,6 +159,10 @@ const measurements = (evidence: Evidence): ReadonlyArray<string> => {
     );
   const queue = evidence.queue;
   if (queue !== undefined) {
+    if (queue.poppedBuild?.wasQueuedUnbuilt !== undefined)
+      lines.push(
+        `**Popped unbuilt clip:** queued and unbuilt ${queue.poppedBuild.wasQueuedUnbuilt}; pop accepted ${String(queue.poppedBuild.popAccepted)}; generated afterward ${queue.poppedBuild.generatedAfterPop}; started afterward ${queue.poppedBuild.startedAfterPop}`,
+      );
     lines.push(`**Builds:** ${queue.builds.map((ms) => seconds(ms)).join(", ")}`);
     for (const [index, boundary] of queue.boundaries.entries())
       lines.push(
