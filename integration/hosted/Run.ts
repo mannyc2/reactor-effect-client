@@ -19,13 +19,14 @@ import { isReactorFailure, type ReactorFailure } from "reactor-effect-client/Rea
 import type { Evidence, Outcome, Span } from "./Evidence.js";
 import { ConnectPhase } from "./Evidence.js";
 import { SaveFailed, writer } from "./Ledger.js";
-import { Refused } from "./Spend.js";
+import { Refused, type Model } from "./Spend.js";
 
 export class Run extends Context.Service<
   Run,
   {
     readonly runId: string;
     readonly check: Evidence["check"];
+    readonly model: Model;
     /** Where the evidence is saved; files a check makes go beside it, never into it. */
     readonly file: string;
     /** When the run started, in epoch milliseconds on Effect's clock. */
@@ -55,9 +56,9 @@ const round = (value: number) => Math.round(value * 10) / 10;
  * the Vidu S2-Avatar provider's.
  */
 const clientSpans =
-  /^(?:Reactor\.|Session\.|CoordinatorClient\.|H3\.(?:enqueue|reconcile)$|H3Source\.(?:open|resume)$|ViduS2Avatar\.)/;
+  /^(?:Reactor\.|Session\.|CoordinatorClient\.|H3\.(?:enqueue|reconcile)$|(?:H3Source|FastH3Source)\.(?:open|resume)$|ViduS2Avatar\.)/;
 
-export const make = Effect.fnUntraced(function* (initial: Evidence, file: string) {
+export const make = Effect.fnUntraced(function* (initial: Evidence, file: string, model: Model) {
   const origin = yield* Clock.currentTimeMillis;
   const state = yield* Ref.make(initial);
   const secrets = yield* Ref.make<ReadonlyArray<Redacted.Redacted<string>>>([]);
@@ -104,6 +105,7 @@ export const make = Effect.fnUntraced(function* (initial: Evidence, file: string
   return Run.of({
     runId: initial.runId,
     check: initial.check,
+    model,
     file,
     origin,
     now,

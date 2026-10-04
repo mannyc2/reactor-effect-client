@@ -13,7 +13,6 @@ import * as Redacted from "effect/Redacted";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
-import * as H3 from "reactor-effect-client/H3";
 import type { Probe } from "./Evidence.js";
 
 /** A session id no account holds. */
@@ -149,6 +148,7 @@ const exchange = (request: HttpClientRequest.HttpClientRequest) =>
 export const run = (input: {
   readonly apiUrl: string;
   readonly apiKey: Redacted.Redacted<string>;
+  readonly model: string;
 }): Effect.Effect<ReadonlyArray<Probe>, never, HttpClient.HttpClient> =>
   Effect.gen(function* () {
     const base = input.apiUrl.replace(/\/$/, "");
@@ -168,7 +168,7 @@ export const run = (input: {
               authorization_details: [
                 {
                   type: "session",
-                  resources: { models: { match: [H3.modelName] } },
+                  resources: { models: { match: [input.model] } },
                   ...authorization,
                 },
               ],
@@ -221,7 +221,7 @@ export const run = (input: {
       ),
       yield* token(
         "a token bound to an unknown session",
-        { resources: { models: { match: [H3.modelName] }, sessions: { bind: [unknownSession] } } },
+        { resources: { models: { match: [input.model] }, sessions: { bind: [unknownSession] } } },
         probeSeconds,
       ),
       yield* withKey("the API key reading an unknown session", "GET"),

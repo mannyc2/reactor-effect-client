@@ -1,5 +1,5 @@
 /**
- * `adoption`: three ways a process takes over one session, in turn. An owner
+ * `adoption`: three ways a process takes over one session, in turn. On H3, an owner
  * on the isolated native host (under Node, when paid) creates the session on a
  * token that lives 20 s, plays a 15 s clip with another queued behind it,
  * and is killed 12 s after it allocated. A raw attach, which does not adopt,
@@ -11,6 +11,7 @@
  * point enqueues a clip with a reference image and reference audio. A token
  * past its expiry and one without the bind are refused, and closing the
  * resumed source ends the session.
+ * FastH3 uses its long clip length and uploads a starting frame for the refreshed clip.
  *
  * The owner's clips decide when the resume may come: its frames must arrive
  * while one of them still plays. Paid `tokens` found the owner's 5 s queued
@@ -49,20 +50,19 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
-import * as H3 from "reactor-effect-client/H3";
-import * as H3Source from "reactor-effect-client/H3Source";
+import type * as H3 from "reactor-effect-client/H3";
+import type * as H3Source from "reactor-effect-client/H3Source";
 import { ItemKey } from "reactor-effect-client/Playout";
 import * as Reactor from "reactor-effect-client/Reactor";
 import type * as Session from "reactor-effect-client/Session";
 import type { Pieces } from "../Checks.js";
 import type { AdoptionRecord } from "../Evidence.js";
+import * as Family from "../Family.js";
 import * as Media from "../Media.js";
 import * as Probes from "../Probes.js";
 import { describe, recorded, Run } from "../Run.js";
-import { acceptGrant, plans, provenGrant, tokenSecondsFor } from "../Spend.js";
+import { acceptGrant, provenGrant, tokenSecondsFor } from "../Spend.js";
 import { Target } from "../Target.js";
-
-const tracks = H3.h3ReferenceTurboRealtime.tracks;
 
 /** How long the creating token lives: past the raw attach, not the session. */
 const createSeconds = 20;
@@ -70,8 +70,6 @@ const createSeconds = 20;
 const boundSeconds = 12;
 /** The owner is killed this long after it allocated, with its 15 s clip playing. */
 const killAfterMs = 12_000;
-/** How long the owner's queued clip asks for: its clips must still play when the resume attaches. */
-const queuedSeconds = 15;
 /** How long after the run starts the owner must be streaming. */
 const ownerWithinMs = 30_000;
 /** Each takeover's time from its start: an attach ready within 5 s, then a few seconds of frames. */
@@ -84,9 +82,6 @@ const gapReadMs = 500;
  * close, so the reads while nothing is connected cannot rest on that expiry alone.
  */
 const gapMs = 1_000;
-
-/** H3's reply to an enqueue: the clip, as H3 accepted it. */
-const ClipQueued = Schema.Struct({ clip: H3.Clip });
 
 /**
  * Runs one phase until `endsAt`, a Clock time. Whatever it fails with, running
@@ -111,9 +106,12 @@ const phase = Effect.fnUntraced(function* <A, E extends { readonly _tag: string 
   );
 });
 
-export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
+const adoptionFor = Effect.fnUntraced(function* <
+  Req extends Family.RequestInput,
+  Clip extends H3.Clip,
+>(pieces: Pieces, run: Run["Service"], family: Family.Family<Req, Clip>) {
   const { round } = pieces;
-  const run = yield* Run;
+  const ClipQueued = Schema.Struct({ clip: family.clip });
   const target = yield* Target;
   const coordinator = yield* CoordinatorClient.CoordinatorClient;
   const record = (change: (adoption: AdoptionRecord) => AdoptionRecord) =>
@@ -193,8 +191,9 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
           run.origin + ownerWithinMs,
           Effect.gen(function* () {
             const owner = yield* target.owner(grant, marker, {
+              model: family.key,
               isolated: true,
-              queuedSeconds,
+              queuedSeconds: family.lengths.long,
               onAllocated,
             });
             // The owner reports its allocation before it streams.
@@ -269,7 +268,7 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
             "the attached session",
             attachEndsAt,
             Effect.gen(function* () {
-              const provider = yield* H3.make(session);
+              const provider = yield* family.provider(session);
               const facts = pieces.factsOf(yield* provider.snapshot);
               const playingClipId = facts?.state.playing_clip_id ?? null;
               const queuedMetadata = [
@@ -281,7 +280,7 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
               );
               yield* updateAttach({ playingClipId, queuedMetadata });
               const media = yield* session.decoded;
-              yield* pieces.readFresh(media.video(tracks.video), attachVideo, deadline);
+              yield* pieces.readFresh(media.video(family.tracks.video), attachVideo, deadline);
               const firstFreshFrameMs = attachVideo.firstAfter(attachedMs);
               yield* updateAttach({
                 ...(firstFreshFrameMs === undefined ? {} : { firstFreshFrameMs }),
@@ -370,10 +369,12 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
                 ),
             });
             const startedMs = yield* run.now;
-            const source = yield* H3Source.resume({
-              allocation: owner.allocation,
-              tokens: resumeTokens,
-            }).pipe(Effect.provideService(Reactor.Reactor, watched));
+            const source = yield* family
+              .resume({
+                allocation: owner.allocation,
+                tokens: resumeTokens,
+              })
+              .pipe(Effect.provideService(Reactor.Reactor, watched));
             const session = yield* Deferred.await(captured);
             const attachedMs = yield* run.now;
             yield* record((adoption) => ({
@@ -451,8 +452,8 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
                     deadline - 17_000,
                   );
                 }
-                // H3's reply names what it accepted; the source returns only the clip's id.
-                const queued = yield* SubscriptionRef.make<ReadonlyArray<H3.Clip>>([]);
+                // The provider's reply names what it accepted; the source returns only the clip's id.
+                const queued = yield* SubscriptionRef.make<ReadonlyArray<Clip>>([]);
                 const observation = yield* session.observe({ capacity: 1024 });
                 yield* observation.events.pipe(
                   Stream.runForEach((event) =>
@@ -472,7 +473,7 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
                 );
                 const uploadStartedMs = yield* run.now;
                 const clipId = yield* recorded(
-                  source.enqueue(pieces.withReferences(`${marker}:references`), {
+                  source.enqueue(family.withUploads(`${marker}:references`), {
                     _tag: "Item",
                     key: ItemKey.make("references"),
                   }),
@@ -490,15 +491,20 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
                 const refreshedMs = (yield* run.evidence).adoption?.mints.filter(
                   (mint) => mint.kind === "resume",
                 )[1]?.atMs;
+                const uploads = clip === undefined ? undefined : family.uploadsOf(clip);
+                const references = uploads?._tag === "References" ? uploads : undefined;
                 yield* updateResume({
                   ...(refreshedMs === undefined ? {} : { refreshedMs }),
                   upload: {
                     startedMs: uploadStartedMs,
                     acceptedMs,
-                    images: 1,
-                    audio: 1,
-                    reportedAudio: clip?.reference_audio_count ?? null,
-                    hasReferenceAudio: clip?.has_reference_audio ?? null,
+                    images: family.uploadCounts.images,
+                    audio: family.uploadCounts.audio,
+                    reportedAudio: references?.reportedAudio ?? null,
+                    hasReferenceAudio: references?.hasReferenceAudio ?? null,
+                    ...(uploads?._tag === "Frame"
+                      ? { hasStartingFrame: uploads.hasStartingFrame }
+                      : {}),
                   },
                   commands: pieces.commandsSince(yield* run.evidence, startedMs),
                 });
@@ -516,10 +522,16 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
                     "the refresh did not happen for the clip's upload",
                   ],
                 );
-                yield* pieces.judge("reference audio reported", [
-                  clip?.has_reference_audio === true && clip.reference_audio_count === 1,
-                  `the clip reports has_reference_audio ${String(clip?.has_reference_audio ?? "absent")} and ${String(clip?.reference_audio_count ?? "no")} audio reference(s) for 1 sent`,
-                ]);
+                if (family.key === "h3")
+                  yield* pieces.judge("reference audio reported", [
+                    references?.hasReferenceAudio === true && references.reportedAudio === 1,
+                    `the clip reports has_reference_audio ${String(references?.hasReferenceAudio ?? "absent")} and ${String(references?.reportedAudio ?? "no")} audio reference(s) for 1 sent`,
+                  ]);
+                else
+                  yield* pieces.judge("starting frame reported", [
+                    uploads?._tag === "Frame" && uploads.hasStartingFrame,
+                    "the clip does not report has_starting_frame true",
+                  ]);
               }),
             ),
           );
@@ -542,7 +554,7 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
             // it creates none.
             const unbound = yield* coordinator.mintToken({
               apiKey: target.apiKey,
-              modelName: plans.adoption.model.name,
+              modelName: run.model.name,
               maxSessionDuration: "1 second",
               expiresAfter: "15 seconds",
             });
@@ -558,7 +570,11 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
             }));
             yield* minted("unbound", unbound, unboundSentAt);
             const unboundTokenStatus = yield* readWith(unbound.jwt);
-            yield* record((adoption) => ({ ...adoption, expiredTokenStatus, unboundTokenStatus }));
+            yield* record((adoption) => ({
+              ...adoption,
+              expiredTokenStatus,
+              unboundTokenStatus,
+            }));
             yield* run.mark("refusals read");
             yield* pieces.judge("an expired token is refused", [
               expiredTokenStatus === 401,
@@ -601,4 +617,12 @@ export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
     // Whatever failed, the key ends a session the check allocated.
     pieces.endHeld(keyed),
   );
+});
+
+export const adoption = Effect.fnUntraced(function* (pieces: Pieces) {
+  const run = yield* Run;
+  const useFamily = <Req extends Family.RequestInput, Clip extends H3.Clip>(
+    family: Family.Family<Req, Clip>,
+  ) => adoptionFor(pieces, run, family);
+  return yield* Family.withFamily(run, useFamily);
 });

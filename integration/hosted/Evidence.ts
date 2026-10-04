@@ -258,7 +258,7 @@ export const TokensRecord = Schema.Struct({
   video: Schema.optionalKey(VideoSummary),
   /** When the next bound token was minted for a call, the refresh. */
   refreshedMs: Schema.optionalKey(Ms),
-  /** A clip enqueued on the refreshed token with a reference image and reference audio. */
+  /** A clip enqueued on the refreshed token with the family's uploads. */
   upload: Schema.optionalKey(
     Schema.Struct({
       startedMs: Ms,
@@ -267,6 +267,7 @@ export const TokensRecord = Schema.Struct({
       audio: Schema.Int,
       reportedAudio: Schema.NullOr(Schema.Int),
       hasReferenceAudio: Schema.NullOr(Schema.Boolean),
+      hasStartingFrame: Schema.optionalKey(Schema.Boolean),
     }),
   ),
   /** Reading the session with the creating token after it expired: 401 is documented. */
@@ -351,7 +352,7 @@ export const AdoptionRecord = Schema.Struct({
       video: Schema.optionalKey(VideoSummary),
       /** When the next bound token was minted for a call, the refresh. */
       refreshedMs: Schema.optionalKey(Ms),
-      /** A clip enqueued on the refreshed token with a reference image and reference audio. */
+      /** A clip enqueued on the refreshed token with the family's uploads. */
       upload: Schema.optionalKey(
         Schema.Struct({
           startedMs: Ms,
@@ -360,6 +361,7 @@ export const AdoptionRecord = Schema.Struct({
           audio: Schema.Int,
           reportedAudio: Schema.NullOr(Schema.Int),
           hasReferenceAudio: Schema.NullOr(Schema.Boolean),
+          hasStartingFrame: Schema.optionalKey(Schema.Boolean),
         }),
       ),
       /** Commands it sent the model, by name. */
@@ -464,6 +466,7 @@ const TourClip = Schema.Struct({
     reportedImages: Schema.NullOr(Schema.Int),
     reportedAudio: Schema.NullOr(Schema.Int),
     hasReferenceAudio: Schema.NullOr(Schema.Boolean),
+    hasStartingFrame: Schema.optionalKey(Schema.Boolean),
   }),
 });
 
@@ -1555,6 +1558,8 @@ export const Evidence = Schema.Struct({
   runId: Schema.String,
   check: Check,
   mode: Schema.Literals(["paid", "rehearsal"]),
+  /** The model the check's sessions ran; absent in older evidence. */
+  model: Schema.optionalKey(Schema.String),
   startedAt: Schema.String,
   finishedAt: Schema.optionalKey(Schema.String),
   environment: Schema.Struct({
@@ -1665,6 +1670,14 @@ export const Evidence = Schema.Struct({
           hasReferenceAudio: Schema.NullOr(Schema.Boolean),
         }),
       ),
+      /** FastH3's uploaded opener and the following clip's source identities. */
+      frames: Schema.optionalKey(
+        Schema.Struct({
+          starting: Schema.Boolean,
+          continued: Schema.Boolean,
+          endedFrom: Schema.Boolean,
+        }),
+      ),
     }),
   ),
   media: Schema.optionalKey(
@@ -1707,13 +1720,14 @@ export const Evidence = Schema.Struct({
     }),
   ),
   /**
-   * `queue`: H3's own queue, raw: queue reads right behind an enqueue, position
+   * `queue`: the model's own queue, raw: reads right behind an enqueue, position
    * zero, a popped build, and a move or pop before each of five boundaries.
    */
   queue: Schema.optionalKey(
     Schema.Struct({
       positionZero: Schema.optionalKey(
         Schema.Struct({
+          /** The first submitted clip; only H3 infers that it is the active build. */
           buildingClipId: Schema.String,
           requestedClipId: Schema.String,
           generationOrder: Schema.Array(Schema.String),
@@ -1721,7 +1735,11 @@ export const Evidence = Schema.Struct({
       ),
       poppedBuild: Schema.optionalKey(
         Schema.Struct({
+          /** Whether that clip headed generation; FastH3 establishes no GPU identity here. */
           wasBuilding: Schema.Boolean,
+          /** FastH3's generation head does not identify its active GPU build. */
+          wasQueuedUnbuilt: Schema.optionalKey(Schema.Boolean),
+          popAccepted: Schema.optionalKey(Schema.Boolean),
           generatedAfterPop: Schema.Boolean,
           startedAfterPop: Schema.Boolean,
         }),
@@ -1794,6 +1812,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   vertical: ["contract", "server", "clip", "media", "network"],
   turn: ["contract", "server", "clip", "media", "network"],
   audio: ["contract", "server", "clip", "media", "network"],
+  frames: ["contract", "server", "clip", "media", "network"],
   takeover: ["takeover"],
   resume: ["takeover"],
   queue: ["queue"],

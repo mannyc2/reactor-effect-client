@@ -17,8 +17,8 @@ import { ReactorTest } from "reactor-effect-client";
 import type { Evidence } from "../Evidence.js";
 import { cleanupInstructions } from "../Evidence.js";
 import { execute, staleBuild } from "../Qualify.js";
-import type { Check } from "../Spend.js";
-import { ceilingFor, checks, holdsFor, maxTotalUsd } from "../Spend.js";
+import type { Check, Plan } from "../Spend.js";
+import { ceilingFor, checks, holdsFor, maxTotalUsd, plans } from "../Spend.js";
 import { summarize } from "../Summary.js";
 import * as Target from "../Target.js";
 
@@ -26,6 +26,7 @@ const rehearse = (
   name: string,
   input: {
     readonly check: Check;
+    readonly model?: "h3" | "fast-h3";
     readonly faults?: ReadonlyArray<ReactorTest.Fault>;
     readonly moderationPrompt?: string;
     readonly adoptAfterMs?: number;
@@ -55,7 +56,8 @@ const rehearse = (
           const evidence = yield* execute({
             authorization: {
               check: input.check,
-              budgetUsd: ceilingFor(input.check),
+              ...(input.model === undefined ? {} : { model: input.model }),
+              budgetUsd: ceilingFor(input.check, input.model),
               totalUsd: maxTotalUsd,
             },
             ledger,
@@ -95,6 +97,19 @@ const failed = (criterion: string) => (evidence: Evidence) => {
 };
 
 for (const check of checks) rehearse(`${check} passes`, { check, judge: passes });
+
+for (const check of checks.filter((check) => {
+  const plan: Plan = plans[check];
+  return plan.models?.includes("fast-h3") === true;
+}))
+  rehearse(`${check} passes on FastH3`, {
+    check,
+    model: "fast-h3",
+    judge: (evidence) => {
+      passes(evidence);
+      assert.propertyVal(evidence, "model", "reactor/fast-h3");
+    },
+  });
 
 const hasFfprobe = spawnSync("ffprobe", ["-version"]).status === 0;
 

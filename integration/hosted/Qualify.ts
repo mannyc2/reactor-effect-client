@@ -210,10 +210,9 @@ export const execute = (input: {
           message: `${authorization.check} makes its avatar from a photo: give one with --avatar-image <file>`,
         });
       const coordinator = yield* CoordinatorClient.CoordinatorClient;
+      const model = modelFor(authorization.check, authorization.model);
       const rate = yield* coordinator.pricing.pipe(
-        Effect.flatMap((pricing) =>
-          CoordinatorClient.modelRate(pricing, modelFor(authorization.check, target.mode).name),
-        ),
+        Effect.flatMap((pricing) => CoordinatorClient.modelRate(pricing, model.name)),
         Effect.mapError((error) => Refused.make({ message: `pricing: ${error.message}` })),
       );
       const worstCaseUsd = yield* admit({ rate, authorization, reservedUsd });
@@ -225,6 +224,7 @@ export const execute = (input: {
         runId,
         check: authorization.check,
         mode: target.mode,
+        model: model.name,
         startedAt,
         environment: yield* environment,
         budget: {
@@ -246,6 +246,7 @@ export const execute = (input: {
       const run = yield* Run.make(
         initial,
         path.join(ledger, `${stamp}-${authorization.check}-${target.mode}-${runId}.json`),
+        model,
       );
       yield* run.secret(target.apiKey);
       // The first save claims the file and records the reservation; failing it spent nothing.

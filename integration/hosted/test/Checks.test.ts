@@ -8,6 +8,7 @@ import { endHeld } from "../Checks.js";
 import type { Evidence } from "../Evidence.js";
 import { format } from "../Evidence.js";
 import * as Run from "../Run.js";
+import { h3 } from "../Spend.js";
 
 /** A rehearsal holding two sessions whose ids hold `secret`, so no save of it succeeds. */
 const holdingTwo = (secret: string): Evidence => ({
@@ -59,7 +60,7 @@ layer(NodeServices.layer)("the sessions a failed check left open", (it) => {
   // A state is provider text, so the close record keeps it only as a code.
   it.effect("are recorded with a state that is no code kept only by its length", () =>
     Effect.gen(function* () {
-      const run = yield* Run.make(holdingTwo("held_record"), "never-written.json");
+      const run = yield* Run.make(holdingTwo("held_record"), "never-written.json", h3);
       yield* endHeld(
         CoordinatorClient.make({
           apiUrl: "https://api.reactor.test",
@@ -86,7 +87,7 @@ layer(NodeServices.layer)("the sessions a failed check left open", (it) => {
           HttpClientResponse.fromWeb(request, new Response(null, { status: 404 })),
         ),
       );
-      const run = yield* Run.make(holdingTwo("held_secret"), "never-written.json");
+      const run = yield* Run.make(holdingTwo("held_secret"), "never-written.json", h3);
       yield* run.secret(Redacted.make("held_secret"));
       yield* endHeld(
         CoordinatorClient.make({
@@ -126,7 +127,7 @@ layer(NodeServices.layer, { excludeTestServices: true })(
             return HttpClientResponse.fromWeb(request, new Response(null, { status: 404 }));
           }),
         );
-        const run = yield* Run.make(holdingTwo("held_timing"), "never-written.json");
+        const run = yield* Run.make(holdingTwo("held_timing"), "never-written.json", h3);
         yield* endHeld(
           CoordinatorClient.make({
             apiUrl: "https://api.reactor.test",

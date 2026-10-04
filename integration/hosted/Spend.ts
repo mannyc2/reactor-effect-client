@@ -27,6 +27,7 @@ export const checks = [
   "takeover",
   "turn",
   "audio",
+  "frames",
   "resume",
   "queue",
   "renewal",
@@ -58,16 +59,19 @@ export interface Model {
 }
 
 /** H3: 350 credits a second at 10,000 a dollar, $2.10 a minute, on September 30, 2026. */
-const h3: Model = {
+export const h3: Model = {
   name: H3.modelName,
   reviewed: { creditsPerSecond: 350, creditsPerDollar: 10_000, per: "minute" },
 };
 
 /** FastH3: 350 credits a second at 10,000 a dollar, $2.10 a minute, on October 3, 2026. */
-const fastH3: Model = {
+export const fastH3: Model = {
   name: "reactor/fast-h3",
   reviewed: { creditsPerSecond: 350, creditsPerDollar: 10_000, per: "minute" },
 };
+
+export const models = { h3, "fast-h3": fastH3 } as const;
+export type ModelKey = keyof typeof models;
 
 /** Vidu S2-Avatar: 70 credits a second at 10,000 a dollar, $0.42 a minute, on October 1, 2026. */
 const vidu: Model = {
@@ -101,28 +105,30 @@ interface Uncapped {
 }
 
 export type Plan = (Capped | Uncapped) & {
-  /** The stand-in a rehearsal uses until ReactorTest simulates this model. */
-  readonly rehearsedAs?: Model;
+  /** The H3-family models this check permits; otherwise only its declared model. */
+  readonly models?: ReadonlyArray<ModelKey>;
 };
 
 /** One 50-second session, which every check held before the longer runs. */
 export const sessionSeconds = 50;
 const single = { model: h3, sessions: 1, seconds: sessionSeconds } satisfies Plan;
+const familySingle = { ...single, models: ["h3", "fast-h3"] } satisfies Plan;
 
 export const plans = {
-  vertical: single,
-  takeover: single,
-  turn: single,
+  vertical: familySingle,
+  takeover: familySingle,
+  turn: familySingle,
   audio: single,
-  resume: single,
-  queue: single,
-  renewal: { model: h3, sessions: 2, seconds: sessionSeconds, renews: true },
-  edits: single,
-  cut: single,
-  tokens: single,
-  tour: { model: h3, sessions: 1, seconds: 90 },
-  adoption: { model: h3, sessions: 1, seconds: 75 },
-  show: { model: h3, sessions: 3, seconds: 75, renews: true },
+  frames: { model: fastH3, sessions: 1, seconds: sessionSeconds },
+  resume: familySingle,
+  queue: familySingle,
+  renewal: { ...familySingle, sessions: 2, renews: true },
+  edits: familySingle,
+  cut: familySingle,
+  tokens: familySingle,
+  tour: { ...familySingle, seconds: 90 },
+  adoption: { ...familySingle, seconds: 75 },
+  show: { ...familySingle, sessions: 3, seconds: 75, renews: true },
   // One session, watched past its cap and then ended with the key, 155 s at most from its
   // request. On a token of its own, one more, held past its ready and ended with the key within
   // 59 s of its request, and a third if that token's second create allocates again, ended
@@ -143,21 +149,29 @@ export const plans = {
   // that one no 10 s margin. $0.525 at most at 70 credits a second, and $0.84 by the started
   // minute.
   character: { model: vidu, sessions: 1, seconds: 75 },
-  fasth3: { model: fastH3, sessions: 1, seconds: sessionSeconds, rehearsedAs: h3 },
+  fasth3: { model: fastH3, sessions: 1, seconds: sessionSeconds },
   // One call, a reconnect during it and end_call are planned to end about 70 s in, including
   // the first paid avatar's 26.7 s create and 13.2 s end. $0.84 at most at 70 credits a second,
   // and $0.84 by the started minute; the work ends 110 s in, before the 120 s cap.
   rejoin: { model: vidu, sessions: 1, seconds: 120 },
 } satisfies { readonly [C in Check]: Plan };
 
-/** The model the check actually runs, including a rehearsal's stand-in. */
-export const modelFor: {
-  (mode: "paid" | "rehearsal"): (check: Check) => Model;
-  (check: Check, mode: "paid" | "rehearsal"): Model;
-} = dual(2, (check: Check, mode: "paid" | "rehearsal"): Model => {
+const allowedModels = (check: Check): ReadonlyArray<Model> => {
   const plan: Plan = plans[check];
-  return mode === "rehearsal" ? (plan.rehearsedAs ?? plan.model) : plan.model;
-});
+  return plan.models === undefined ? [plan.model] : plan.models.map((key) => models[key]);
+};
+
+/** The selected, permitted model, or the check's declared default. */
+export const modelFor: {
+  (key?: ModelKey): (check: Check) => Model;
+  (check: Check, key?: ModelKey): Model;
+} = dual(
+  (args) => Schema.is(Check)(args[0]),
+  (check: Check, key?: ModelKey): Model =>
+    key !== undefined && allowedModels(check).includes(models[key])
+      ? models[key]
+      : plans[check].model,
+);
 
 /** How long each of a check's sessions may run: its cap, unless the check holds it longer. */
 export const holdsFor = (check: Check): ReadonlyArray<number> => {
@@ -182,13 +196,19 @@ export const workSecondsFor = (check: Check): number => {
  * a ledger shares the total, which admits the costliest check, `unconnected`,
  * at H3's rate per second ($9.45). The operator's limits may only be lower.
  */
-export const ceilingFor = (check: Check): number =>
-  reservationUsd(
-    holdsFor(check).reduce(
-      (total, seconds) => total + billedUsd({ rate: plans[check].model.reviewed, seconds }),
-      0,
+export const ceilingFor: {
+  (key?: ModelKey): (check: Check) => number;
+  (check: Check, key?: ModelKey): number;
+} = dual(
+  (args) => Schema.is(Check)(args[0]),
+  (check: Check, key?: ModelKey): number =>
+    reservationUsd(
+      holdsFor(check).reduce(
+        (total, seconds) => total + billedUsd({ rate: modelFor(check, key).reviewed, seconds }),
+        0,
+      ),
     ),
-  );
+);
 export const maxTotalUsd = 10;
 
 /** A gate refused: nothing past it runs, and nothing was spent. */
@@ -228,6 +248,7 @@ export const reservationUsd = (amount: number): number => Math.ceil(amount * 1e4
 
 export interface Authorization {
   readonly check: Check;
+  readonly model?: ModelKey | undefined;
   /** The most this run may spend: every session it can open, at its capped length. */
   readonly budgetUsd: number;
   /** The most every paid run in the ledger may spend, this one included. */
@@ -236,10 +257,19 @@ export interface Authorization {
 
 /** Refuses a budget outside the check's ceiling or the ledger's, or above the total it counts against. */
 export const authorize = (input: Authorization): Effect.Effect<Authorization, Refused> => {
+  const allowed = allowedModels(input.check);
+  if (input.model !== undefined && !allowed.includes(models[input.model])) {
+    const names = allowed.map(
+      (model) => Object.entries(models).find(([, value]) => value === model)?.[0] ?? model.name,
+    );
+    return refuse(`${input.check} runs on ${names.join(" or ")} only`);
+  }
   const within = (value: number, most: number) =>
     Number.isFinite(value) && value > 0 && value <= most;
-  if (!within(input.budgetUsd, ceilingFor(input.check)))
-    return refuse(`--budget-usd must be more than 0 and at most ${ceilingFor(input.check)}`);
+  if (!within(input.budgetUsd, ceilingFor(input.check, input.model)))
+    return refuse(
+      `--budget-usd must be more than 0 and at most ${ceilingFor(input.check, input.model)}`,
+    );
   if (!within(input.totalUsd, maxTotalUsd))
     return refuse(`--total-budget-usd must be more than 0 and at most ${maxTotalUsd}`);
   if (input.budgetUsd > input.totalUsd)

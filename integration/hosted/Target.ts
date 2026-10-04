@@ -25,6 +25,7 @@ import * as HttpClientError from "effect/http/HttpClientError";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
+import type * as H3 from "reactor-effect-client/H3";
 import * as H3Source from "reactor-effect-client/H3Source";
 import { PeerFactory } from "reactor-effect-client/Peer";
 import type { Peer, PeerEvent } from "reactor-effect-client/Peer";
@@ -33,10 +34,9 @@ import * as Reactor from "reactor-effect-client/Reactor";
 import { ReactorError } from "reactor-effect-client/ReactorError";
 import * as ReactorTest from "reactor-effect-client/ReactorTest";
 import * as NativePeer from "reactor-effect-native/NativePeer";
+import * as Family from "./Family.js";
 import * as Media from "./Media.js";
-import { Refused, sessionSeconds } from "./Spend.js";
-
-export const prompt = "A slow camera move across a sunlit table with a glass of water.";
+import { models, Refused, sessionSeconds, type ModelKey } from "./Spend.js";
 
 /** What the takeover's owner reports once it streams: its record, and the clips it queued. */
 export const Streaming = Schema.Struct({
@@ -93,13 +93,14 @@ export interface Photo {
 }
 
 export interface OwnerOptions {
+  readonly model?: ModelKey | undefined;
   /**
    * A paid owner runs under Node (`node` on the PATH, 22.18 or newer) with each
    * connection's native peer in a child process of its own; a rehearsal's
    * owner runs in this process on ReactorTest's peers either way.
    */
   readonly isolated?: boolean;
-  /** How long the clip queued behind the 15 s one asks for: 5 s unless given. */
+  /** How long the queued clip asks for: the selected model's shortest length unless given. */
   readonly queuedSeconds?: number;
   /**
    * Runs as soon as the owner allocates, before it connects, so a session
@@ -221,6 +222,16 @@ export const nodeOwnerArgs = (script: string): ReadonlyArray<string> => [
   "--isolated",
 ];
 
+/** Model and clip length passed to either paid owner's runtime. */
+export const ownerArgs = (
+  options: Pick<OwnerOptions, "model" | "queuedSeconds">,
+): ReadonlyArray<string> => [
+  ...(options.queuedSeconds === undefined
+    ? []
+    : ["--queued-seconds", String(options.queuedSeconds)]),
+  ...(options.model === undefined ? [] : ["--model", options.model]),
+];
+
 /** How long a killed owner may take to exit before the check stops waiting for it. */
 const ownerExitWait = Duration.seconds(5);
 
@@ -283,12 +294,13 @@ export const probeOwner = Effect.fnUntraced(function* (script: string) {
 });
 
 /** Opens the owner's source and reports its allocation before it connects. */
-const opened = Effect.fnUntraced(function* (
+const opened = Effect.fnUntraced(function* <Req extends Family.RequestInput, C extends H3.Clip>(
+  family: Family.Family<Req, C>,
   grant: CoordinatorClient.TokenGrant,
   allocated: ((allocation: H3Source.Allocation) => Effect.Effect<void>) | undefined,
 ) {
   const recorded = yield* Deferred.make<H3Source.Allocation>();
-  const source = yield* H3Source.open({
+  const source = yield* family.open({
     tokens: CoordinatorClient.fixedTokens(grant),
     onAllocated: ({ allocation }) =>
       Deferred.succeed(recorded, allocation).pipe(
@@ -299,41 +311,53 @@ const opened = Effect.fnUntraced(function* (
 });
 
 /**
- * The owner's whole life: open an H3 source, play a 15 s clip with a 5 s one
- * (or `queuedSeconds`) queued behind it, stream, report, and wait to be
- * killed. It holds the grant, never the API key.
+ * The owner's whole life: open its model's source, play its longest clip with
+ * its shortest (or `queuedSeconds`) queued behind it, stream, report, and wait
+ * to be killed. It holds the grant, never the API key.
  */
 export const own = (input: {
   readonly grant: CoordinatorClient.TokenGrant;
   readonly marker: string;
+  readonly model?: ModelKey | undefined;
   readonly queuedSeconds?: number | undefined;
   readonly allocated?: ((allocation: H3Source.Allocation) => Effect.Effect<void>) | undefined;
   readonly announce: (streaming: Streaming) => Effect.Effect<void>;
 }) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { grant, marker, announce } = input;
-      const { source, allocation } = yield* opened(grant, input.allocated);
-      yield* source.setAutoplay(true);
-      // H3 keeps no history, so an attacher knows the playing clip only by its id; the clip
-      // queued behind it is the one whose metadata it can read.
-      const playing = yield* source.enqueue(
-        { prompt, seconds: 15, metadata: `${marker}:playing` },
-        { _tag: "Item", key: ItemKey.make("playing") },
-      );
-      const queued = yield* source.enqueue(
-        { prompt, seconds: input.queuedSeconds ?? 5, metadata: `${marker}:queued` },
-        { _tag: "Item", key: ItemKey.make("queued") },
-      );
-      yield* source.events.pipe(
-        Stream.filter((event) => event._tag === "State" && event.state.playing?.clipId === playing),
-        Stream.take(1),
-        Stream.runDrain,
-      );
-      yield* source.video.pipe(Stream.take(24), Stream.runDrain);
-      yield* announce({ allocation, playing, queued });
-      return yield* Effect.never;
-    }),
+  Family.withFamily({ model: models[input.model ?? "h3"] }, (family) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { grant, marker, announce } = input;
+        const { source, allocation } = yield* opened(family, grant, input.allocated);
+        yield* source.setAutoplay(true);
+        // The attacher knows the playing clip by its id; the queued clip carries its marker.
+        const playing = yield* source.enqueue(
+          family.request({
+            prompt: Family.prompt,
+            seconds: family.lengths.long,
+            metadata: `${marker}:playing`,
+          }),
+          { _tag: "Item", key: ItemKey.make("playing") },
+        );
+        const queued = yield* source.enqueue(
+          family.request({
+            prompt: Family.prompt,
+            seconds: input.queuedSeconds ?? family.lengths.short,
+            metadata: `${marker}:queued`,
+          }),
+          { _tag: "Item", key: ItemKey.make("queued") },
+        );
+        yield* source.events.pipe(
+          Stream.filter(
+            (event) => event._tag === "State" && event.state.playing?.clipId === playing,
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+        );
+        yield* source.video.pipe(Stream.take(24), Stream.runDrain);
+        yield* announce({ allocation, playing, queued });
+        return yield* Effect.never;
+      }),
+    ),
   ).pipe(Effect.timeout(Duration.seconds((input.grant.maxSessionSeconds ?? sessionSeconds) - 10)));
 
 /** The idle owner's scoped life: connect, set up, report, then wait to be killed. */
@@ -344,7 +368,7 @@ export const idle = (input: {
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const { allocation } = yield* opened(input.grant, input.allocated);
+      const { allocation } = yield* opened(Family.h3, input.grant, input.allocated);
       yield* input.announce(allocation);
       return yield* Effect.never;
     }),
@@ -444,10 +468,7 @@ export const paid = (input: {
         owner: (grant, marker, options) =>
           Effect.gen(function* () {
             const owner = yield* spawnOwner({
-              flags:
-                options?.queuedSeconds === undefined
-                  ? []
-                  : ["--queued-seconds", String(options.queuedSeconds)],
+              flags: ownerArgs(options ?? {}),
               isolated: options?.isolated === true,
               grant,
               line: yield* Schema.encodeEffect(Schema.fromJsonString(OwnerGrant))({
@@ -501,6 +522,7 @@ export const ownerProcess = <E>(input: {
   /** Its runtime and native peer. */
   readonly host: string;
   readonly queuedSeconds?: number | undefined;
+  readonly model?: ModelKey | undefined;
   readonly idle: boolean;
 }) =>
   Effect.gen(function* () {
@@ -534,6 +556,7 @@ export const ownerProcess = <E>(input: {
       grant,
       marker: owned.marker,
       queuedSeconds: input.queuedSeconds,
+      model: input.model,
       allocated,
       announce: report,
     });
@@ -648,6 +671,7 @@ export const rehearsal = (input: {
                 grant,
                 marker,
                 queuedSeconds: options?.queuedSeconds,
+                model: options?.model,
                 allocated: options?.onAllocated,
                 announce,
               }),

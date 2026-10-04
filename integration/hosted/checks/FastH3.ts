@@ -35,7 +35,6 @@ import { SaveFailed } from "../Ledger.js";
 import * as Media from "../Media.js";
 import * as Probes from "../Probes.js";
 import { describe, Run } from "../Run.js";
-import { modelFor } from "../Spend.js";
 import { Target } from "../Target.js";
 
 const prompt = "A slow aerial shot over a calm green valley at dawn.";
@@ -169,7 +168,7 @@ const unbuilt = (all: ReadonlyArray<Heard>, sequence: bigint) => {
 export const fastH3 = Effect.fnUntraced(function* (pieces: Pieces) {
   const run = yield* Run;
   const target = yield* Target;
-  const model = modelFor("fasth3", target.mode).name;
+  const model = run.model.name;
   const initial: FastH3Record = {
     model,
     counts: [],
