@@ -61,7 +61,6 @@ import {
 import { prompt, Target } from "./Target.js";
 
 const round = (value: number, places = 1) => Math.round(value * 10 ** places) / 10 ** places;
-const tracks = H3.h3ReferenceTurboRealtime.tracks;
 /** Every playout and queue clip asks for this long: a short build, a boundary every few seconds. */
 const clipSeconds = 5;
 /** Around a boundary, frames are looked for from this long before the end to twice it after the start. */
@@ -1056,7 +1055,9 @@ const afterAdoptMs = 16_000;
  * it, and ends the session with the API key as the bearer. Free probes of the
  * token and key rules go first.
  */
-export const tokens = Effect.gen(function* () {
+const tokensFor = Effect.fnUntraced(function* <Req extends Family.RequestInput, C extends H3.Clip>(
+  family: Family.Family<Req, C>,
+) {
   const run = yield* Run;
   const target = yield* Target;
   const coordinator = yield* CoordinatorClient.CoordinatorClient;
@@ -1133,12 +1134,12 @@ export const tokens = Effect.gen(function* () {
         const resumeStartedMs = yield* run.now;
         const reactor = yield* adopting(sessionId, ownerKilledMs);
         const session = yield* reactor.attach({ sessionId, tokens: binds, adopt: true });
-        const provider = yield* H3.make(session);
+        const provider = yield* family.provider(session);
         const attachedMs = yield* run.now;
         yield* run.mark("adopted");
         const playingClipId = factsOf(yield* provider.snapshot)?.state.playing_clip_id ?? null;
         const media = yield* session.decoded;
-        yield* readFresh(media.video(tracks.video), video, deadline);
+        yield* readFresh(media.video(family.tracks.video), video, deadline);
         const firstFreshFrameMs = video.firstAfter(attachedMs);
         yield* record((tokens) => ({
           ...tokens,
@@ -1160,11 +1161,12 @@ export const tokens = Effect.gen(function* () {
         const startedMs = yield* run.now;
         const acceptance = yield* recorded(
           Effect.flatMap(
-            provider.prepare(withReferences(`${marker}:references`)),
+            provider.prepare(family.withUploads(`${marker}:references`)),
             (submission) => submission.submit,
           ),
         );
         const acceptedMs = yield* run.now;
+        const uploads = family.uploadsOf(acceptance.clip);
         const refreshedMs = (yield* run.evidence).tokens?.mints.filter(
           (mint) => mint.kind === "bind",
         )[1]?.atMs;
@@ -1174,10 +1176,11 @@ export const tokens = Effect.gen(function* () {
           upload: {
             startedMs,
             acceptedMs,
-            images: 1,
-            audio: 1,
-            reportedAudio: acceptance.clip.reference_audio_count ?? null,
-            hasReferenceAudio: acceptance.clip.has_reference_audio ?? null,
+            images: family.uploadCounts.images,
+            audio: family.uploadCounts.audio,
+            reportedAudio: uploads._tag === "References" ? uploads.reportedAudio : null,
+            hasReferenceAudio: uploads._tag === "References" ? uploads.hasReferenceAudio : null,
+            ...(uploads._tag === "Frame" ? { hasStartingFrame: uploads.hasStartingFrame } : {}),
           },
         }));
         yield* run.mark("enqueued on a refreshed token");
@@ -1237,11 +1240,17 @@ export const tokens = Effect.gen(function* () {
             "the refresh did not happen for the clip's upload",
           ],
         );
-        yield* judge("reference audio reported", [
-          acceptance.clip.has_reference_audio === true &&
-            acceptance.clip.reference_audio_count === 1,
-          `the clip reports has_reference_audio ${String(acceptance.clip.has_reference_audio ?? "absent")} and ${String(acceptance.clip.reference_audio_count ?? "no")} audio reference(s) for 1 sent`,
-        ]);
+        if (uploads._tag === "Frame")
+          yield* judge("starting frame reported", [
+            uploads.hasStartingFrame,
+            "the clip reports has_starting_frame false for the frame sent",
+          ]);
+        else
+          yield* judge("reference audio reported", [
+            acceptance.clip.has_reference_audio === true &&
+              acceptance.clip.reference_audio_count === 1,
+            `the clip reports has_reference_audio ${String(acceptance.clip.has_reference_audio ?? "absent")} and ${String(acceptance.clip.reference_audio_count ?? "no")} audio reference(s) for 1 sent`,
+          ]);
         yield* judge("an expired token is refused", [
           expiredTokenStatus === 401,
           `reading with it answered ${expiredTokenStatus}`,
@@ -1260,6 +1269,8 @@ export const tokens = Effect.gen(function* () {
     endHeld(keyed),
   );
 });
+
+export const tokens = Effect.flatMap(Run, (run) => Family.withFamily(run, tokensFor));
 
 /** The queue check's edit before each boundary, and how long before the playing clip's end it is sent. */
 const boundaries = [
