@@ -1719,6 +1719,7 @@ export const Evidence = Schema.Struct({
     Schema.Struct({
       positionZero: Schema.optionalKey(
         Schema.Struct({
+          /** The first submitted clip; only H3 infers that it is the active build. */
           buildingClipId: Schema.String,
           requestedClipId: Schema.String,
           generationOrder: Schema.Array(Schema.String),
@@ -1726,6 +1727,7 @@ export const Evidence = Schema.Struct({
       ),
       poppedBuild: Schema.optionalKey(
         Schema.Struct({
+          /** Whether that clip headed generation; FastH3 establishes no GPU identity here. */
           wasBuilding: Schema.Boolean,
           /** FastH3's generation head does not identify its active GPU build. */
           wasQueuedUnbuilt: Schema.optionalKey(Schema.Boolean),

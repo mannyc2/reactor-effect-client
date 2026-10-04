@@ -1292,9 +1292,9 @@ interface Observed {
 }
 
 /**
- * H3's own queue on one session, raw: whether a queue read sent right behind
- * an enqueue lists it, position zero behind a running build, a pop of the
- * build in flight, then with autoplay on a move or a pop before each of five
+ * The model's queue on one session, raw: reads behind enqueues, position zero
+ * and a pop of an unbuilt clip. H3 infers a running build from the queue head;
+ * FastH3 records order without that inference. With autoplay, a move or pop before five
  * boundaries, at a set distance from the playing clip's end, and which clip
  * starts next.
  */
@@ -1407,8 +1407,8 @@ const queueFor = Effect.fnUntraced(function* <Req extends Family.RequestInput, C
             "the position-zero clip went ahead of the build that was running",
           ],
         );
-      // A build popped while it runs must never reach playout; the clip behind it shows
-      // how long the popped build keeps the build slot.
+      // A popped unbuilt clip must not generate or start afterward. H3 also infers
+      // a pop in flight from its queue head; FastH3's head does not name the GPU build.
       const popped = first;
       const wasBuilding = generationOrder[0] === popped.clipId;
       const wasQueuedUnbuilt =
