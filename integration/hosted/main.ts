@@ -58,7 +58,7 @@ class Failed extends Schema.TaggedError<Failed>("reactor-effect-integration/host
 
 const check = Argument.Literals("check", Spend.checks);
 const model = Flag.Literals("model", ["h3", "fast-h3"]).pipe(
-  Flag.withDescription("the H3-family model a check runs, H3 by default"),
+  Flag.withDescription("the H3-family model a check runs, using its default when omitted"),
   Flag.optional,
 );
 const ledger = Flag.String("ledger").pipe(
