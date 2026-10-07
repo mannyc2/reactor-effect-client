@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `CoordinatorClient.terminate`, and so `session.close`, confirms a session gone only when two reads in a row find it gone; one missing read used to confirm it. A coordinator can answer 404 for one read of a running session, so after a `DELETE` that did not take, such a session was reported confirmed ended and `Session.mayStillBill` said false.
 - **Breaking:** `GroupHandle` gains `started` and `outcome`, so a hand-written `Playout.Service` must provide them.
 - A group that ends at a broken place also withdraws the items inserted after it. The break used to withdraw only the group's parts, so an item inserted beside a later part aired on after its group had ended.
+- An insert placed in a group is refused with `InvalidItem` when its `follows` names a member of that group after it: that member now waits behind the insert, which would wait for it to air, so neither would.
 
 ### Fixed
 

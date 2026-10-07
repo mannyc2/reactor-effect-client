@@ -1775,6 +1775,20 @@ const decide = <Req extends ClipRequest>(
             key: edit.spec.key,
             message: "a held Manual item cannot anchor an insert",
           });
+        // Placed in a group, it would wait for a member after it to air while that member waits
+        // behind it.
+        const follows = edit.spec.follows;
+        const followed = follows?._tag === "Item" ? items.get(follows.key) : undefined;
+        if (
+          anchor.group !== undefined &&
+          followed?.group?.key === anchor.group.key &&
+          (edit.side === "after" ? followed.order > anchor.order : followed.order >= anchor.order)
+        )
+          return refuse({
+            _tag: "InvalidItem",
+            key: edit.spec.key,
+            message: "follows names a member of its group placed after it",
+          });
       }
       if (edit._tag === "Submit" || edit._tag === "Insert") {
         const issue = followsIssue(edit.spec.key, edit.spec.follows);

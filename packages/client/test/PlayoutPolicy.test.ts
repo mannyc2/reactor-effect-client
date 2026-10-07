@@ -2834,4 +2834,52 @@ describe("PlayoutPolicy, groups", () => {
     policy.tick(policy.now() + 50);
     assert.deepStrictEqual(statuses(policy.actions, "y"), ["Accepted"]);
   });
+
+  // An insert that follows a member placed after it in its group would wait for that member to air,
+  // while that member waits behind it: neither airs, and the group never ends.
+  it("refuses an insert that follows a member of its group placed after it", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p1"), spec("p2")],
+        fingerprint: "g",
+      },
+    ]);
+    policy.reply({ _tag: "Done", clipId: "c-p1" });
+    for (const [anchor, side] of [
+      ["p1", "after"],
+      ["p2", "before"],
+      ["g", "before"],
+    ] as const) {
+      const { actions } = policy.edit([
+        {
+          _tag: "Insert",
+          spec: { ...spec("i"), follows: item("p2") },
+          anchor: key(anchor),
+          side,
+        },
+      ]);
+      const refusal = actions.find((action) => action._tag === "Refused")?.refusal;
+      assert.strictEqual(refusal?._tag, "InvalidItem", `${side} ${anchor}`);
+      const message = refusal?._tag === "InvalidItem" ? refusal.message : "";
+      assert.include(message, "follows");
+      assert.notInclude(message, "p2");
+      assert.isFalse(policy.state().items.has(key("i")));
+    }
+    // Following the member before it, it is admitted.
+    const { actions } = policy.edit([
+      {
+        _tag: "Insert",
+        spec: { ...spec("i"), follows: item("p1") },
+        anchor: key("p1"),
+        side: "after",
+      },
+    ]);
+    assert.isFalse(actions.some((action) => action._tag === "Refused"));
+  });
 });
