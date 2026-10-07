@@ -1,7 +1,7 @@
 /** The playout's pure policy on its own: inputs in, actions and as-run out, no clock and no I/O. */
 import { assert, describe, it } from "@effect/vitest";
 import * as Policy from "../src/internal/playout/policy.js";
-import type { SourceClip, SourceEvent, SourceState } from "../src/Playout.js";
+import type { ClipTag, SourceClip, SourceEvent, SourceState } from "../src/Playout.js";
 import { CommandFailure, ReactorError } from "../src/ReactorError.js";
 import {
   buildFailed,
@@ -116,6 +116,86 @@ const drive = (options: { readonly config?: Policy.Config; readonly from?: Polic
     /** The command in flight on `id`'s lane, or on the first busy one, if any. */
     busy: (id?: string) => inFlight(state, id)?.command,
   };
+};
+
+/** A session's queues as a scripted provider holds them, how many clips it made, and its orders. */
+interface Queues {
+  ready: Array<SourceClip>;
+  playing: SourceClip | undefined;
+  made: number;
+  /** The Ready queue's order after each command. */
+  readonly orders: Array<ReadonlyArray<string>>;
+}
+const queues = (playing?: SourceClip): Queues => ({ ready: [], playing, made: 0, orders: [] });
+const nameOf = (tag: ClipTag): string =>
+  tag._tag === "Item" ? tag.key : `filler-${String(tag.index)}`;
+/**
+ * Answers up to `rounds` commands on `sessionId` as a provider would: an enqueue's clip is Ready
+ * `buildMs` later, a removal or a move applies at once, anything else succeeds. With nothing in
+ * flight, time moves on a second. Each enqueue and removal goes into `log`.
+ */
+const provide = (
+  policy: ReturnType<typeof drive>,
+  sessionId: string,
+  rounds: number,
+  held: Queues,
+  log: Array<string>,
+  buildMs = 2_000,
+): void => {
+  const show = (time?: number) => {
+    held.orders.push(held.ready.map((value) => value.clipId));
+    policy.observe(
+      {
+        ready: [...held.ready],
+        playing: held.playing,
+        continuable: [...held.ready, ...(held.playing === undefined ? [] : [held.playing])].map(
+          (value) => value.clipId,
+        ),
+      },
+      sessionId,
+      time,
+    );
+  };
+  for (let round = 0; round < rounds; round++) {
+    const busy = policy.busy(sessionId);
+    if (busy === undefined) {
+      policy.tick(policy.now() + 1_000);
+      if (policy.busy(sessionId) === undefined) return;
+      continue;
+    }
+    switch (busy._tag) {
+      case "Enqueue": {
+        const name = nameOf(busy.tag);
+        const clipId = `c-${name}-${String(held.made++)}`;
+        log.push(
+          `enqueue ${name}${busy.continueFrom === undefined ? "" : ` from ${busy.continueFrom}`}`,
+        );
+        policy.reply({ _tag: "Done", clipId }, undefined, sessionId);
+        held.ready = [...held.ready, clip(clipId, busy.tag, busy.request.seconds)];
+        show(policy.now() + buildMs);
+        break;
+      }
+      case "Remove": {
+        log.push(`remove ${busy.clipId}`);
+        policy.reply({ _tag: "Done" }, undefined, sessionId);
+        held.ready = held.ready.filter((value) => value.clipId !== busy.clipId);
+        show();
+        break;
+      }
+      case "Move": {
+        policy.reply({ _tag: "Done" }, undefined, sessionId);
+        const moved = held.ready.find((value) => value.clipId === busy.clipId);
+        if (moved !== undefined) {
+          held.ready = held.ready.filter((value) => value !== moved);
+          held.ready.splice(busy.position, 0, moved);
+        }
+        show();
+        break;
+      }
+      default:
+        policy.reply({ _tag: "Done" }, undefined, sessionId);
+    }
+  }
 };
 
 describe("PlayoutPolicy", () => {
@@ -2543,5 +2623,95 @@ describe("PlayoutPolicy, edit claims", () => {
     policy.reply({ _tag: "Done", clipId: "c-c" });
     const moves = commands(policy.actions).filter((action) => action.command._tag === "Move");
     assert.deepStrictEqual(moves.at(-1)?.command, { _tag: "Move", clipId: "c-b", position: 0 });
+  });
+});
+
+describe("PlayoutPolicy, groups", () => {
+  const group = (
+    lane = 1,
+    names: ReadonlyArray<string> = ["p1", "p2", "p3"],
+  ): Policy.EditInput => ({
+    _tag: "SubmitGroup",
+    key: key("g"),
+    lane,
+    parts: names.map((name) => spec(name, lane)),
+    fingerprint: "g",
+  });
+
+  // A pending batch holds what it adds, a group's first part among them. The part waiting behind it
+  // counted no air ahead of it, so it was taken off and built again while the batch waited.
+  it("builds each part of a group in a pending batch once, while its first part is held", () => {
+    const lanes: Policy.Config = {
+      ...config,
+      lanes: [...config.lanes, { name: "news", conflict: "replace", cut: false }],
+    };
+    for (const [how, lane, batch] of [
+      ["in a replace lane", 2, false],
+      ["in a batched edit", 1, true],
+    ] as const) {
+      const policy = drive({ config: lanes });
+      policy.tick(0);
+      policy.open("s1");
+      policy.submit(spec("x", 1, 60));
+      policy.reply({ _tag: "Done", clipId: "c-x" });
+      const x = clip("c-x", item("x"), 60);
+      policy.observe({ ready: [x] }, "s1");
+      policy.event({ _tag: "Started", clip: x }, "s1", 100);
+      policy.observe({ playing: x }, "s1", 101);
+      // A replacement opens and takes new work, with autoplay off: what it builds waits there.
+      policy.send({ _tag: "Opened", sessionId: "s2", lifetimeMs: 600_000 }, 200);
+      policy.observe({}, "s2", 201);
+      for (let round = 0; round < 3 && policy.busy("s2")?._tag === "Autoplay"; round++)
+        policy.reply({ _tag: "Done" }, undefined, "s2");
+      policy.edit([group(lane)], batch, 300);
+      const log: Array<string> = [];
+      provide(policy, "s2", 30, queues(), log);
+      assert.deepStrictEqual(log, ["enqueue p1", "enqueue p2", "enqueue p3"], how);
+    }
+  });
+
+  // A part waiting behind the first, which waits for its time, counted that part as air only once
+  // its time had come: 1.5 s before the clip on air ended, it was taken off and built again.
+  it("builds a group's second part once while its first waits Ready for its time", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("x", 1, 10), 10);
+    policy.reply({ _tag: "Done", clipId: "c-x" });
+    const x = clip("c-x", item("x"), 10);
+    policy.observe({ ready: [x] }, "s1", 2_010);
+    policy.event({ _tag: "Started", clip: x }, "s1", 3_000);
+    policy.observe({ playing: x }, "s1", 3_001);
+    // It starts at x's end.
+    policy.edit(
+      [
+        {
+          _tag: "SubmitGroup",
+          key: key("g"),
+          lane: 1,
+          parts: [
+            { ...spec("p1"), start: { _tag: "At", time: 13_000, late: "nextBoundary" } },
+            spec("p2"),
+          ],
+          fingerprint: "g",
+        },
+      ],
+      false,
+      3_100,
+    );
+    const held = queues(x);
+    const log: Array<string> = [];
+    provide(policy, "s1", 4, held, log);
+    policy.tick(11_400);
+    provide(policy, "s1", 4, held, log);
+    policy.tick(12_900);
+    provide(policy, "s1", 4, held, log);
+    assert.deepStrictEqual(log, ["enqueue p1", "enqueue p2"]);
+    for (const order of held.orders) {
+      const first = order.findIndex((clipId) => clipId.startsWith("c-p1-"));
+      const second = order.findIndex((clipId) => clipId.startsWith("c-p2-"));
+      if (first >= 0 && second >= 0)
+        assert.isBelow(first, second, `p2 queued ahead of p1: ${order.join(", ")}`);
+    }
   });
 });

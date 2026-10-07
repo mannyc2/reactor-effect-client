@@ -3404,7 +3404,7 @@ const decide = <Req extends ClipRequest>(
       if (item?.phase !== "Ready") continue;
       // An item waiting for the clip it follows would air before that clip.
       const pair = heldForFollows(item);
-      const exposed = exposure(value, item, readyAheadMs(value, index));
+      const exposed = exposure(value, item, index);
       if (exposed && pair && item.withdraw === undefined) {
         withdraw(item.spec.key, "displaced");
         return decideCommand(sessionId);
@@ -3795,14 +3795,37 @@ const decide = <Req extends ClipRequest>(
     return at === undefined || covered(item) ? undefined : at - runwayTerms().seconds * 1000;
   }
   /**
-   * Whether `item`, Ready on `value` behind `readyMs` of Ready air, must leave its queue now: held,
-   * or waiting behind an earlier member of its group, and about to be next; waiting for the clip it
-   * follows and about to air before it; or an `At` item Ready too early.
+   * Whether `item`, Ready on `value` at `index`, has a member it waits behind Ready ahead of it
+   * there, held or not: it cannot air before that one, and is never taken off while one is there.
    */
-  function exposure(value: Session<Req>, item: Item<Req>, readyMs: number): boolean {
+  function holderAhead(value: Session<Req>, index: number, item: Item<Req>): boolean {
+    if (item.group === undefined) return false;
+    const ahead = readyOf(value).slice(0, index);
+    for (const key of roster.members(item.group.key)) {
+      const other = items.get(key);
+      if (
+        other?.phase === "Ready" &&
+        other.sessionId === value.id &&
+        holds(roster, other, item) &&
+        ahead.some((clip) => clip.clipId === other.clipId)
+      )
+        return true;
+    }
+    return false;
+  }
+  /**
+   * Whether `item`, Ready on `value` at `index`, must leave its queue now: held, or waiting behind
+   * an earlier member of its group with none of those Ready ahead of it, and about to be next;
+   * waiting for the clip it follows and about to air before it; or an `At` item Ready too early.
+   */
+  function exposure(value: Session<Req>, item: Item<Req>, index: number): boolean {
+    const readyMs = readyAheadMs(value, index);
     const aheadMs = playingRestMs(value) + readyMs;
     if (item.mode === "held" || behindInGroup(roster, item))
-      return aheadMs < exposureMarginMs || now.mono >= (exposedAt(value, readyMs) ?? Infinity);
+      return (
+        !holderAhead(value, index, item) &&
+        (aheadMs < exposureMarginMs || now.mono >= (exposedAt(value, readyMs) ?? Infinity))
+      );
     if (heldForFollows(item))
       return (
         pairAheadMs(value, readyMs) < exposureMarginMs ||
@@ -5079,9 +5102,9 @@ const decide = <Req extends ClipRequest>(
       later(value.moveRetryAt);
       for (const [index, clip] of readyOf(value).entries()) {
         const item = itemOf(clip);
-        if (item?.phase === "Ready" && (item.mode === "held" || behindInGroup(roster, item)))
-          later(exposedAt(value, readyAheadMs(value, index)));
-        else if (item?.phase === "Ready" && heldForFollows(item))
+        if (item?.phase === "Ready" && (item.mode === "held" || behindInGroup(roster, item))) {
+          if (!holderAhead(value, index, item)) later(exposedAt(value, readyAheadMs(value, index)));
+        } else if (item?.phase === "Ready" && heldForFollows(item))
           later(pairExposedAt(value, readyAheadMs(value, index)));
       }
     }
