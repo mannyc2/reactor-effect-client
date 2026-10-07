@@ -41,9 +41,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A part's replacement that lost its race to the part withdrew the rest of the group, though the part was on air. A place, a part with its replacements, now ends its group only when none of it can air in order any more, or once it failed on air.
 - A group now honours its lane's `skip` and `replace` rules: a new group is refused with `LaneBusy` by a busy lane that skips, and takes the place of what waits in a lane that replaces.
 - A replacement of a group's first part did not take the group's window, so it could air before the group's `notBeforeMs`. A part's replacement now takes its part's start, window and the clip it follows, never its own.
-
-### Fixed
-
 - A replacement whose item started first could air after it, though `replace` drops it as `withdrawn`. A removal of its clip refused while H3 would start that clip next was asked again only once the session's queues changed, and that change was the clip's start: its build ending with nothing playing, or the clip ahead of it ending. A session taking the air also turned autoplay on before it removed such a clip, and H3 arms its Ready head as autoplay comes on. Such a removal now goes again at once, and before autoplay comes on.
 
 ### Documentation
