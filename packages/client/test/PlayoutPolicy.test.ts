@@ -127,6 +127,12 @@ interface Queues {
   readonly orders: Array<ReadonlyArray<string>>;
 }
 const queues = (playing?: SourceClip): Queues => ({ ready: [], playing, made: 0, orders: [] });
+/** The Ready clip of the item `name` in `held`. */
+const readyIn = (held: Queues, name: string): SourceClip => {
+  const found = held.ready.find((value) => value.tag?._tag === "Item" && value.tag.key === name);
+  if (found === undefined) throw new Error(`${name} is not Ready`);
+  return found;
+};
 const nameOf = (tag: ClipTag): string =>
   tag._tag === "Item" ? tag.key : `filler-${String(tag.index)}`;
 /**
@@ -2881,5 +2887,64 @@ describe("PlayoutPolicy, groups", () => {
       },
     ]);
     assert.isFalse(actions.some((action) => action._tag === "Refused"));
+  });
+
+  // An insert whose continued build continues from a later part's clip airs right behind that
+  // part, so it sits there in its group: when that part's place breaks, it goes with the members
+  // after it. It stayed, by its own earlier order, and aired alone after its group ended.
+  it("withdraws an insert seated behind a part whose place breaks", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    policy.edit(
+      [
+        {
+          _tag: "SubmitGroup",
+          key: key("g"),
+          lane: 1,
+          parts: [spec("p1"), spec("p2"), spec("p3")],
+          fingerprint: "g",
+        },
+      ],
+      false,
+      10,
+    );
+    const log: Array<string> = [];
+    const held = queues();
+    provide(policy, "s1", 1, held, log);
+    // p1 airs; p2 and p3 are built behind it, Ready while most of p1's 5 s is left.
+    const p1 = readyIn(held, "p1");
+    held.ready = held.ready.filter((value) => value !== p1);
+    held.playing = p1;
+    policy.event({ _tag: "Started", clip: p1 }, "s1", policy.now() + 10);
+    policy.observe({ ready: held.ready, playing: p1, continuable: [p1.clipId] });
+    provide(policy, "s1", 2, held, log, 300);
+    const p2 = readyIn(held, "p2");
+    const before = policy.actions.length;
+    policy.edit([
+      {
+        _tag: "Insert",
+        spec: { ...spec("xc"), continuity: true },
+        anchor: key("p2"),
+        side: "before",
+      },
+    ]);
+    const enqueue = commands(policy.actions.slice(before)).find(
+      (action) => action.command._tag === "Enqueue",
+    )?.command;
+    // Ready only after p1 ends, xc continues from p2's clip instead, right behind p2.
+    assert.deepStrictEqual(
+      enqueue?._tag === "Enqueue" ? [enqueue.tag, enqueue.continueFrom] : enqueue,
+      [item("xc"), p2.clipId],
+    );
+    policy.reply({ _tag: "Done", clipId: "c-xc" });
+    policy.observe({ ready: held.ready, playing: p1, building: [clip("c-xc", item("xc"))] });
+    // p2's clip fails, and its place, which had nothing else, is broken.
+    policy.event(buildFailed(p2));
+    held.ready = [...held.ready.filter((value) => value !== p2), clip("c-xc", item("xc"))];
+    policy.observe({ ready: held.ready, playing: p1 });
+    const items = policy.state().items;
+    assert.strictEqual(items.get(key("p3"))?.withdraw, "withdrawn");
+    assert.strictEqual(items.get(key("xc"))?.withdraw, "withdrawn");
   });
 });

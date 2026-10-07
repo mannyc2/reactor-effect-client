@@ -1237,17 +1237,19 @@ const decide = <Req extends ClipRequest>(
       return other !== undefined && !other.inserted && other.group?.index === index ? [other] : [];
     });
   /**
-   * Withdraws every member of the group `key` after its place `index` once that place is broken:
-   * the group can no longer air in order, or a part of it failed on air. Its own items stay as
-   * they are: an `Unknown` one is never sent again, and airs alone if a queue read lists it.
+   * Withdraws every member of the group `key` seated after its place `index` once that place is
+   * broken: the group can no longer air in order, or a part of it failed on air. Its own items
+   * stay as they are: an `Unknown` one is never sent again, and airs alone if a queue read lists
+   * it.
    */
   const breakAfter = (key: ItemKey, index: number): void => {
     const placed = placeOf(key, index);
-    const order = placed[0]?.order;
-    if (order === undefined || !brokenPlace(placed)) return;
+    const first = placed[0];
+    if (first === undefined || !brokenPlace(placed)) return;
+    const seat = seatOf(roster, first);
     for (const member of [...roster.members(key)]) {
       const other = items.get(member);
-      if (other !== undefined && other.order > order && live(other))
+      if (other !== undefined && live(other) && compareSeat(seatOf(roster, other), seat) > 0)
         withdraw(other.spec.key, "withdrawn");
     }
   };
@@ -4548,7 +4550,7 @@ const decide = <Req extends ClipRequest>(
       return Math.min(own, firm);
     };
     // As `breakAfter`: an item goes, and once its place is broken in the run, none of its items
-    // aired or may still air, every member of its group after that place goes with it.
+    // aired or may still air, every member of its group seated after that place goes with it.
     const drop = (item: PlanItem): void => {
       if (gone.has(item)) return;
       gone.add(item);
@@ -4561,10 +4563,11 @@ const decide = <Req extends ClipRequest>(
         !placed.some((other) => done.has(other) || startedOrUnseen(other)) &&
         !placed.some((other) => !gone.has(other) && liveAndKnown(other));
       if (!broken) return;
+      const seat = seatOf(roster, item);
       for (const other of membersIn(group.key))
         if (
           live(other) &&
-          other.order > item.order &&
+          compareSeat(seatOf(roster, other), seat) > 0 &&
           !done.has(other) &&
           other.phase !== "Started" &&
           other.startedAt === undefined
