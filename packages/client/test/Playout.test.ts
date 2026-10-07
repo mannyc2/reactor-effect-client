@@ -649,6 +649,32 @@ layer(hosted)("edits", (it) => {
     }),
   );
 
+  it.effect("a group is refused in a skip lane while the lane is busy", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const line = {
+        key: key("line"),
+        lane: "quiet",
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      } as const;
+      const once = yield* playout.submitGroup(line);
+      // Submitted again, it is the group the lane holds, answered as it was.
+      const again = yield* playout.submitGroup(line);
+      assert.strictEqual(again.key, once.key);
+      const busy = yield* Effect.flip(
+        playout.submitGroup({
+          key: key("next"),
+          lane: "quiet",
+          parts: [{ key: key("n1"), request: clip("n1") }],
+        }),
+      );
+      assert.strictEqual(busy._tag, "LaneBusy");
+    }),
+  );
+
   // A caller retrying an insert whose first attempt landed gets that insert, not a refusal.
   it.effect("answers an insert made again once its anchor has aired with its own handle", () =>
     Effect.gen(function* () {

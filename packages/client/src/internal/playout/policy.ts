@@ -1354,6 +1354,10 @@ const decide = <Req extends ClipRequest>(
     heldBack(item) ? [lanes + 1, 1, item.order, item.generation] : airRank(item);
   const heldForFollows = (item: Item<Req>): boolean => followHeldOf(items, item);
   const cuts = (item: PlanItem): boolean => config.lanes[item.spec.lane]?.cut === true;
+  /** Whether a lane that skips while busy refuses what is new: it has an item waiting or playing. */
+  const laneBusy = (lane: number): boolean =>
+    config.lanes[lane]?.conflict === "skip" &&
+    [...items.values()].some((item) => item.spec.lane === lane && live(item));
   /** Why a clip `key` would follow could never air before it, or undefined. */
   const followsIssue = (key: ItemKey, follows: ClipTag | undefined): string | undefined => {
     if (follows === undefined) return undefined;
@@ -1761,14 +1765,12 @@ const decide = <Req extends ClipRequest>(
           key: edit.key,
           message: "no waiting item has this key",
         });
-      if (edit._tag === "Submit" && !items.has(edit.spec.key)) {
-        const lane = config.lanes[edit.spec.lane];
-        if (
-          lane?.conflict === "skip" &&
-          [...items.values()].some((item) => item.spec.lane === edit.spec.lane && live(item))
-        )
-          return refuse({ _tag: "LaneBusy", key: edit.spec.key, lane: edit.spec.lane });
-      }
+      // A new item or group is refused by a lane that skips while busy; one admitted already is
+      // answered as it is.
+      if (edit._tag === "Submit" && !items.has(edit.spec.key) && laneBusy(edit.spec.lane))
+        return refuse({ _tag: "LaneBusy", key: edit.spec.key, lane: edit.spec.lane });
+      if (edit._tag === "SubmitGroup" && !groups.has(edit.key) && laneBusy(edit.lane))
+        return refuse({ _tag: "LaneBusy", key: edit.key, lane: edit.lane });
     }
     // An edit refused below, as an item it adds would miss its deadline, leaves the plan as it was.
     const saved = { items: new Map(items), groups: new Map(groups), nextOrder: state.nextOrder };
@@ -1784,23 +1786,28 @@ const decide = <Req extends ClipRequest>(
       adds.push(item.spec.key);
       state = { ...state, nextOrder: state.nextOrder + 1 };
     };
+    /**
+     * What a new item or group in a lane that replaces does: it takes the place of the items
+     * waiting there, which stay as cover until it is Ready and then go as `replaced`.
+     */
+    const replaceWaiting = (lane: number): void => {
+      if (config.lanes[lane]?.conflict !== "replace") return;
+      batched = true;
+      for (const other of items.values())
+        if (
+          other.spec.lane === lane &&
+          (other.phase === "Accepted" ||
+            other.phase === "Building" ||
+            other.phase === "Ready" ||
+            other.phase === "Unknown")
+        )
+          targets.push({ key: other.spec.key, index: -1, reason: "replaced" });
+    };
     for (const [index, edit] of edits.entries()) {
       switch (edit._tag) {
         case "Submit": {
           if (!items.has(edit.spec.key)) {
-            const lane = config.lanes[edit.spec.lane];
-            if (lane?.conflict === "replace") {
-              batched = true;
-              for (const other of items.values())
-                if (
-                  other.spec.lane === edit.spec.lane &&
-                  (other.phase === "Accepted" ||
-                    other.phase === "Building" ||
-                    other.phase === "Ready" ||
-                    other.phase === "Unknown")
-                )
-                  targets.push({ key: other.spec.key, index: -1, reason: "replaced" });
-            }
+            replaceWaiting(edit.spec.lane);
             put(newItem(edit.spec));
           }
           results.push({ _tag: "Added", key: edit.spec.key });
@@ -1808,6 +1815,7 @@ const decide = <Req extends ClipRequest>(
         }
         case "SubmitGroup": {
           if (!groups.has(edit.key)) {
+            replaceWaiting(edit.lane);
             groups.set(edit.key, {
               fingerprint: edit.fingerprint,
               parts: edit.parts.map((part) => part.key),
@@ -4215,11 +4223,7 @@ const decide = <Req extends ClipRequest>(
     const lowest = config.lanes[lanes - 1];
     if (
       anchor === undefined &&
-      (lowest === undefined ||
-        lowest.cut ||
-        lowest.conflict === "replace" ||
-        (lowest.conflict === "skip" &&
-          [...items.values()].some((item) => item.spec.lane === lanes - 1 && live(item))))
+      (lowest === undefined || lowest.cut || lowest.conflict === "replace" || laneBusy(lanes - 1))
     )
       return undefined;
     const spec: PlanSpec = {
