@@ -3429,6 +3429,29 @@ describe("PlayoutPolicy, groups", () => {
     assert.deepStrictEqual(policy.busy("s2"), { _tag: "Autoplay", enabled: true });
   });
 
+  // s1 is lost with p1 on air: p1 fails, its place breaks, and p2, Ready at the head of s2 as s2
+  // takes the air, is withdrawn. Its removal held autoplay off for as long as it was refused: a
+  // provider that kept refusing it kept the air dark.
+  it("holds autoplay off for a refused removal a second at most, and asks for it still", () => {
+    const { policy } = acrossRenewal();
+    const x = clip("c-x", item("x"), 60);
+    const p1 = clip("c-p1", item("p1"), 1);
+    policy.event({ _tag: "Ended", clip: x, termination: "finished" }, "s1", 60_100);
+    policy.event({ _tag: "Started", clip: p1 }, "s1", 60_140);
+    policy.observe({ playing: p1 }, "s1", 60_141);
+    policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" }, 60_500);
+    assert.deepStrictEqual(statuses(policy.actions, "p2").at(-1), "Ready");
+    assert.strictEqual(policy.state().items.get(key("p2"))?.withdraw, "withdrawn");
+    for (const at of [60_600, 60_900, 61_200, 61_500])
+      if (policy.busy("s2")?._tag === "Remove") policy.reply(failed("replied"), at, "s2");
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-p2" });
+    // A second after the first refusal, autoplay goes on, and the removal is asked again.
+    policy.reply(failed("replied"), 61_600, "s2");
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Autoplay", enabled: true });
+    policy.reply({ _tag: "Done" }, 61_610, "s2");
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-p2" });
+  });
+
   // Refused, the removal of a clip taken off was never asked again, and autoplay came on with it at
   // the head: H3 started p2 before p1.
   it("asks again for a refused removal of a part taken off before autoplay comes on", () => {

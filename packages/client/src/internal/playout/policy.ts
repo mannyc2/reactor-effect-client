@@ -391,6 +391,11 @@ interface Session<Req extends ClipRequest = Request> {
   readonly blockedMove: string | undefined;
   /** No move goes out before it: one whose command died is asked again a second later. */
   readonly moveRetryAt: number;
+  /**
+   * When the removals it refused one after another began, until one applies or none is due: a
+   * removal due holds its autoplay off for at most `refusalHoldMs` of them.
+   */
+  readonly refusedSince?: number | undefined;
   /** The command in flight on its lane, which carries its commands one at a time. */
   readonly busy: { readonly id: number; readonly command: Command<Req> } | undefined;
   /** When its latest filler enqueue went out and the seconds it asked for, unless refused. */
@@ -592,6 +597,11 @@ const retryDelayMs = 1_000;
 const setupDelayMs = <Req extends ClipRequest>(config: Config<Req>, consecutive: number): number =>
   retryDelayMs * Math.min(consecutive, Math.max(1, config.maxSetupFailures));
 const cutMarginMs = 1_000;
+/**
+ * How long removals refused one after another hold a session's autoplay off: a provider that
+ * kept refusing one would otherwise leave the air dark.
+ */
+const refusalHoldMs = 1_000;
 const exposureMarginMs = 1_500;
 const lookaheadMarginSeconds = 1;
 /**
@@ -2822,6 +2832,9 @@ const decide = <Req extends ClipRequest>(
         // A removal whose outcome is unknown goes again at once: if it applied, the next is
         // refused, and the clip is gone. One refused goes again once the queues change.
         const unknown = result._tag === "Failed" && result.cause.context.outcome === "unknown";
+        if (result._tag === "Done") updateSession(sessionId, { refusedSince: undefined });
+        else if (!unknown)
+          updateSession(sessionId, { refusedSince: lane.refusedSince ?? now.mono });
         if (owner === undefined) {
           if (result._tag === "Done") {
             // A clip taken back from its item is gone, though a read may still list it.
@@ -3571,13 +3584,14 @@ const decide = <Req extends ClipRequest>(
     const autoplay =
       value.wantAutoplay && state.cutting?.sessionId !== value.id && !(guarded && fenceable);
     const removal = removalDue(value, autoplay);
-    // A clip the plan withdrew, or a waiting member H3 would start first, is removed before autoplay
-    // comes on: H3 arms its Ready head then, and starts a clip as its build ends.
-    if (
-      value.source?.available === true &&
-      value.autoplay !== autoplay &&
-      !(autoplay && removal !== undefined)
-    ) {
+    if (removal === undefined && value.refusedSince !== undefined)
+      updateSession(value.id, { refusedSince: undefined });
+    // A clip the plan withdrew or took back, or a waiting member H3 would start first, is removed
+    // before autoplay comes on: H3 arms its Ready head then, and starts a clip as its build ends.
+    // Refused again and again, the removal holds autoplay off a second at most, and goes on.
+    const holds =
+      removal !== undefined && now.mono < (value.refusedSince ?? Infinity) + refusalHoldMs;
+    if (value.source?.available === true && value.autoplay !== autoplay && !(autoplay && holds)) {
       // Nothing else goes before it, even while a failed one waits to be asked again.
       const retry = value.autoplayRetry;
       if (retry === undefined || retry.enabled !== autoplay || now.mono >= retry.at)
@@ -5488,6 +5502,8 @@ const decide = <Req extends ClipRequest>(
       later(value.autoplayRetry?.at);
       later(value.playRetry?.at);
       later(value.moveRetryAt);
+      if (value.refusedSince !== undefined && value.autoplay !== true)
+        later(value.refusedSince + refusalHoldMs);
       let airing: ReadonlySet<SourceClip> | undefined;
       for (const [index, clip] of readyOf(value).entries()) {
         const item = itemOf(clip);
