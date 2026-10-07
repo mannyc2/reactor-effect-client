@@ -51,6 +51,7 @@ export const packages = Object.freeze([
       "./FastH3",
       "./FastH3Source",
       "./Ledger",
+      "./References",
     ],
     dependsOn: [],
   },
