@@ -22,6 +22,7 @@ import type {
   ClipTag,
   Event,
   FillContext,
+  GroupOutcome,
   NotStarted,
   Placement,
   PlayingClip,
@@ -207,8 +208,16 @@ export type Action<Req extends ClipRequest = Request> =
       readonly cause: "filler";
       readonly index: number;
     }
-  /** Settled keys the history bound dropped: they may be submitted afresh. */
-  | { readonly _tag: "Forget"; readonly keys: ReadonlyArray<ItemKey> };
+  /** Settled keys the history bound dropped, group keys too: they may be submitted afresh. */
+  | { readonly _tag: "Forget"; readonly keys: ReadonlyArray<ItemKey> }
+  /** A group's first place started, or settled without a start. */
+  | {
+      readonly _tag: "GroupStarted";
+      readonly key: ItemKey;
+      readonly started: Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted;
+    }
+  /** Every place of a group has settled. */
+  | { readonly _tag: "GroupSettled"; readonly key: ItemKey; readonly outcome: GroupOutcome };
 
 export interface Config<Req extends ClipRequest = Request> {
   /** The length a request without `seconds` is planned at: its model's default. */
@@ -408,12 +417,24 @@ interface Batch {
   }>;
 }
 
+/**
+ * A group: its parts and their replacements, and what became of each place, kept as history
+ * forgets the parts.
+ */
+interface Group {
+  readonly fingerprint: string;
+  readonly parts: ReadonlyArray<ItemKey>;
+  /** Each place's outcome, once nothing of it can change. */
+  readonly places: ReadonlyArray<Settled | undefined>;
+  /** Its first place's start, or how that place settled without one, once it went out. */
+  readonly first?: Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted | undefined;
+  /** Its outcome went out. */
+  readonly settled?: true | undefined;
+}
+
 export interface State<Req extends ClipRequest = Request> {
   readonly items: ReadonlyMap<ItemKey, Item<Req>>;
-  readonly groups: ReadonlyMap<
-    ItemKey,
-    { readonly fingerprint: string; readonly parts: ReadonlyArray<ItemKey> }
-  >;
+  readonly groups: ReadonlyMap<ItemKey, Group>;
   readonly settled: ReadonlyArray<ItemKey>;
   readonly nextOrder: number;
   readonly sessions: ReadonlyArray<Session<Req>>;
@@ -1170,23 +1191,83 @@ const decide = <Req extends ClipRequest>(
     const outcome = fateOf({ ...item, status });
     for (const wait of item.waiting) answer(wait, outcome);
     state = { ...state, settled: [...state.settled, key] };
-    if (item.group !== undefined && !item.inserted) breakAfter(item.group.key, item.group.index);
+    if (item.group === undefined || item.inserted) return;
+    breakAfter(item.group.key, item.group.index);
+    recordPlace(item.group.key, item.group.index);
   };
+  /** The items of a group's place: its part and the replacements that took its place. */
+  const placeOf = (key: ItemKey, index: number): ReadonlyArray<Item<Req>> =>
+    (groups.get(key)?.parts ?? []).flatMap((part) => {
+      const other = items.get(part);
+      return other !== undefined && !other.inserted && other.group?.index === index ? [other] : [];
+    });
   /**
    * Withdraws every member of the group `key` after its place `index` once that place is broken:
    * the group can no longer air in order, or a part of it failed on air. Its own items stay as
    * they are: an `Unknown` one is never sent again, and airs alone if a queue read lists it.
    */
   const breakAfter = (key: ItemKey, index: number): void => {
-    const placed = (groups.get(key)?.parts ?? []).flatMap((part) => {
-      const other = items.get(part);
-      return other !== undefined && !other.inserted && other.group?.index === index ? [other] : [];
-    });
+    const placed = placeOf(key, index);
     const order = placed[0]?.order;
     if (order === undefined || !brokenPlace(placed)) return;
     for (const other of [...items.values()])
       if (other.group?.key === key && other.order > order && live(other))
         withdraw(other.spec.key, "withdrawn");
+  };
+  /**
+   * What became of a place once nothing of it can change: what its item that started settled as,
+   * if one did; else, once none is live, what its newest item settled as.
+   */
+  const placeOutcome = (placed: ReadonlyArray<Item<Req>>): Settled | undefined => {
+    const aired = placed.find((item) => item.startedAt !== undefined || item.phase === "Started");
+    if (aired !== undefined)
+      return aired.phase === "Settled" && aired.status !== undefined
+        ? decides(aired.status).outcome
+        : undefined;
+    if (placed.length === 0 || placed.some(live)) return undefined;
+    const newest = placed.reduce((latest, item) =>
+      item.generation >= latest.generation ? item : latest,
+    );
+    return newest.status === undefined ? undefined : decides(newest.status).outcome;
+  };
+  /**
+   * Records what became of a group's place once nothing of it can change, kept as history forgets
+   * its items, and sends the group's start once its first place settled without one, and its
+   * outcome once every place has settled.
+   */
+  const recordPlace = (key: ItemKey, index: number): void => {
+    const group = groups.get(key);
+    const outcome = placeOutcome(placeOf(key, index));
+    if (group === undefined || outcome === undefined || group.places[index] !== undefined) return;
+    const places = group.places.map((place, at) => (at === index ? outcome : place));
+    groups.set(key, { ...group, places });
+    const first = places[0] === undefined ? undefined : decides(places[0]).started;
+    if (first !== undefined) groupStarted(key, first);
+    groupSettled(key);
+  };
+  /** Sends a group's start once: its first place's start, or how that place settled without one. */
+  const groupStarted = (
+    key: ItemKey,
+    started: Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted,
+  ): void => {
+    const group = groups.get(key);
+    if (group === undefined || group.first !== undefined) return;
+    groups.set(key, { ...group, first: started });
+    actions.push({ _tag: "GroupStarted", key, started });
+  };
+  /** Sends a group's outcome, once, when every place has settled. */
+  const groupSettled = (key: ItemKey): void => {
+    const group = groups.get(key);
+    if (group?.first === undefined || group.settled === true) return;
+    const places = group.places.flatMap((place) => (place === undefined ? [] : [place]));
+    const [head, ...rest] = places;
+    if (head === undefined || places.length < group.places.length) return;
+    groups.set(key, { ...group, settled: true });
+    actions.push({
+      _tag: "GroupSettled",
+      key,
+      outcome: groupOutcome(group.first, [head, ...rest]),
+    });
   };
 
   /**
@@ -1730,6 +1811,7 @@ const decide = <Req extends ClipRequest>(
             groups.set(edit.key, {
               fingerprint: edit.fingerprint,
               parts: edit.parts.map((part) => part.key),
+              places: edit.parts.map(() => undefined),
             });
             // The group's time is its first part's: the rest follow it, with none of their own.
             edit.parts.forEach((part, partIndex) => {
@@ -1987,16 +2069,20 @@ const decide = <Req extends ClipRequest>(
       withdraw: undefined,
       airSeconds: clip.seconds,
     });
-    asRun(clip.tag.key, {
+    const status: Extract<AsRunStatus, { readonly _tag: "Started" }> = {
       _tag: "Started",
       at: now.wall,
       sessionId,
       // A clip the provider named without its length is counted at the length its model builds.
       seconds: clip.seconds ?? config.builtSeconds(item.spec.seconds),
       ...(late === undefined ? {} : { lateByMillis: Math.round(late) }),
-    });
+    };
+    asRun(clip.tag.key, status);
     // A withdrawal that waited on it is too late: it answers now, not when the clip ends.
     for (const wait of item.waiting) answer(wait, "already-started");
+    // A group starts with its first place, whichever of its items starts.
+    if (item.group !== undefined && !item.inserted && item.group.index === 0)
+      groupStarted(item.group.key, status);
   };
   const forgetFiller = (sessionId: string, clipId: string): void =>
     updateSession(sessionId, {
@@ -2752,7 +2838,7 @@ const decide = <Req extends ClipRequest>(
   }
   if (state.closed) {
     if (input._tag === "Place") actions.push({ _tag: "Placed", id: input.id, placement: null });
-    return { state: { ...state, items }, actions, wake: undefined };
+    return { state: { ...state, items, groups }, actions, wake: undefined };
   }
 
   // Sweep every waiting item, not only the heads: expiry must not strand behind a live one. Each
@@ -2977,13 +3063,16 @@ const decide = <Req extends ClipRequest>(
   if (input._tag === "Place")
     actions.push({ _tag: "Placed", id: input.id, placement: place(input.probe) });
 
-  // History: settled keys past the bound are forgotten, oldest first.
+  // History: settled keys past the bound are forgotten, oldest first, and a group with the last of
+  // its parts.
   if (state.settled.length > config.maxHistory) {
     const drop = state.settled.slice(0, state.settled.length - config.maxHistory);
     for (const key of drop) items.delete(key);
-    actions.push({ _tag: "Forget", keys: drop });
-    for (const [group, value] of groups)
-      if (value.parts.every((part) => !items.has(part))) groups.delete(group);
+    const forgotten = [...groups].flatMap(([group, value]) =>
+      value.parts.every((part) => !items.has(part)) ? [group] : [],
+    );
+    for (const group of forgotten) groups.delete(group);
+    actions.push({ _tag: "Forget", keys: [...drop, ...forgotten] });
     state = { ...state, settled: state.settled.slice(drop.length) };
   }
 
@@ -5081,5 +5170,37 @@ export const decides = (
       return status.terminal === true ? { started: indeterminate, outcome: indeterminate } : {};
     default:
       return {};
+  }
+};
+
+/**
+ * How a group settled, by its first place's start, not by how that place settled: one that
+ * started and then failed aired. It played out the places, in order, that ended as finished or
+ * may have aired unseen, up to the first that did not.
+ */
+const groupOutcome = (
+  first: Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted,
+  places: readonly [Settled, ...ReadonlyArray<Settled>],
+): GroupOutcome => {
+  switch (first._tag) {
+    case "Started":
+    case "Unobserved": {
+      const stopped = places.findIndex(
+        (place) =>
+          place._tag !== "Unobserved" &&
+          !(place._tag === "Ended" && place.termination === "finished"),
+      );
+      const outcome = places[stopped];
+      return {
+        _tag: "Aired",
+        played: stopped < 0 ? places.length : stopped,
+        stopped: outcome === undefined ? undefined : { part: stopped, outcome },
+        parts: places,
+      };
+    }
+    case "Dropped":
+    case "Failed":
+    case "Unknown":
+      return { _tag: "NotAired", first };
   }
 };

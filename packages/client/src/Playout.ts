@@ -389,7 +389,41 @@ export interface ItemHandle {
 export interface GroupHandle {
   readonly key: ItemKey;
   readonly parts: readonly [ItemHandle, ...ReadonlyArray<ItemHandle>];
+  /** The first place's start, or how the group settled without one. */
+  readonly started: Effect.Effect<Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted>;
+  /** How the group settled, once every place has. */
+  readonly outcome: Effect.Effect<GroupOutcome>;
 }
+
+/**
+ * How a group settled. A place is a part with the replacements that took its place: its outcome
+ * is that of its item that started, if one did, else that of its newest. Items inserted beside
+ * parts are no places.
+ */
+export type GroupOutcome =
+  /** Its first place never started: dropped, failed, or sent with its outcome never known. */
+  | {
+      readonly _tag: "NotAired";
+      readonly first: Exclude<NotStarted, { readonly _tag: "Unobserved" }>;
+    }
+  /** Its first place started, or may have (`Unobserved`). */
+  | {
+      readonly _tag: "Aired";
+      /**
+       * How many places played out, in order, before the first that did not: `Ended` as
+       * `finished`, or `Unobserved`.
+       */
+      readonly played: number;
+      /**
+       * The first place that did not play out, and how it settled; undefined when every place
+       * played out.
+       */
+      readonly stopped: { readonly part: number; readonly outcome: Settled } | undefined;
+      /** Each place's outcome, in order. */
+      readonly parts: readonly [Settled, ...ReadonlyArray<Settled>];
+    }
+  /** The playout stopped before the group settled, as when it crashed: what aired is not known. */
+  | { readonly _tag: "Indeterminate" };
 
 export type EditResult =
   | { readonly _tag: "Added"; readonly handle: ItemHandle }
@@ -842,6 +876,13 @@ export interface Cleanup {
 
 export interface Service<Req extends ClipRequest = Request> {
   readonly submit: (item: ItemSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
+  /**
+   * Parts that air in order, each place, a part and any replacement of it, once the one before it
+   * has started. A place that fails, on air too, is dropped, or is sent with its outcome never
+   * known ends the group: every part and insert after it goes as `withdrawn`. One that may have
+   * aired unseen (`Unobserved`) does not. The handle's `outcome` says how many places played and
+   * where the group stopped.
+   */
   readonly submitGroup: (group: GroupSpec<Req>) => Effect.Effect<GroupHandle, SubmitError>;
   readonly insert: (spec: InsertSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
   /**

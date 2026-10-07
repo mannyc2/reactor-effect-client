@@ -46,6 +46,11 @@ type Handle = {
   readonly started: Deferred.Deferred<Effect.Success<Playout.ItemHandle["started"]>>;
   readonly outcome: Deferred.Deferred<Playout.Settled>;
 };
+/** What a group's handle waits on. */
+type GroupDeferreds = {
+  readonly started: Deferred.Deferred<Effect.Success<Playout.GroupHandle["started"]>>;
+  readonly outcome: Deferred.Deferred<Playout.GroupOutcome>;
+};
 type Reply =
   | { readonly _tag: "Accepted"; readonly results: ReadonlyArray<Policy.EditReply> }
   | { readonly _tag: "Refused"; readonly refusal: Policy.Refusal };
@@ -176,6 +181,7 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
     new Map<number, Deferred.Deferred<Playout.Placement | null>>(),
   );
   const handles = yield* Ref.make(new Map<ItemKey, Handle>());
+  const groupHandles = yield* Ref.make(new Map<ItemKey, GroupDeferreds>());
   const parents = yield* Ref.make(new Map<ItemKey, Tracer.ExternalSpan | undefined>());
   // Each live session's source, the scope it lives in, and its lane: the commands waiting there.
   const sources = yield* Ref.make(
@@ -225,6 +231,18 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       started: Deferred.await(value.started),
       outcome: Deferred.await(value.outcome),
     }));
+  /** A group's start and outcome, which the plan resolves as it decides them. */
+  const groupHandle = (key: ItemKey): Effect.Effect<GroupDeferreds> =>
+    Effect.gen(function* () {
+      const existing = (yield* Ref.get(groupHandles)).get(key);
+      if (existing !== undefined) return existing;
+      const created: GroupDeferreds = {
+        started: yield* Deferred.make<Effect.Success<Playout.GroupHandle["started"]>>(),
+        outcome: yield* Deferred.make<Playout.GroupOutcome>(),
+      };
+      yield* Ref.update(groupHandles, (all) => new Map(all).set(key, created));
+      return created;
+    });
   /** Registers `deferred` under `id` until it is taken, once, to be resolved. */
   const register = <K, D>(registry: Ref.Ref<Map<K, D>>, id: K, deferred: D) =>
     Ref.update(registry, (all) => new Map(all).set(id, deferred));
@@ -554,17 +572,20 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
           if (placed !== undefined) yield* Deferred.succeed(placed, action.placement);
           return;
         }
-        case "Forget":
-          yield* Ref.update(parents, (all) => {
+        case "GroupStarted":
+          return yield* Deferred.succeed((yield* groupHandle(action.key)).started, action.started);
+        case "GroupSettled":
+          return yield* Deferred.succeed((yield* groupHandle(action.key)).outcome, action.outcome);
+        case "Forget": {
+          const forget = <V>(all: Map<ItemKey, V>): Map<ItemKey, V> => {
             const next = new Map(all);
             for (const key of action.keys) next.delete(key);
             return next;
-          });
-          return yield* Ref.update(handles, (all) => {
-            const next = new Map(all);
-            for (const key of action.keys) next.delete(key);
-            return next;
-          });
+          };
+          yield* Ref.update(parents, forget);
+          yield* Ref.update(groupHandles, forget);
+          return yield* Ref.update(handles, forget);
+        }
         case "Fail": {
           const why = yield* failureOf(action);
           yield* Result.isSuccess(why)
@@ -627,6 +648,10 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       for (const value of (yield* Ref.get(handles)).values()) {
         yield* Deferred.succeed(value.started, Policy.indeterminate);
         yield* Deferred.succeed(value.outcome, Policy.indeterminate);
+      }
+      for (const value of (yield* Ref.get(groupHandles)).values()) {
+        yield* Deferred.succeed(value.started, Policy.indeterminate);
+        yield* Deferred.succeed(value.outcome, { _tag: "Indeterminate" });
       }
       yield* Effect.forEach([...(yield* Ref.get(sources)).keys()], closeSource, { discard: true });
     });
@@ -872,16 +897,21 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
                 handle: value,
               }));
             case "AddedGroup":
-              return Effect.map(Effect.forEach(result.parts, itemHandle), (parts) => ({
-                _tag: "AddedGroup",
-                handle: {
-                  key: result.key,
-                  parts: parts as unknown as readonly [
-                    Playout.ItemHandle,
-                    ...Array<Playout.ItemHandle>,
-                  ],
-                },
-              }));
+              return Effect.map(
+                Effect.all([Effect.forEach(result.parts, itemHandle), groupHandle(result.key)]),
+                ([parts, group]) => ({
+                  _tag: "AddedGroup",
+                  handle: {
+                    key: result.key,
+                    parts: parts as unknown as readonly [
+                      Playout.ItemHandle,
+                      ...Array<Playout.ItemHandle>,
+                    ],
+                    started: Deferred.await(group.started),
+                    outcome: Deferred.await(group.outcome),
+                  },
+                }),
+              );
             case "Withdrawal": {
               const outcome = outcomes.get(index);
               const key = edits[index]?._tag === "Withdraw" ? edits[index].key : undefined;
