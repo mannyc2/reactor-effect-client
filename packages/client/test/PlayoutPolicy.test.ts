@@ -2947,4 +2947,38 @@ describe("PlayoutPolicy, groups", () => {
     assert.strictEqual(items.get(key("p3"))?.withdraw, "withdrawn");
     assert.strictEqual(items.get(key("xc"))?.withdraw, "withdrawn");
   });
+
+  // A place has one time, the group's: a replacement of a part takes its part's start, window and
+  // the clip it follows, as admission gives the part, and none of its own.
+  it("gives a part's replacement its part's time, never its own", () => {
+    const policy = drive();
+    policy.tick(0);
+    const own = { follows: item("z"), window: { notBeforeMs: 60_000, firm: false } } as const;
+    // z waits to air, so following it is no cause to drop anything.
+    policy.submit(spec("z"));
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [{ ...spec("p1"), window: { notBeforeMs: 30_000, firm: false } }, spec("p2")],
+        fingerprint: "g",
+      },
+    ]);
+    const timeOf = (name: string) => {
+      const value = policy.state().items.get(key(name));
+      return [value?.spec.follows, value?.spec.window, value?.notBefore, value?.spec.start];
+    };
+    const p1 = timeOf("p1");
+    policy.edit([
+      { _tag: "Replace", key: key("p1"), spec: { ...spec("r1"), ...own, start: { _tag: "Asap" } } },
+      { _tag: "Replace", key: key("p2"), spec: { ...spec("r2"), ...own, start: { _tag: "Asap" } } },
+    ]);
+    assert.deepStrictEqual(timeOf("r1"), p1);
+    assert.deepStrictEqual(timeOf("r2"), [undefined, undefined, undefined, { _tag: "Follow" }]);
+    assert.deepStrictEqual(
+      ["r1", "r2"].map((name) => policy.state().items.get(key(name))?.mode),
+      ["follow", "follow"],
+    );
+  });
 });

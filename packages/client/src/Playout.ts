@@ -887,9 +887,10 @@ export interface Service<Req extends ClipRequest = Request> {
   readonly submitGroup: (group: GroupSpec<Req>) => Effect.Effect<GroupHandle, SubmitError>;
   readonly insert: (spec: InsertSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
   /**
-   * Builds `next` for the item's place, lane, group position and the clip it
-   * `follows`. Once `next` is Ready the item goes as `replaced`; if the item
-   * starts first, `next` is dropped as `withdrawn`.
+   * Builds `next` for the item's place, lane, group position, start and the
+   * clip it `follows`, and for a group's part, its window too: a place has one
+   * time. Once `next` is Ready the item goes as `replaced`; if the item starts
+   * first, `next` is dropped as `withdrawn`.
    */
   readonly replace: (
     key: ItemKey,

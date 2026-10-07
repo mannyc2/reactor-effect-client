@@ -1926,12 +1926,18 @@ const decide = <Req extends ClipRequest>(
         case "Replace": {
           if (!items.has(edit.spec.key)) {
             const old = items.get(edit.key)!;
+            // A part's replacement takes its place's time, the group's: its part's start, window
+            // and the clip it follows, never its own. Any other takes its item's start, and the
+            // clip that item follows if it follows one.
+            const part = old.group !== undefined && !old.inserted;
+            const { window: _window, follows: _follows, ...untimed } = edit.spec;
             put(
               newItem(
                 {
-                  ...edit.spec,
+                  ...(part ? untimed : edit.spec),
                   lane: old.spec.lane,
                   start: old.spec.start,
+                  ...(part && old.spec.window !== undefined ? { window: old.spec.window } : {}),
                   ...(old.spec.follows === undefined ? {} : { follows: old.spec.follows }),
                 },
                 {
@@ -1941,6 +1947,7 @@ const decide = <Req extends ClipRequest>(
                   inserted: old.inserted,
                   replaces: old.spec.key,
                   mode: old.mode,
+                  ...(part ? { notBefore: old.notBefore } : {}),
                   startBy: old.startBy,
                 },
               ),

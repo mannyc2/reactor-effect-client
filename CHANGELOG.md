@@ -40,6 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A group's later part could air before an earlier part whose enqueue reply was lost: that part held no build slot, so the next part built behind it and the provider aired it first. A group's places now air in order, each once the one before it has started, and a place whose enqueue's outcome is unknown ends the group, since it may air at any time or never.
 - A part's replacement that lost its race to the part withdrew the rest of the group, though the part was on air. A place, a part with its replacements, now ends its group only when none of it can air in order any more, or once it failed on air.
 - A group now honours its lane's `skip` and `replace` rules: a new group is refused with `LaneBusy` by a busy lane that skips, and takes the place of what waits in a lane that replaces.
+- A replacement of a group's first part did not take the group's window, so it could air before the group's `notBeforeMs`. A part's replacement now takes its part's start, window and the clip it follows, never its own.
 
 ### Fixed
 
