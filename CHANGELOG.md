@@ -20,6 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `H3Source.opener` and `FastH3Source.opener`, which open and resume each source's sessions for a `Ledger`: `ledger.source(H3Source.opener({ tokens }))`.
 - `CoordinatorClient.terminateUntilConfirmed` and `ConfirmedTermination`: ends a session and asks again, 5 s after the first end and doubling to at most 5 minutes apart, until Reactor confirms it. It fails at once on a `DELETE` refused with 401 or 403, and when a schedule the caller passes ends first.
 - `References`, which loads reference images and voice samples from where an application keeps them: a base64 `data:` URI, a file or an http(s) URL. `References.image` and `References.audio` read at most `maxBytes`, 16 MiB by default (a session's upload limit, where H3's validation admits 25 MiB), within a `timeout` of 10 seconds by default, then validate the bytes as H3 does. `References.locate` turns a URI or an absolute path into a location without reading it, `References.file` and `References.url` make one, and `References.read` reads its bytes alone. Each location asks only for the service it needs: a file a `FileSystem`, a URL an `HttpClient`. No error or span names the location.
+- `GroupSpec.start`: when a group's first part may air, as any `Start`; the parts after it follow it, with no time of their own. A part is built from its clip fields alone, so a part object carrying a `start`, `window` or `follows` of its own no longer passes it through.
+- `release` takes a group key, and releases the group's held first part and any replacement of it.
+- `GroupHandle.started` and `GroupHandle.outcome`, and `Playout.GroupOutcome`: the first place's start, or how it settled without one, and how the group settled. `Aired` counts the places, a part and any replacement of it, that played out in order (`Ended` as `finished`, or `Unobserved`), names the first that did not and how it settled, and lists each place's outcome; `NotAired` says how a first place that never started settled; `Indeterminate` comes when the playout stopped first.
 
 ### Changed
 
@@ -28,6 +31,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `LocalSource` builds the length its model builds when its hook states none: a stand-in for H3 now builds H3's lengths.
 - Builds are projected per built second, each lane at its own rate once three are measured, and filler at filler's. One median over every build, filler's included, projected every item: a local renderer whose filler builds at once, and whose items took 0.8 s a requested second, admitted a firm item as if its 4 s build took nothing. It is now refused with `WouldMissDeadline`.
 - `CoordinatorClient.terminate`, and so `session.close`, confirms a session gone only when two reads in a row find it gone; one missing read used to confirm it. A coordinator can answer 404 for one read of a running session, so after a `DELETE` that did not take, such a session was reported confirmed ended and `Session.mayStillBill` said false.
+- **Breaking:** `GroupHandle` gains `started` and `outcome`, so a hand-written `Playout.Service` must provide them.
+- A group that ends at a broken place also withdraws the items inserted after it. The break used to withdraw only the group's parts, so an item inserted beside a later part aired on after its group had ended.
+
+### Fixed
+
+- A group's later part could air before an earlier part whose enqueue reply was lost: that part held no build slot, so the next part built behind it and the provider aired it first. A group's places now air in order, each once the one before it has started, and a place whose enqueue's outcome is unknown ends the group, since it may air at any time or never.
+- A part's replacement that lost its race to the part withdrew the rest of the group, though the part was on air. A place, a part with its replacements, now ends its group only when none of it can air in order any more, or once it failed on air.
+- A group now honours its lane's `skip` and `replace` rules: a new group is refused with `LaneBusy` by a busy lane that skips, and takes the place of what waits in a lane that replaces.
 
 ### Fixed
 

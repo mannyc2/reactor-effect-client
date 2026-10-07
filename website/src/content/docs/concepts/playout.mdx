@@ -263,12 +263,12 @@ replaces it is Ready.
 
 | Method               | What it does                                                                                                                                       |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `submitGroup(group)` | Parts built in order and aired back to back; a higher lane may go between                                                                          |
+| `submitGroup(group)` | Parts aired in order, each once the one before it started; a higher lane may go between. See [Groups](#groups)                                     |
 | `insert(spec)`       | A clip right `before` or `after` an item, taking its lane, place, group and start                                                                  |
 | `replace(key, next)` | A new clip for a queued item's place; if the item starts first, `next` is dropped as `withdrawn`                                                   |
 | `edit(edits)`        | Several of these, checked together and applied as one change                                                                                       |
 | `withdraw(key)`      | Answers `withdrawn`, `already-started` or `not-found`                                                                                              |
-| `release(key)`       | Airs a held `Manual` item at the next boundary                                                                                                     |
+| `release(key)`       | Airs a held `Manual` item at the next boundary; a group's key releases its first part                                                              |
 | `drain({ finish })`  | Admits nothing more. `playing`, the default, withdraws what has not started; `accepted` airs everything accepted first, except held `Manual` items |
 
 ```ts
@@ -304,6 +304,63 @@ replacement meant to air after it as a second edit once the insert is `Building`
 
 In the two `show` runs on hosted H3, an edit batch took effect 0.91 s before its boundary
 (2026-09-28) and 1.05 s before it (2026-09-29), and the clip it withdrew never aired.
+
+## Groups
+
+A group is material that must air in order, such as a host's line of several beats. Each of its
+places, a part and any replacement of it, airs once the one before it has started; a higher lane
+may still go between, and a clip inserted beside a part keeps its place among them. A place that
+fails, on air too as when its session is lost, is dropped, or is sent with its outcome never known
+ends the group: every part and insert after it goes as `withdrawn`. A place that may have aired
+unseen (`Unobserved`) does not end it. An insert with `continuity` whose build would be Ready only
+after the clip before it ends continues, as anywhere, from the clip playing by then, and when that
+is a later part of its group, it airs right behind that part. The group's `start` is any `Start`
+for its first part, `Follow` by default, and the rest follow it; `release` takes the group's key.
+The handle's `started` resolves with the first place's start, and `outcome` with how many places
+played out in order and where the group stopped.
+
+```ts
+import { Clock, Effect } from "effect";
+import { Playout } from "reactor-effect-client";
+
+export const answer = Effect.fn("answer")(function* (
+  playout: Playout.Playout["Service"],
+) {
+  const now = yield* Clock.currentTimeMillis;
+  // Its first beat at the moment it answers, the second right behind it.
+  const line = yield* playout.submitGroup({
+    key: Playout.ItemKey.make("answer-3"),
+    lane: "show",
+    start: { _tag: "At", time: now + 10_000, late: { _tag: "nextBoundary" } },
+    parts: [
+      {
+        key: Playout.ItemKey.make("answer-3a"),
+        request: { prompt: "The host leans in and smiles", seconds: 5 },
+      },
+      {
+        key: Playout.ItemKey.make("answer-3b"),
+        request: { prompt: "The host turns to the window", seconds: 5 },
+      },
+    ],
+  });
+  const outcome = yield* line.outcome;
+  switch (outcome._tag) {
+    case "Aired": {
+      const { played, stopped } = outcome;
+      if (stopped === undefined) return `all ${played} beats played`;
+      return `${played} played, then beat ${stopped.part}: ${stopped.outcome._tag}`;
+    }
+    case "NotAired":
+      return `never aired: ${outcome.first._tag}`;
+    case "Indeterminate":
+      return "the playout stopped first";
+  }
+});
+```
+
+After a session is lost unplanned, a part already Ready at the head of the next session's queue
+may air once before the playout can take it back; the as-run shows it. Group order has run only
+on the simulated Reactor and in the policy's property checks, not on hosted H3.
 
 ## Placement
 
