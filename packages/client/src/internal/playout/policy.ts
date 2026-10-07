@@ -3349,7 +3349,11 @@ const decide = <Req extends ClipRequest>(
         ? placeRank(owner)
         : rankClip(clip);
     };
-    const desired = [...actual].sort((a, b) => compareRank(rankHere(a), rankHere(b)));
+    // Each clip's rank is worked out once: one can read every item the plan holds.
+    const desired = actual
+      .map((clip) => ({ clip, rank: rankHere(clip) }))
+      .sort((a, b) => compareRank(a.rank, b.rank))
+      .map(({ clip }) => clip);
     // Autoplay as its role wants it: off on a replacement until it takes the air, and off on the
     // air while a cut is under way.
     const selected = value.guardItem === undefined ? undefined : items.get(value.guardItem);
