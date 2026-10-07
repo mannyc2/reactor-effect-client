@@ -392,8 +392,9 @@ interface Session<Req extends ClipRequest = Request> {
   /** No move goes out before it: one whose command died is asked again a second later. */
   readonly moveRetryAt: number;
   /**
-   * When the removals it refused one after another began, until one applies or none is due: a
-   * removal due holds its autoplay off for at most `refusalHoldMs` of them.
+   * When its run of refused removals began: the first of those it refused one after another. A
+   * removal that applies, or none being due, ends the run. A removal due holds its autoplay off
+   * for at most `refusalHoldMs` from then.
    */
   readonly refusedSince?: number | undefined;
   /** The command in flight on its lane, which carries its commands one at a time. */
@@ -3588,7 +3589,8 @@ const decide = <Req extends ClipRequest>(
       updateSession(value.id, { refusedSince: undefined });
     // A clip the plan withdrew or took back, or a waiting member H3 would start first, is removed
     // before autoplay comes on: H3 arms its Ready head then, and starts a clip as its build ends.
-    // Refused again and again, the removal holds autoplay off a second at most, and goes on.
+    // Refused one time after another, it holds autoplay off a second at most; autoplay then comes
+    // on, and the removal is still asked.
     const holds =
       removal !== undefined && now.mono < (value.refusedSince ?? Infinity) + refusalHoldMs;
     if (value.source?.available === true && value.autoplay !== autoplay && !(autoplay && holds)) {
