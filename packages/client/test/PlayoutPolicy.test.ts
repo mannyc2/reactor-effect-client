@@ -3032,6 +3032,89 @@ describe("PlayoutPolicy, groups", () => {
     assert.isFalse(actions.some((action) => action._tag === "Refused"));
   });
 
+  const waitsOnItself = (name: string): Policy.Refusal => ({
+    _tag: "InvalidItem",
+    key: key(name),
+    message: "follows names a member of its group placed after it",
+  });
+  const refusalOf = (actions: ReadonlyArray<Policy.Action>) =>
+    actions.find((action) => action._tag === "Refused")?.refusal;
+
+  // The check read the plan before the edit: an insert that follows another the same edit adds,
+  // placed after it, was admitted, and waited on an insert that waited behind it.
+  it("refuses an insert that follows one the same edit places after it", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.edit([group(1, ["p1", "p2"])]);
+    const { actions } = policy.edit([
+      { _tag: "Insert", spec: spec("i1"), anchor: key("p1"), side: "after" },
+      {
+        _tag: "Insert",
+        spec: { ...spec("i2"), follows: item("i1") },
+        anchor: key("p1"),
+        side: "after",
+      },
+    ]);
+    assert.deepStrictEqual(refusalOf(actions), waitsOnItself("i2"));
+    assert.isFalse(policy.state().items.has(key("i1")));
+  });
+
+  // A replacement of an insert takes the clip the insert follows, if any, else its own: one that
+  // follows a later part was admitted, as the check covered inserts alone.
+  it("refuses a replacement of an insert that follows a member placed after it", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.edit([group(1, ["p1", "p2", "p3"])]);
+    policy.edit([{ _tag: "Insert", spec: spec("i"), anchor: key("p1"), side: "after" }]);
+    const { actions } = policy.edit([
+      { _tag: "Replace", key: key("i"), spec: { ...spec("i9"), follows: item("p3") } },
+    ]);
+    assert.deepStrictEqual(refusalOf(actions), waitsOnItself("i9"));
+    assert.isFalse(policy.state().items.has(key("i9")));
+  });
+
+  // An insert whose continued build falls back to a later part's clip sits right behind that part.
+  // The check compared orders, by which an insert before that part, following the first insert,
+  // came after it: admitted, it waited on the first insert, which waited behind it.
+  it("refuses an insert that follows an insert seated behind a later part", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    policy.edit([group(1, ["p1", "p2", "p3"])], false, 10);
+    const log: Array<string> = [];
+    const held = queues();
+    provide(policy, "s1", 1, held, log);
+    const p1 = readyIn(held, "p1");
+    held.ready = held.ready.filter((value) => value !== p1);
+    held.playing = p1;
+    policy.event({ _tag: "Started", clip: p1 }, "s1", policy.now() + 10);
+    policy.observe({ ready: held.ready, playing: p1, continuable: [p1.clipId] });
+    provide(policy, "s1", 2, held, log, 300);
+    const p2 = readyIn(held, "p2");
+    policy.edit([
+      {
+        _tag: "Insert",
+        spec: { ...spec("xc"), continuity: true },
+        anchor: key("p2"),
+        side: "before",
+      },
+    ]);
+    // Ready only after p1 ends, xc continues from p2's clip, right behind p2.
+    assert.strictEqual(policy.state().items.get(key("xc"))?.follows, p2.clipId);
+    const { actions } = policy.edit([
+      {
+        _tag: "Insert",
+        spec: { ...spec("z"), follows: item("xc") },
+        anchor: key("p2"),
+        side: "before",
+      },
+    ]);
+    assert.deepStrictEqual(refusalOf(actions), waitsOnItself("z"));
+    assert.isFalse(policy.state().items.has(key("z")));
+  });
+
   // An insert whose continued build continues from a later part's clip airs right behind that
   // part, so it sits there in its group: when that part's place breaks, it goes with the members
   // after it. It stayed, by its own earlier order, and aired alone after its group ended.

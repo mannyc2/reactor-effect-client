@@ -1937,20 +1937,6 @@ const decide = <Req extends ClipRequest>(
             key: edit.spec.key,
             message: "a held Manual item cannot anchor an insert",
           });
-        // Placed in a group, it would wait for a member after it to air while that member waits
-        // behind it.
-        const follows = edit.spec.follows;
-        const followed = follows?._tag === "Item" ? items.get(follows.key) : undefined;
-        if (
-          anchor.group !== undefined &&
-          followed?.group?.key === anchor.group.key &&
-          (edit.side === "after" ? followed.order > anchor.order : followed.order >= anchor.order)
-        )
-          return refuse({
-            _tag: "InvalidItem",
-            key: edit.spec.key,
-            message: "follows names a member of its group placed after it",
-          });
       }
       if (edit._tag === "Submit" || edit._tag === "Insert") {
         const issue = followsIssue(edit.spec.key, edit.spec.follows);
@@ -1985,7 +1971,8 @@ const decide = <Req extends ClipRequest>(
       if (edit._tag === "SubmitGroup" && !groups.has(edit.key) && laneBusy(edit.lane))
         return refuse({ _tag: "LaneBusy", key: edit.key, lane: edit.lane });
     }
-    // An edit refused below, as an item it adds would miss its deadline, leaves the plan as it was.
+    // An edit refused below, as an item it adds would wait on itself or miss its deadline, leaves
+    // the plan as it was.
     const saved = { items: new Map(items), groups: new Map(groups), nextOrder: state.nextOrder };
     const results: Array<EditReply> = [];
     const adds: Array<ItemKey> = [];
@@ -2147,6 +2134,33 @@ const decide = <Req extends ClipRequest>(
         }
       }
     }
+    /** Leaves the plan as it was before this edit, which is refused. */
+    const restore = (): void => {
+      items.clear();
+      for (const [other, value] of saved.items) items.set(other, value);
+      groups.clear();
+      for (const [group, value] of saved.groups) groups.set(group, value);
+      state = { ...state, nextOrder: saved.nextOrder };
+    };
+    // A member that follows a member of its group seated after it would wait for that member to
+    // air, while that member waits behind it: neither would.
+    for (const key of adds) {
+      const item = items.get(key);
+      const follows = item?.spec.follows;
+      const followed = follows?._tag === "Item" ? items.get(follows.key) : undefined;
+      if (
+        item?.group !== undefined &&
+        followed?.group?.key === item.group.key &&
+        compareSeat(seatOf(roster, followed), seatOf(roster, item)) > 0
+      ) {
+        restore();
+        return refuse({
+          _tag: "InvalidItem",
+          key,
+          message: "follows names a member of its group placed after it",
+        });
+      }
+    }
     const deadlines = adds.flatMap((key) => {
       const item = items.get(key)!;
       return item.spec.window?.firm === true && item.startBy !== undefined ? [item.startBy] : [];
@@ -2178,11 +2192,7 @@ const decide = <Req extends ClipRequest>(
         item.startBy !== undefined &&
         (misses(item, item.startBy, memo) || !startsBefore(item, item.startBy, forwardRun))
       ) {
-        items.clear();
-        for (const [other, value] of saved.items) items.set(other, value);
-        groups.clear();
-        for (const [group, value] of saved.groups) groups.set(group, value);
-        state = { ...state, nextOrder: saved.nextOrder };
+        restore();
         return refuse({ _tag: "WouldMissDeadline", key });
       }
     }
