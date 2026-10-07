@@ -2,7 +2,18 @@
 import { assert, layer } from "@effect/vitest";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
-import { Clock, Context, Deferred, Duration, Effect, Fiber, FileSystem, Layer, Path } from "effect";
+import {
+  Clock,
+  Context,
+  Deferred,
+  Duration,
+  Effect,
+  Fiber,
+  FileSystem,
+  Layer,
+  Path,
+  Schedule,
+} from "effect";
 import type { Scope } from "effect";
 import * as H3 from "../src/H3.js";
 import { CoordinatorClient, H3Source, Ledger, ReactorTest } from "../src/index.js";
@@ -146,6 +157,27 @@ alone("waits, allocating nothing, while a recorded session's end is unconfirmed"
     for (const source of opened)
       assert.isAtLeast(at(source.sessionId, "created") ?? Number.NEGATIVE_INFINITY, ended);
   }),
+);
+
+// Every DELETE is accepted and ignored, and the ledger asks only once more before it gives up.
+alone(
+  "allocates nothing once a recorded session's end stops unconfirmed",
+  () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const unended = yield* leftover();
+      yield* test.inject({ _tag: "IgnoreDelete" });
+      const ledger = yield* Ledger.Ledger;
+      const refused = yield* Effect.flip(ledger.source(yield* opener, { resume: false }));
+      assert.deepStrictEqual(
+        [refused.reason._tag, refused.cleanup.allocation],
+        ["Indeterminate", "none"],
+      );
+      assert.lengthOf(yield* test.sessions, 1);
+      assert.deepStrictEqual(yield* held, [[unended.sessionId, "ending"]]);
+    }),
+  Ledger.layerMemory({ ending: Schedule.recurs(1) }),
 );
 
 // The session reads STOPPING for 20 s after each DELETE.
