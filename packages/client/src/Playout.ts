@@ -229,8 +229,16 @@ export type GroupPart<Req extends ClipRequest = Request> = ClipSpec<Req>;
 export interface GroupSpec<Req extends ClipRequest = Request> {
   readonly key: ItemKey;
   readonly lane: string;
-  /** Built in order and aired back to back; a higher lane may still go between parts. */
+  /**
+   * Built in order and aired in order, each place once the one before it has started; a higher
+   * lane may still go between.
+   */
   readonly parts: readonly [GroupPart<Req>, ...ReadonlyArray<GroupPart<Req>>];
+  /**
+   * When the first part may air, as an item's `start`; the rest follow it, with no time of their
+   * own. `Follow` by default.
+   */
+  readonly start?: Start | undefined;
   /** It applies to the first part. */
   readonly window?: Window | undefined;
 }
@@ -851,7 +859,10 @@ export interface Service<Req extends ClipRequest = Request> {
    * until everything it adds is Ready or settled.
    */
   readonly edit: (edits: ReadonlyArray<Edit<Req>>) => Effect.Effect<EditHandle, SubmitError>;
-  /** Releases a held `Manual` item to air at the next boundary. */
+  /**
+   * Releases a held `Manual` item to air at the next boundary. A group key releases the group's
+   * held first part, and any replacement of it; the rest follow it.
+   */
   readonly release: (key: ItemKey) => Effect.Effect<void, InvalidItem>;
   /**
    * Where a clip like `probe` would land: at the first boundary of the

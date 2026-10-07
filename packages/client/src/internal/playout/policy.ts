@@ -1731,10 +1731,11 @@ const decide = <Req extends ClipRequest>(
               fingerprint: edit.fingerprint,
               parts: edit.parts.map((part) => part.key),
             });
+            // The group's time is its first part's: the rest follow it, with none of their own.
             edit.parts.forEach((part, partIndex) => {
-              const { window: _window, ...rest } = part;
+              const { window: _window, follows: _follows, ...rest } = part;
               put(
-                newItem(partIndex === 0 ? part : rest, {
+                newItem(partIndex === 0 ? part : { ...rest, start: { _tag: "Follow" } }, {
                   group: { key: edit.key, index: partIndex },
                 }),
               );
@@ -2556,15 +2557,27 @@ const decide = <Req extends ClipRequest>(
       applyEdit(input.id, input.edits, input.batch);
       break;
     case "Release": {
-      const item = items.get(input.key);
-      if (!live(item) || item.mode !== "held")
+      // A group key releases its first place: the part and any replacement, which takes its mode.
+      const group = groups.get(input.key);
+      const keys =
+        group === undefined
+          ? [input.key]
+          : group.parts.filter((part) => {
+              const other = items.get(part);
+              return other !== undefined && !other.inserted && other.group?.index === 0;
+            });
+      const held = keys.filter((key) => {
+        const item = items.get(key);
+        return live(item) && item.mode === "held";
+      });
+      if (held.length === 0)
         actions.push({
           _tag: "Refused",
           id: input.id,
           refusal: { _tag: "InvalidItem", key: input.key, message: "no held item has this key" },
         });
       else {
-        set(input.key, { mode: "asap" });
+        for (const key of held) set(key, { mode: "asap" });
         actions.push({ _tag: "Accepted", id: input.id, results: [] });
       }
       break;

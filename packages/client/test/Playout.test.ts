@@ -824,6 +824,63 @@ layer(hosted)("time", (it) => {
     }),
   );
 
+  // Its second part builds once the first is built, long before the group's time, and waits.
+  it.effect("a group with an At start airs its first part at its time and the rest behind it", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start({
+        filler: {
+          runway: { floor: "5 seconds", target: "8 seconds" },
+          clip: ({ index, seconds }) => clip(`idle ${index}`, seconds),
+        },
+      });
+      const measured = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      yield* measured.outcome;
+      const secured = yield* eventually(playout.state, (state) => state.runwaySeconds >= 8);
+      const due = (yield* Clock.currentTimeMillis) + secured.runwaySeconds * 1000 + 6_000;
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        start: { _tag: "At", time: due, late: { _tag: "nextBoundary" } },
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      });
+      const [first, second] = group.parts;
+      const started = yield* first.started;
+      if (started._tag !== "Started") return yield* Effect.die("the first part never started");
+      assert.isAtLeast(started.at, due);
+      // A filler tile may run over by less than one step of H3's grid.
+      assert.isBelow(started.lateByMillis ?? 0, 1_000);
+      const next = yield* (second ?? first).started;
+      if (next._tag !== "Started") return yield* Effect.die("the second part never started");
+      assert.isBelow(next.at - (started.at + started.seconds * 1000), 1_000);
+      assert.deepStrictEqual(yield* starts, ["a", "p1", "p2"]);
+    }),
+  );
+
+  it.effect("a Manual group airs once released by its key", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        start: { _tag: "Manual" },
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      });
+      yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      yield* Effect.sleep("12 seconds");
+      assert.deepStrictEqual(yield* starts, ["a"]);
+      yield* playout.release(key("line"));
+      const [first, second] = group.parts;
+      yield* (second ?? first).outcome;
+      assert.deepStrictEqual(yield* starts, ["a", "p1", "p2"]);
+    }),
+  );
+
   // A projected time is seldom a whole nanosecond, as the virtual clock counts: the playout waits
   // until the clock reaches it, rather than just short of it and on until the clock steps again.
   it.effect("drops a firm item as its projection reaches its startBy, not at a later step", () =>

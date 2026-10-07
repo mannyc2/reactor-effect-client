@@ -651,16 +651,19 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           ],
           true,
         );
-      case "group":
+      case "group": {
+        // The group's timing is its first part's, as the runtime builds it; the rest follow it.
+        const { window: _window, ...later } = cued(`g${String(index)}b`, 1, index + 1);
         return edit(index, [
           {
             _tag: "SubmitGroup",
             key: key(`g${String(index)}`),
             lane: 1,
-            parts: [cued(`g${String(index)}a`, 1, index), cued(`g${String(index)}b`, 1, index + 1)],
+            parts: [cued(`g${String(index)}a`, 1, index), { ...later, start: { _tag: "Follow" } }],
             fingerprint: `g${String(index)}`,
           },
         ]);
+      }
       case "drain":
         drains.push(100 + index);
         return send({

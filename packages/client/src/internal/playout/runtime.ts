@@ -809,13 +809,16 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
         }
         case "SubmitGroup": {
           const index = yield* lane(edit.group.key, edit.group.lane);
+          // A part is its clip alone: the group's start and window are its first part's, and the
+          // rest follow it.
           const parts = yield* Effect.forEach(edit.group.parts, (part, partIndex) =>
             spec(
               {
-                ...part,
-                ...(partIndex === 0 && edit.group.window !== undefined
-                  ? { window: edit.group.window }
-                  : {}),
+                key: part.key,
+                request: part.request,
+                cues: part.cues,
+                continuity: part.continuity,
+                ...(partIndex === 0 ? { start: edit.group.start, window: edit.group.window } : {}),
               },
               index,
             ),
