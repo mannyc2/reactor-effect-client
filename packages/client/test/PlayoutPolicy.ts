@@ -153,7 +153,13 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
   const inputs: Array<Policy.Input> = [];
   const sessions = new Map<
     string,
-    { building: Array<SourceClip>; ready: Array<SourceClip>; playing: SourceClip | undefined }
+    {
+      building: Array<SourceClip>;
+      ready: Array<SourceClip>;
+      playing: SourceClip | undefined;
+      /** Autoplay as the plan last set it, once a change applied; unset before. */
+      autoplay?: boolean;
+    }
   >();
   const lanes = new Map<string, number>();
   const edits = new Map<
@@ -529,6 +535,7 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           break;
         }
         case "Autoplay":
+          value.autoplay = command.enabled;
           break;
       }
     send({
@@ -668,7 +675,8 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
       case "start": {
         // The provider brings the air to a clip: it opens the session the plan asked for and,
         // with nothing there to play, carries out the autoplay and enqueue asked of it and
-        // finishes the clip it builds first.
+        // finishes the clip it builds first. With autoplay off it starts nothing, as H3 starts
+        // nothing then: only a play does.
         if (onAir() === undefined && wanted > 0) open();
         for (let asked = 0; asked < 2 && onAir()?.building.length === 0; asked++) {
           const air = state.sessions.find((value) => value.id === state.air);
@@ -686,6 +694,7 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           value.ready.push(Array.getUnsafe(value.building.splice(0, 1), 0));
           observe(airId());
         }
+        if (value.autoplay === false) return send({ _tag: "Tick" });
         const next = value.ready.shift();
         if (next === undefined) return send({ _tag: "Tick" });
         value.playing = next;
@@ -920,8 +929,9 @@ const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lastin
     if (displaced) assert.isTrue(paired.has(name), `${name} was displaced but follows nothing`);
   }
   // An item that follows a clip starts right after it. The simulated provider ends a clip whenever
-  // the script says and starts the next at once, where H3 waits out a seam that no removal lands
-  // within: a start the plan had asked to remove is excused. The Playout tests own that race.
+  // the script says and, with autoplay on, starts the next at once, where H3 waits out a seam that
+  // no removal lands within: a start the plan had asked to remove is excused. With autoplay off it
+  // starts nothing, as H3 doesn't. The Playout tests own that race.
   for (const [index, start] of starts.entries()) {
     const follows = start.follows;
     if (follows === undefined || start.removalAsked) continue;
@@ -1093,6 +1103,10 @@ const counterexamples: ReadonlyArray<Script> = [
     "lost",
     "batch",
   ],
+  // A follower waiting Ready at its session's head, fenced, aired after the wrong clip: the
+  // scripted provider started it after an early end, with autoplay off there and the lane busy
+  // with another enqueue, where H3 starts nothing and the plan sent no play.
+  ["urgent", "insert", "start", "urgent", "start", "ready", "end", "start"],
 ];
 
 export {
