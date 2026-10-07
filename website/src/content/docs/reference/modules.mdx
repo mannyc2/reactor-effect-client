@@ -33,6 +33,7 @@ host and loads no native code.
 | `H3Source`          | A paid H3 session as a playout source                                          |
 | `FastH3Source`      | A paid FastH3 session as a playout source, with built retained continuation hints |
 | `LocalSource`       | A playout source rendered in this process by your own hooks                    |
+| `Ledger`            | The paid sessions you own, recorded before they connect and ended until Reactor confirms it |
 | `Media`             | Decoded frames and platform tracks of one connection generation                |
 | `Peer`              | The transport port a host implements                                           |
 | `ReactorError`      | Every failure the client raises, its reason and its dispatch outcome           |
@@ -57,7 +58,8 @@ See [Sessions and tokens](/reactor-effect-client/concepts/sessions/).
 `mintToken`, `pricing`, `inspect`, `terminate`, `downloadClip`, `signaling`), `layer(options)`,
 `layerConfig` (`REACTOR_API_URL`, `REACTOR_API_KEY`) and `make`; `Tokens`, `TokenGrant`,
 `TokenOptions`, `Granted` and `fixedTokens`; `modelRate` and `Rate`; `isTerminal`,
-`Termination` and `Inspection`; `defaultApiUrl`.
+`Termination`, `ConfirmedTermination` and `Inspection`; `terminateUntilConfirmed`, which ends a
+session and asks again until Reactor confirms it; `defaultApiUrl`.
 
 ### `H3`
 
@@ -98,10 +100,19 @@ the item specs `ItemSpec`, `GroupSpec`, `InsertSpec`, `Edit`, `LaneSpec`, `Start
 
 ### `H3Source` and `LocalSource`
 
-`reactor-effect-client/H3Source`: `open`, `resume`, `model`, the owner record `Allocation` (a Schema),
-`Allocated`, `OpenOptions` and `ResumeOptions`. `reactor-effect-client/LocalSource`: `open`,
-`Options`, `LocalClip`, `Rendered` and `Sink`. See
+`reactor-effect-client/H3Source`: `open`, `resume`, `opener` (for a `Ledger`), `model`, the owner
+record `Allocation` (a Schema), `Allocated`, `OpenOptions` and `ResumeOptions`.
+`reactor-effect-client/LocalSource`: `open`, `Options`, `LocalClip`, `Rendered` and `Sink`. See
 [Sources](/reactor-effect-client/concepts/sources/).
+
+### `Ledger`
+
+`reactor-effect-client/Ledger`. The `Ledger` service (`source`, `release`, `entries`);
+`layer(options)` over the application's `Store`, `layerFile(path, options)` and
+`layerMemory(options)`; the `Store` port and its `Entry` (a Schema); `Opener`, which
+`H3Source.opener` and `FastH3Source.opener` make; `SourceOptions`, `Options`, `Released` and
+`LedgerError`. One store belongs to one process and one Reactor account. See
+[Cost control](/reactor-effect-client/guides/cost-control/).
 
 ### `Media`
 

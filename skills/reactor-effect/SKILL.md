@@ -12,7 +12,7 @@ models. A session is a scoped Effect resource; H3, FastH3 and Vidu S2-Avatar are
 **Packages** (one version for all, published to npm):
 
 - `reactor-effect-client`: `Reactor`, `Session`, `CoordinatorClient`, `H3`, `FastH3`, `ViduS2Avatar`,
-  `H3Source`, `FastH3Source`, `LocalSource`, `Playout`, `Media`, `Peer`, `ReactorError`, `ReactorTest`. Portable: Node, Bun and
+  `H3Source`, `FastH3Source`, `LocalSource`, `Ledger`, `Playout`, `Media`, `Peer`, `ReactorError`, `ReactorTest`. Portable: Node, Bun and
   browsers.
 - `reactor-effect-browser`: `BrowserPeer.layer` on `RTCPeerConnection`, `BrowserMedia` for tracks.
 - `reactor-effect-native`: `NativePeer.layer()`, or `NativePeer.layerIsolated()` under Node, on a
@@ -89,6 +89,11 @@ const program = Effect.gen(function* () {
   until termination, idle time included.
 - **A session belongs to a `Scope`.** Closing the scope terminates it. `session.close` returns a
   report; `Session.mayStillBill(report)` is true when termination was not confirmed.
+- **A crash leaves its paid sessions billing until their caps** unless something ends them. Open
+  them through a `Ledger` (`Ledger.layerFile(path)` over a `CoordinatorClient` holding the API key):
+  it records each session before it connects, ends or resumes what a crashed process left before
+  allocating more, and ends each session until Reactor confirms it. One store per process and
+  account.
 - **Never resend a command whose failure's `context.outcome` is `"unknown"`**: it may have reached
   Reactor. `"not-submitted"` is safe to retry. The SDK itself never resends an unknown enqueue.
 - **Errors are tagged**: handle them with `Effect.catchTag` and `Effect.catchReason` on the tagged
@@ -103,10 +108,11 @@ const program = Effect.gen(function* () {
 
 ## Keeping a channel on air: `Playout`
 
-For FastH3, use `Playout.make({ model: FastH3Source.model, open: FastH3Source.open({ tokens }) })` with an application-owned `Playout.Service<FastH3.Request>` tag. Automatic continuations use only built, retained clips; hosted qualification is pending.
+For FastH3, use `Playout.make({ model: FastH3Source.model, open: ledger.source(FastH3Source.opener({ tokens })) })` with an application-owned `Playout.Service<FastH3.Request>` tag. Automatic continuations use only built, retained clips; hosted qualification is pending.
 
 `Playout.layer({ open, lanes, filler, renewal })` where `open` is
-`H3Source.open({ tokens: coordinator.tokens({ ... }) })`. Submit keyed items with
+`ledger.source(H3Source.opener({ tokens: coordinator.tokens({ ... }) }))`, with `ledger` the
+`Ledger` service. Submit keyed items with
 `playout.submit({ key: Playout.ItemKey.make("..."), lane, request: { prompt, seconds } })`; the
 handle's `started` and `outcome` report what aired (`Ended`, `Dropped`, `Failed`, `Unobserved`, or a
 terminal `Unknown`, which is never replayed). `renewal: { lead }` opens the next session `lead`

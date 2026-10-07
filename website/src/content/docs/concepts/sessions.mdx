@@ -401,7 +401,9 @@ it gone, since a coordinator can answer one read of a running session with 404. 
 
 `Session.mayStillBill(report)` is true for a session this process owned that no read confirmed
 ended, and for an allocation whose outcome, and so whose id, never arrived. Nothing can confirm
-the second ended; its token's cap bounds it.
+the second ended; its token's cap bounds it. A `Ledger` records each session before it connects
+and ends it until Reactor confirms the end, a crashed process's sessions included: see
+[Cost control](/reactor-effect-client/guides/cost-control/).
 
 ```ts
 import { Effect, Schema } from "effect";

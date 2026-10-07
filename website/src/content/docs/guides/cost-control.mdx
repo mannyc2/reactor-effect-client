@@ -1,6 +1,6 @@
 ---
 title: Cost control
-description: "Session caps, confirmed termination and budgets: how the SDK keeps a paid session from billing past its use."
+description: "Session caps, confirmed termination, a ledger of paid sessions and budgets: how the SDK keeps a paid session from billing past its use."
 ---
 
 import { Aside, Steps } from "@astrojs/starlight/components";
@@ -31,12 +31,20 @@ $2.10 a minute and $126 an hour from `ready` until it is terminated, idle or not
   confirmed its end, or when it asked for an allocation whose answer, and so whose id, never came.
   An `AcquisitionFailure` carries the same report in `cleanup`, and a playout's `cleanup` keeps every
   report that may still bill.
-- **Owner records.** `onAllocated` runs after allocation and before the session connects, so a
-  supervisor can write down who owns it first. If the hook fails, the session is closed and the
-  acquisition fails with the close report. `H3Source.open` hands it an `H3Source.Allocation`: the
-  session id, the model and `endsAt`, when its cap ends. It holds no token.
-- **A crashed owner's session can be ended or adopted.** With the API key,
-  `coordinator.terminate(sessionId)` ends any session of the account and confirms it.
+- **A ledger records every paid session before it connects.** A `Ledger` keeps an entry for each
+  session this application owns, in a store the application provides: a JSON file
+  (`Ledger.layerFile`), memory (`Ledger.layerMemory`) or a `Ledger.Store` of its own.
+  `ledger.source(H3Source.opener({ tokens }))` is a playout's `open`. It records each session after
+  allocation and before it connects, so a session it cannot record is closed unconnected, and it
+  forgets the entry only once Reactor confirms the session's end. An end Reactor does not confirm
+  is marked `ending` and asked again, 5 s after the first and doubling to at most 5 minutes apart,
+  for as long as the session runs.
+- **What a crashed process left is ended or taken back.** Before it allocates anything,
+  `ledger.source` settles every session recorded for its coordinator that the ledger does not hold:
+  it resumes the one that ends last, while a minute of its cap remains, ends the rest, and waits
+  until Reactor confirms each end. Only the API key ends a session whose owner died, so the ledger's
+  `CoordinatorClient` carries it. For a session found any other way,
+  `CoordinatorClient.terminateUntilConfirmed(sessionId)` asks until Reactor confirms its end;
   `H3Source.resume({ allocation, tokens })` adopts one with tokens bound to it, and
   `reactor.attach({ sessionId, tokens, adopt: true })` takes over a raw session's lifetime.
 - **No pool of sessions.** The SDK keeps nothing warm. If you pool sessions, Effect's
@@ -54,15 +62,15 @@ termination confirmed. Where the runs timed it, `CLOSED` read 0.63–0.86 s afte
 1. **Price the cap** before anything is allocated:
 
    ```ts
-   import { Effect, FileSystem, Ref, Schema } from "effect";
+   import { Effect, Layer, Ref } from "effect";
    import {
      CoordinatorClient,
      H3,
      H3Source,
+     Ledger,
      Playout,
      Reactor,
      ReactorError,
-     Session,
    } from "reactor-effect-client";
 
    const mostItCanCost = Effect.fn("mostItCanCost")(function* (capSeconds: number) {
@@ -74,29 +82,30 @@ termination confirmed. Where the runs timed it, `CLOSED` read 0.63–0.86 s afte
 
    On 2026-09-30, `mostItCanCost(120)` is $4.20.
 
-2. **Record the owner before the session connects.** Each allocation is appended as a line of JSON,
-   encoded by the record's own Schema; if the write fails, the session is closed unconnected:
+2. **Record every session before it connects, in a ledger.** Provide the ledger once, over a
+   `CoordinatorClient` that holds the API key, and open each session through it:
 
    ```ts
-   const ownersFile = "owners.jsonl";
-   const OwnerLine = Schema.fromJsonString(H3Source.Allocation);
-
-   const recordOwner = Effect.fn("recordOwner")(function* (allocation: H3Source.Allocation) {
-     const fs = yield* FileSystem.FileSystem;
-     const line = yield* Schema.encodeEffect(OwnerLine)(allocation);
-     yield* fs.writeFileString(ownersFile, `${line}\n`, { flag: "a" });
-   });
+   // REACTOR_API_KEY gives the key, which ends any session of the account.
+   const LedgerLive = Ledger.layerFile("evidence/ledger.json").pipe(
+     Layer.provideMerge(CoordinatorClient.layerConfig),
+   );
 
    const open = Effect.gen(function* () {
      const coordinator = yield* CoordinatorClient.CoordinatorClient;
-     return yield* H3Source.open({
-       tokens: coordinator.tokens({ modelName: H3.modelName, maxSessionDuration: "30 minutes" }),
-       onAllocated: ({ allocation }) => recordOwner(allocation),
-     });
+     const ledger = yield* Ledger.Ledger;
+     return yield* ledger.source(
+       H3Source.opener({
+         tokens: coordinator.tokens({ modelName: H3.modelName, maxSessionDuration: "30 minutes" }),
+       }),
+     );
    });
    ```
 
-   A line reads `{"sessionId":"…","ownership":"owned","model":"reactor/h3-reference-to-video-turbo-realtime","endsAt":1790815443.619}`.
+   The file holds the entries as a JSON list, such as
+   `[{"sessionId":"…","model":"reactor/h3-reference-to-video-turbo-realtime","apiUrl":"https://api.reactor.inc","endsAt":1790815443.619,"state":"live"}]`.
+   One store belongs to one process and one Reactor account: two processes on one store would end
+   each other's sessions as leftovers.
 
 3. **Budget the sessions.** A playout calls `open` for its first session and every replacement.
    Count them, and refuse past a limit with a failure that allocated nothing:
@@ -129,50 +138,42 @@ termination confirmed. Where the runs timed it, `CLOSED` read 0.63–0.86 s afte
    budget, the playout airs its last session until that session's cap ends, then stops. With
    30-minute sessions, a budget of 4 bounds the channel at two hours of sessions, $252.
 
-4. **Check what may still bill** whenever a session closes:
+4. **Let closing end each session.** Closing a source the ledger opened, as the playout does at
+   each renewal and when its scope closes, ends the session and forgets its entry once Reactor
+   confirms the end. An end Reactor does not confirm leaves the entry `ending`, asked again until it
+   is confirmed, and the close report the playout keeps says the session may still bill.
+   `ledger.entries` lists what is still recorded:
 
    ```ts
-   const closeAndCheck = Effect.fn("closeAndCheck")(function* (session: Session.Session) {
-     const report = yield* session.close;
-     if (Session.mayStillBill(report))
-       yield* Effect.logWarning(
-         "may still bill",
-         report.sessionId ?? "an allocation never identified",
-       );
-     return report;
+   const stillEnding = Effect.gen(function* () {
+     const ledger = yield* Ledger.Ledger;
+     const entries = yield* ledger.entries;
+     return entries.filter((entry) => entry.state === "ending");
    });
    ```
 
-5. **After a crash, end what the dead owner recorded.** On start-up, before opening anything new,
-   the next process ends every recorded session with the API key. Ending one that already ended is
-   harmless: the read confirms it gone or `CLOSED`.
+5. **After a crash, open as before.** The next process's first `open` ends or resumes what the
+   dead one recorded before it allocates anything, and waits while an end is unconfirmed, since
+   that session may still bill; a playout's `renewal.openTimeout` bounds the wait. To end everything
+   the ledger does not hold, at shutdown or by hand, run `ledger.release`. It answers the ends
+   Reactor confirmed, and those it still asks for:
 
    ```ts
-   const endRecorded = Effect.gen(function* () {
-     const fs = yield* FileSystem.FileSystem;
-     const coordinator = yield* CoordinatorClient.CoordinatorClient;
-     const lines = (yield* fs.readFileString(ownersFile)).split("\n").filter((line) => line !== "");
-     yield* Effect.forEach(lines, (line) =>
-       Effect.gen(function* () {
-         const allocation = yield* Schema.decodeEffect(OwnerLine)(line);
-         const termination = yield* coordinator.terminate(allocation.sessionId);
-         yield* Effect.logInfo(
-           allocation.sessionId,
-           termination.confirmed ? "ended" : "NOT confirmed",
-         );
-       }),
-     );
+   const endLeftovers = Effect.gen(function* () {
+     const ledger = yield* Ledger.Ledger;
+     const { ended, ending } = yield* ledger.release;
+     yield* Effect.logInfo(`${ended.length} ended, ${ending.length} still ending`);
    });
    ```
 
-   To keep a crashed owner's air instead, pass its record to `H3Source.resume` with tokens bound to
-   the session, while `endsAt` is still ahead.
+   A session found any other way, such as in the dashboard, ends with
+   `CoordinatorClient.terminateUntilConfirmed(sessionId)` and a key-holding `CoordinatorClient`.
 
 </Steps>
 
 On the simulated Reactor this ran as described: the price came to $4.20, a budget of two refused a
-third session, the records round-tripped, and every recorded session read `CLOSED` after
-`endRecorded`.
+third session, and a second process's ledger, on the file a first had left, ended both sessions
+that first had open, each reading `CLOSED`, and kept no entry.
 
 ## Practice
 
@@ -186,12 +187,13 @@ third session, the records round-tripped, and every recorded session read `CLOSE
   the disconnected time
   ([0.8.0-dropped](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.8.0-dropped/summary.md)).
   `Reactor.layer({ reconnect: false })` leaves a drop down until `session.reconnect`; the session
-  may keep billing until terminated or capped. End owned sessions with `session.close`, or use the
-  key's `coordinator.terminate(sessionId)` after a crash, and cap them.
+  may keep billing until terminated or capped. End owned sessions with `session.close`, let the
+  ledger end what a crash left, and cap them.
 - **A session nothing connects to bills to its cap.** In a paid probe on 2026-09-29, a session
   allocated and never connected read `ACTIVE` for its whole minute and was ended by Reactor at its
   60-second cap, 60.09 s after allocation; the dashboard listed it at 1m 0s. A creator that crashes
-  between allocation and connection leaves exactly this, which is why the owner record comes first.
+  between allocation and connection leaves exactly this, which is why the ledger records a session
+  before it connects.
 - **A spent token creates nothing more.** In the same probe, a second create on a single-session
   token whose session already existed was refused with `403`. The tokens `coordinator.tokens` mints
   each create one session, so a retried create cannot allocate a second.
@@ -211,5 +213,5 @@ third session, the records round-tripped, and every recorded session read `CLOSE
 
 <Aside type="caution">
   `"unlimited"` is a real option: an uncapped session bills until something terminates it. Use it
-  only with an owner record and a process that will end it.
+  only with a ledger and a process that will end it.
 </Aside>

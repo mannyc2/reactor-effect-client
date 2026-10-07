@@ -152,6 +152,7 @@ const workspace = {
           "ViduS2Avatar",
           "FastH3",
           "FastH3Source",
+          "Ledger",
         ].map((module) => [`./${module}`, entry(module)]),
       ),
     },

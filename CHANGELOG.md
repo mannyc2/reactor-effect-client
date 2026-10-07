@@ -16,6 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `FastH3Source.open`, `resume` and `model`, so `Playout.make` can air FastH3 across session caps. Automatic continuations use only built, retained clips. A missing playout hint is omitted and reported before the single submission; an explicit request opener takes precedence. Post-send failures and dispatch outcomes pass through unchanged, with no failure-triggered refresh or resend. H3Source uses the shared source engine with its public API and behavior preserved; hosted FastH3 provider/playout qualification is pending.
 - `ClipModel.builtSeconds`, the length a model builds for a requested length: H3 and FastH3 align it up to their frame grid, and a renderer that builds what it is asked answers the length itself.
 - `State.estimates.lanes` and `State.estimates.filler`: each lane's builds and filler's apart, per requested second, beside the estimates over every build, which keep their meaning. `Playout.BuildSpread` names a median and p95 of builds.
+- `Ledger`, the paid sessions an application owns, each recorded before it connects and ended until Reactor confirms it. The SDK owns that protocol and the application the storage: a `Ledger.Store` it provides through `Ledger.layer`, or a JSON file through `Ledger.layerFile`, or memory through `Ledger.layerMemory`. `ledger.source(opener)` is a playout's `open`. Before it allocates, it resumes the recorded session that ends last, while a minute of its cap remains, and ends the other sessions recorded for its coordinator, waiting until Reactor confirms each end. Then it records a fresh session before the session connects. A closed source, and any failure after the record, ends the session and forgets it once Reactor confirms the end; until then the entry is marked `ending` and the end is asked again. `ledger.release` ends every recorded session the ledger does not hold. One store belongs to one process and one Reactor account.
+- `H3Source.opener` and `FastH3Source.opener`, which open and resume each source's sessions for a `Ledger`: `ledger.source(H3Source.opener({ tokens }))`.
+- `CoordinatorClient.terminateUntilConfirmed` and `ConfirmedTermination`: ends a session and asks again, 5 s after the first end and doubling to at most 5 minutes apart, until Reactor confirms it. It fails at once on a `DELETE` refused with 401 or 403, and when a schedule the caller passes ends first.
 
 ### Changed
 
@@ -23,10 +26,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A clip not built yet is planned at the length its model builds, so `place`, firm admission and cap checks no longer err by up to a grid step for a length not asked for before. On the simulated Reactor, a clip placed behind a 7.3 s request, which H3 builds as 8 s, started 473 ms after its `startsAt` before, and 17 ms after.
 - `LocalSource` builds the length its model builds when its hook states none: a stand-in for H3 now builds H3's lengths.
 - Builds are projected per built second, each lane at its own rate once three are measured, and filler at filler's. One median over every build, filler's included, projected every item: a local renderer whose filler builds at once, and whose items took 0.8 s a requested second, admitted a firm item as if its 4 s build took nothing. It is now refused with `WouldMissDeadline`.
+- `CoordinatorClient.terminate`, and so `session.close`, confirms a session gone only when two reads in a row find it gone; one missing read used to confirm it. A coordinator can answer 404 for one read of a running session, so after a `DELETE` that did not take, such a session was reported confirmed ended and `Session.mayStillBill` said false.
 
 ### Documentation
 
 - The session and cost-control guidance no longer promises that Reactor ends a dropped session after 30 seconds. Reactor documents that deadline, but a hosted session whose owner was killed stayed live past 60 seconds and was billed until the API key ended it. End sessions explicitly and cap them.
+- The cost-control guide records and ends sessions with the `Ledger`, in place of its hand-written owner records and start-up pass, and the livestream example opens its sessions through the ledger, kept in `ledger-<mode>.json` in place of `allocations.jsonl`.
 
 ## [0.10.0] - 2026-10-02
 
