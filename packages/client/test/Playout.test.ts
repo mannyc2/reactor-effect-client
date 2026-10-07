@@ -21,6 +21,7 @@ import {
 import * as CoordinatorClient from "../src/CoordinatorClient.js";
 import * as H3 from "../src/H3.js";
 import {
+  FastH3Source,
   H3Source,
   LocalSource,
   Playout,
@@ -2029,6 +2030,7 @@ layer(hosted)("local renderer", (it) => {
         name: "speech",
         lengths: { min: 0.5, max: 30 },
         defaultSeconds: 2,
+        builtSeconds: (seconds) => seconds,
         check: () => [],
       };
       const presented = yield* Ref.make<ReadonlyArray<number>>([]);
@@ -2061,6 +2063,25 @@ layer(hosted)("local renderer", (it) => {
     }),
   );
 
+  // The plan's longest clip to fit before a cap bisects on this.
+  it.effect("every shipped model builds a longer request at least as long", () =>
+    Effect.sync(() => {
+      const shorter: Array<string> = [];
+      for (const model of [H3Source.model, FastH3Source.model]) {
+        const { min, max } = model.lengths;
+        const steps = Math.round((max - min) * 10_000);
+        let previous = model.builtSeconds(min);
+        for (let step = 1; step <= steps; step++) {
+          const seconds = min + ((max - min) * step) / steps;
+          const built = model.builtSeconds(seconds);
+          if (built < previous) shorter.push(`${model.name} at ${seconds.toFixed(4)} s`);
+          previous = built;
+        }
+      }
+      assert.deepStrictEqual(shorter, []);
+    }),
+  );
+
   it.effect("refuses a source that runs another model, before it airs anything", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
@@ -2068,6 +2089,7 @@ layer(hosted)("local renderer", (it) => {
         name: "speech",
         lengths: { min: 0.5, max: 30 },
         defaultSeconds: 2,
+        builtSeconds: (seconds) => seconds,
         check: () => [],
       };
       const opens = yield* Ref.make(0);

@@ -207,23 +207,26 @@ export const announcer = Playout.make({
 | Option       | What it does                                                                    |
 | ------------ | ------------------------------------------------------------------------------- |
 | `model`      | The model the source runs, H3's by default; pass the same model to `Playout.make` |
-| `build`      | Makes a clip's value, and its built length when that differs (`seconds`)        |
+| `build`      | Makes a clip's value, and its built length when that differs from what its model builds (`seconds`) |
 | `present`    | Plays the value through the `sink`'s `video` and `audio`; without it, a clip plays for its length |
 | `lifetime`   | Caps the session, as a paid session's cap does, so the playout renews it; unending by default |
-| `buildRatio` | Without hooks: a stand-in whose clips build for this share of their length and play for their length |
+| `buildRatio` | Without hooks: a stand-in whose clips build for this share of their requested length and play for the length their model builds |
 
 `build` and `present` run in a scope the clip owns, which closes once the clip leaves the source,
 so a finalizer releases what they made. A hook that fails with your own error fails that clip
 alone: `Failed` with reason `Clip`, your error pretty-printed and `Redacted` in `provider`. A hook
 that dies stops the source, and the playout replaces its session. The playout checks every
 request against its model, H3's by default. A renderer with its own lengths passes the same
-`ClipModel` to `LocalSource.open` and `Playout.make`, so speech can air below H3's 5 s minimum:
+`ClipModel` to `LocalSource.open` and `Playout.make`, so speech can air below H3's 5 s minimum.
+Its `builtSeconds` is the length the model builds for a requested length, which the playout plans
+a clip not built yet at; speech builds what it is asked:
 
 ```ts
 import { Effect } from "effect";
 import { H3, LocalSource, Playout } from "reactor-effect-client";
 const speech: Playout.ClipModel<H3.Request> = {
-  name: "speech", lengths: { min: 0.5, max: 30 }, defaultSeconds: 2, check: () => [],
+  name: "speech", lengths: { min: 0.5, max: 30 }, defaultSeconds: 2,
+  builtSeconds: (seconds) => seconds, check: () => [],
 };
 export const spoken = Playout.make({
   model: speech,
@@ -234,7 +237,8 @@ export const spoken = Playout.make({
 
 <Aside>
 `LocalSource.open({ buildRatio: 0.4, lifetime: "1 minute" })` runs a whole programme, renewals
-included, without a renderer: a quick way to see what your schedule does.
+included, without a renderer: a quick way to see what your schedule does. Standing in for H3, it
+builds H3's lengths: a 7.3 s request airs 8 s.
 </Aside>
 
 ## Writing a source

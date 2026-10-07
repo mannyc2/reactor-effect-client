@@ -1151,7 +1151,7 @@ describe("PlayoutPolicy, air before queue order", () => {
   it("sends a filler clip that airs no longer than the item takes to build", () => {
     const slow = {
       ...measured,
-      samples: { build: [0.8, 0.8, 0.8], continued: [], length: [], aired: [] },
+      samples: { build: [0.8, 0.8, 0.8], continued: [], length: [], overBuilt: [], aired: [] },
     };
     const { policy } = airing(protecting("air"), 6, slow);
     policy.submit(spec("ten", 1, 10));

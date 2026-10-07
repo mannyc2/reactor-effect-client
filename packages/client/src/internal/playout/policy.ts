@@ -212,6 +212,8 @@ export type Action<Req extends ClipRequest = Request> =
 export interface Config<Req extends ClipRequest = Request> {
   /** The length a request without `seconds` is planned at: its model's default. */
   readonly defaultSeconds: number;
+  /** The length its model builds for a request of `seconds`. */
+  readonly builtSeconds: (seconds: number) => number;
   readonly lanes: ReadonlyArray<{
     readonly name: string;
     readonly conflict: "queue" | "replace" | "skip";
@@ -459,13 +461,15 @@ export interface State<Req extends ClipRequest = Request> {
   readonly closed: boolean;
   /**
    * Recent builds, in build seconds per requested second, of independent
-   * clips and of clips continued from another; actual over requested length;
+   * clips and of clips continued from another; actual over requested length,
+   * the public ratio; actual over the length the model builds, the planner's;
    * and the length recent clips aired at, by the length each asked for.
    */
   readonly samples: {
     readonly build: ReadonlyArray<number>;
     readonly continued: ReadonlyArray<number>;
     readonly length: ReadonlyArray<number>;
+    readonly overBuilt: ReadonlyArray<number>;
     readonly aired: ReadonlyArray<{ readonly requested: number; readonly seconds: number }>;
   };
   /**
@@ -533,7 +537,7 @@ export const initial: State<never> = {
   drains: [],
   accepting: true,
   closed: false,
-  samples: { build: [], continued: [], length: [], aired: [] },
+  samples: { build: [], continued: [], length: [], overBuilt: [], aired: [] },
   cut: undefined,
   cutting: undefined,
   starving: false,
@@ -601,12 +605,42 @@ const airedSample = (
 
 /**
  * The length a clip asking for `requested` seconds is projected to air at: that of the latest one
- * that asked for as much, since a provider's grid maps a length to one; else at the median ratio,
- * which a length on another grid step does not carry to (`fillLength`).
+ * that asked for as much, since a provider's grid maps a length to one; else the length its model
+ * builds, by the median ratio of the lengths clips aired at to those their model built.
  */
-const airedLengthOf = (samples: State<never>["samples"], requested: number): number =>
+const airedLengthOf = (
+  samples: State<never>["samples"],
+  requested: number,
+  builtSeconds: (seconds: number) => number,
+): number =>
   samples.aired.find((sample) => Math.abs(sample.requested - requested) <= 1e-6)?.seconds ??
-  requested * estimatesOf(samples).length;
+  builtSeconds(requested) * (samples.overBuilt.length === 0 ? 1 : quantile(samples.overBuilt, 0.5));
+
+/**
+ * The longest request within `lengths`, in whole milliseconds, that `lengthOf` counts at no more
+ * than `roomSeconds`; `lengths.min` when none is. A longer request builds at least as long, so it
+ * bisects over whole milliseconds, keeping the longest it checked to fit. A length a hair above a
+ * grid point would count at that point here, but build a whole step more on a provider that
+ * aligns it without the plan's tolerance.
+ */
+const longestWithin = (
+  roomSeconds: number,
+  lengths: { readonly min: number; readonly max: number },
+  lengthOf: (seconds: number) => number,
+): number => {
+  if (!(lengthOf(lengths.min) <= roomSeconds)) return lengths.min;
+  const lowest = Math.ceil(lengths.min * 1000);
+  // The longest checked to fit, and the shortest checked not to, in milliseconds; each bound is
+  // only assumed until a check moves it.
+  let fit = lowest - 1;
+  let over = Math.floor(lengths.max * 1000) + 1;
+  while (over - fit > 1) {
+    const middle = Math.floor((fit + over) / 2);
+    if (lengthOf(middle / 1000) <= roomSeconds) fit = middle;
+    else over = middle;
+  }
+  return fit >= lowest ? fit / 1000 : lengths.min;
+};
 
 const estimatesOf = (samples: State<never>["samples"]): PublicState["estimates"] => ({
   build: spreadOf(samples.build),
@@ -1131,6 +1165,9 @@ const decide = <Req extends ClipRequest>(
   };
 
   const estimates = (): PublicState["estimates"] => estimatesOf(state.samples);
+  /** Seconds a clip asking for `seconds`, not built yet, is projected to air. */
+  const lengthOf = (seconds: number): number =>
+    airedLengthOf(state.samples, seconds, config.builtSeconds);
   const playingRestMs = (value: Session<Req> | undefined): number => playingRestOf(value, now.mono);
   const airs = (clip: SourceClip): boolean => airsOf(items, clip, now);
   /**
@@ -1199,7 +1236,7 @@ const decide = <Req extends ClipRequest>(
         keeps(other, memo),
     );
     const unbuiltMs = unbuilt.reduce(
-      (total, other) => total + airedLengthOf(state.samples, other.spec.seconds) * 1000,
+      (total, other) => total + lengthOf(other.spec.seconds) * 1000,
       0,
     );
     const aheadMs = readyMs + unbuiltMs;
@@ -1745,8 +1782,8 @@ const decide = <Req extends ClipRequest>(
       _tag: "Started",
       at: now.wall,
       sessionId,
-      // A clip the provider named without its length is counted at the length requested.
-      seconds: clip.seconds ?? item.spec.seconds,
+      // A clip the provider named without its length is counted at the length its model builds.
+      seconds: clip.seconds ?? config.builtSeconds(item.spec.seconds),
       ...(late === undefined ? {} : { lateByMillis: Math.round(late) }),
     });
     // A withdrawal that waited on it is too late: it answers now, not when the clip ends.
@@ -1808,6 +1845,10 @@ const decide = <Req extends ClipRequest>(
       samples: {
         ...airedSample(state.samples, item.spec.seconds, clip.seconds),
         length: [...state.samples.length, clip.seconds / item.spec.seconds].slice(-maxSamples),
+        overBuilt: [
+          ...state.samples.overBuilt,
+          clip.seconds / config.builtSeconds(item.spec.seconds),
+        ].slice(-maxSamples),
       },
     };
   };
@@ -2744,7 +2785,9 @@ const decide = <Req extends ClipRequest>(
   function cueAt(item: Item<Req>, cue: Spec<Req>["cues"][number]): number {
     return cue.from === "start"
       ? item.startedAt! + cue.offsetMs
-      : item.startedAt! + (item.airSeconds ?? item.spec.seconds) * 1000 - cue.offsetMs;
+      : item.startedAt! +
+          (item.airSeconds ?? config.builtSeconds(item.spec.seconds)) * 1000 -
+          cue.offsetMs;
   }
   /** The cut's cutter while it waits Ready on its session, and whether the plan still wants it. */
   function cutterOf(): { readonly cutter: SourceClip | undefined; readonly wanted: boolean } {
@@ -3095,7 +3138,8 @@ const decide = <Req extends ClipRequest>(
     // long to air before the cap would come to fit with nothing to wake the plan. A new clip asks
     // instead for what airs before the cap, if the shortest the filler takes does.
     if (state.filler.retries.length > 0 || !fits(target, filler.lengths.min)) return;
-    sendFiller(filler, target, Math.max(filler.lengths.min, longestFit(target)), room);
+    const untilCap = (capOf(target) - airedAheadAt(target)) / 1000;
+    sendFiller(filler, target, longestWithin(untilCap, filler.lengths, lengthOf), room);
   }
   /**
    * `item`'s p95 build in seconds, at the continued rate if it continues a
@@ -3366,21 +3410,17 @@ const decide = <Req extends ClipRequest>(
     return air === undefined ? undefined : exposedAt(air, readyAheadMs(air, Infinity) + readyMs);
   }
   /**
-   * Whether a clip of `seconds` built on `target` now would finish airing before
-   * the session's cap, counting everything that airs ahead of it there: the
+   * Whether a clip asking for `seconds`, built on `target` now, would finish airing
+   * before the session's cap, counting everything that airs ahead of it there: the
    * playing clip's rest, its Ready clips, its builds in flight and, for a
    * replacement, what the session on air still has. A clip no fresh session
    * could air whole is not held back.
    */
   function fits(target: Session<Req>, seconds: number): boolean {
     if (target.lifetimeMs === Infinity) return true;
-    const lengthMs = seconds * estimates().length * 1000;
+    const lengthMs = lengthOf(seconds) * 1000;
     if (lengthMs > target.lifetimeMs - lookaheadMarginSeconds * 1000) return true;
     return airedAheadAt(target) + lengthMs <= capOf(target);
-  }
-  /** The most seconds a clip built on `target` now may ask for and still air before its cap. */
-  function longestFit(target: Session<Req>): number {
-    return (capOf(target) - airedAheadAt(target)) / (estimates().length * 1000);
   }
   /** When a clip built on `target` must have aired by: its cap, less the margin. */
   function capOf(target: Session<Req>): number {
@@ -3388,7 +3428,6 @@ const decide = <Req extends ClipRequest>(
   }
   /** When all that airs ahead of a clip built on `target` now has aired. */
   function airedAheadAt(target: Session<Req>): number {
-    const ratio = estimates().length;
     const queuedMs = (value: Session<Req>): number =>
       waitingOf(value)
         .filter(airs)
@@ -3404,7 +3443,7 @@ const decide = <Req extends ClipRequest>(
           (item) =>
             item.sessionId === target.id && (item.phase === "Building" || item.phase === "Unknown"),
         )
-        .reduce((total, item) => total + item.spec.seconds * ratio * 1000, 0) +
+        .reduce((total, item) => total + lengthOf(item.spec.seconds) * 1000, 0) +
       (target.source?.building ?? [])
         .filter((clip) => clip.tag?._tag === "Filler")
         .reduce((total, clip) => total + clip.seconds * 1000, 0);
@@ -3854,7 +3893,6 @@ const decide = <Req extends ClipRequest>(
       return seconds * rate * 1000;
     };
     const ratio = measured.length;
-    const lengthOf = (seconds: number): number => airedLengthOf(state.samples, seconds);
     const filler = config.filler;
     const floorSeconds = fillerFloor();
     const targetSeconds = Math.max(filler?.target ?? 0, floorSeconds);
@@ -4232,7 +4270,7 @@ const decide = <Req extends ClipRequest>(
       const openedAt =
         targetId === air.id ? air.openedAt : (replacement?.openedAt ?? opensAt ?? now.mono);
       if (lifetimeMs === Infinity) return true;
-      const lengthMs = seconds * ratio * 1000;
+      const lengthMs = lengthOf(seconds) * 1000;
       const marginMs = lookaheadMarginSeconds * 1000;
       if (lengthMs > lifetimeMs - marginMs) return true;
       const queuedMs = (id: string): number =>

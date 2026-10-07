@@ -14,10 +14,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `Playout.Service<Req>` for application services that plan another model's requests.
 - `FastH3`, a provider for Reactor's FastH3 (`reactor/fast-h3`) over a connected `Session`. Requests take a frame or clip id as opener and closer, with lengths of 5.167–14.375 s aligned up to the frame grid. `ReactorTest` simulates its queues and playback. One paid raw-session probe confirmed the deployment contract and observed length alignment; no paid run has qualified this provider or a FastH3 playout. Hosted FastH3 refused H3's undeclared `reference_images` field.
 - `FastH3Source.open`, `resume` and `model`, so `Playout.make` can air FastH3 across session caps. Automatic continuations use only built, retained clips. A missing playout hint is omitted and reported before the single submission; an explicit request opener takes precedence. Post-send failures and dispatch outcomes pass through unchanged, with no failure-triggered refresh or resend. H3Source uses the shared source engine with its public API and behavior preserved; hosted FastH3 provider/playout qualification is pending.
+- `ClipModel.builtSeconds`, the length a model builds for a requested length: H3 and FastH3 align it up to their frame grid, and a renderer that builds what it is asked answers the length itself.
 
 ### Changed
 
 - `ReactorTest` keeps a dropped session `INACTIVE` until it is terminated, reconnects or reaches its cap, matching hosted behaviour. It previously ended the session after 30 seconds. Tests that need Reactor's documented disconnect deadline can use `DisconnectEnds { after }`.
+- A clip not built yet is planned at the length its model builds, so `place`, firm admission and cap checks no longer err by up to a grid step for a length not asked for before. On the simulated Reactor, a clip placed behind a 7.3 s request, which H3 builds as 8 s, started 473 ms after its `startsAt` before, and 17 ms after.
+- `LocalSource` builds the length its model builds when its hook states none: a stand-in for H3 now builds H3's lengths.
 
 ### Documentation
 

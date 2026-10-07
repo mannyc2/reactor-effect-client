@@ -86,10 +86,11 @@ A submission is refused before anything is sent with one of these tagged errors:
 | `WouldMissDeadline` | The plan cannot start the item before its firm `startBy`                |
 | `PlayoutClosed`     | The playout is draining or closed                                       |
 
-An item whose request omits `seconds` is sent at its model's `defaultSeconds` (5 s for H3),
-the length the plan counts it at.
+An item whose request omits `seconds` is sent at its model's `defaultSeconds` (5 s for H3).
 A filler request without `seconds` is sent at the length passed to its `clip` callback in
-`FillContext.seconds`. A request that names its length is sent unchanged.
+`FillContext.seconds`. A request that names its length is sent unchanged. The plan counts a clip
+not built yet at the length its model builds for the request (`ClipModel.builtSeconds`): H3
+aligns 5 s up to its frame grid, 124 frames or 5.167 s.
 
 ## Lanes
 
@@ -141,8 +142,8 @@ and the Ready clips that will air after it, on the session on air and then on it
   the playout asks for the longest clip that airs before it, if `lengths.min` fits.
   H3 aligns each up to its frame grid, so the `At` item
   may air up to 0.7 s late for each tile. The plan counts a filler clip not yet sent at the
-  `seconds` it asks `clip` for, so a callback that returns another length moves the tiling, and
-  `place`'s `startsAt`, by the difference.
+  length its model builds for the `seconds` it asks `clip` for, so a callback that returns another
+  length moves the tiling, and `place`'s `startsAt`, by the difference.
 - `protect`: what goes first when an item's build would outlast the air secured. With `"air"`, the
   default, once three builds are measured, such an item waits for one filler clip that builds
   sooner and covers the rest. An item with a time to meet (an `At` start, a `startBy`, an `Asap`
@@ -353,9 +354,8 @@ when it would start (`startsAt`), how to submit it (`anchor`: insert after that 
 
 `place` projects the plan as it is, at the median build rates, and reserves nothing. `before` is
 not enforced, since a clip submitted after the call may come between. A clip not built yet
-counts at the length the last clip that asked for as much aired at, so `startsAt` may be off by
-up to 0.7 s for each clip ahead at a length not asked for before. A `follows` clip gets no filler
-cover, and a cutting lane refuses it.
+counts at the length the last clip that asked for as much aired at, else at the length its model
+builds for it. A `follows` clip gets no filler cover, and a cutting lane refuses it.
 
 While a follower waits, autoplay is fenced before its build once a clip H3 reported starting plays
 on that session, so an early end cannot air it before the clip it follows. A follower not Ready,
