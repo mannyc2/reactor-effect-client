@@ -3027,6 +3027,55 @@ describe("PlayoutPolicy, groups", () => {
     assert.isBelow(runway(), 5);
   });
 
+  // A part waiting behind an insert still building airs once the insert has, and ahead of any clip
+  // sent now. The runway leaves it out as air not secured, and the cap check did too: a clip that
+  // would air past the session's cap behind it was built there all the same, to be cut off there.
+  it("counts a part waiting behind an insert still building toward the cap", () => {
+    // Two builds may be in flight, so another may go while the insert's does.
+    const policy = drive({ config: { ...config, maxBuildsInFlight: 2 } });
+    policy.tick(0);
+    // What s1 builds must have aired by 35 s, its cap less the margin.
+    policy.open("s1", 36_000, 0);
+    policy.edit(
+      [
+        {
+          _tag: "SubmitGroup",
+          key: key("g"),
+          lane: 1,
+          parts: [spec("p1", 1, 20), spec("p2")],
+          fingerprint: "g",
+        },
+      ],
+      false,
+      10,
+    );
+    policy.reply({ _tag: "Done", clipId: "c-p1" }, 20);
+    policy.reply({ _tag: "Done", clipId: "c-p2" }, 30);
+    const p1 = clip("c-p1", item("p1"), 20);
+    const p2 = clip("c-p2", item("p2"));
+    policy.observe({ ready: [p1, p2] }, "s1", 2_000);
+    // p1 airs to 22.1 s, with p2 Ready behind it.
+    policy.event({ _tag: "Started", clip: p1 }, "s1", 2_100);
+    policy.observe({ playing: p1, ready: [p2] }, "s1", 2_101);
+    // xi goes in before p2, and its build goes out at once: p2 airs once xi has, from 27.1 s.
+    policy.edit(
+      [{ _tag: "Insert", spec: spec("xi"), anchor: key("p2"), side: "before" }],
+      false,
+      3_000,
+    );
+    policy.reply({ _tag: "Done", clipId: "c-xi" }, 3_010);
+    const xi = clip("c-xi", item("xi"));
+    policy.observe({ playing: p1, ready: [p2], building: [xi] }, "s1", 3_020);
+    // z, sent now, would air after p2, from 32.1 s to 37.1 s, past the cap: it waits for the
+    // replacement, which opens at the lead.
+    const before = policy.actions.length;
+    policy.submit(spec("z"), 3_030);
+    assert.deepStrictEqual(enqueued(policy.actions.slice(before)), []);
+    assert.isTrue(policy.tick(6_000).actions.some((action) => action._tag === "Open"));
+    policy.open("s2");
+    assert.deepStrictEqual(enqueued(policy.actions.slice(before), "s2"), ["z"]);
+  });
+
   // A part waiting behind the part before it, Ready behind that part on their session, airs next
   // once that part starts. It waited at the end of the queue, behind a lower lane's clip, and was
   // moved into its place only once that part had started: a part shorter than the move's round trip

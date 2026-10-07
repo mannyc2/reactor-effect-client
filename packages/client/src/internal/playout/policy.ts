@@ -4018,7 +4018,7 @@ const decide = <Req extends ClipRequest>(
   function airedAheadAt(target: Session<Req>): number {
     // A member its group holds back airs once the members ahead of it have, before the cap too.
     const queuedMs = (value: Session<Req>): number =>
-      secondsOf(inTurn(value, (clip) => airsAtPlaceOf(roster, clip, now))) * 1000;
+      secondsOf(waitingOf(value).filter((clip) => airsAtPlaceOf(roster, clip, now))) * 1000;
     const onAir = session(state.air);
     const startsAt =
       target.id === state.air || onAir === undefined
