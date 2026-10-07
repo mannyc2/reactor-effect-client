@@ -150,6 +150,15 @@ export const notTerminated: Termination = {
   state: null,
 };
 
+/** A termination Reactor confirmed: the session read `CLOSED`, or was gone on two reads. */
+export const ConfirmedTermination = Schema.Struct({
+  ...Termination.fields,
+  confirmed: Schema.Literal(true),
+  evidence: Schema.Literals(["absent", "terminal"]),
+});
+export type ConfirmedTermination = typeof ConfirmedTermination.Type;
+const isConfirmed = Schema.is(ConfirmedTermination);
+
 /** A termination verdict as span attributes: a successful terminate says nothing about billing. */
 export const terminationAttributes = (termination: Termination): Record<string, unknown> => ({
   "reactor.termination.attempted": termination.attempted,
@@ -487,7 +496,10 @@ export class CoordinatorClient extends Context.Service<
       },
     ) => Tokens;
     readonly inspect: (sessionId: string) => Effect.Effect<Inspection, ReactorError>;
-    /** Uncertainty stays in the report; supervisors choose their own failure policy. */
+    /**
+     * Ends the session once. Uncertainty stays in the report; supervisors choose their own
+     * failure policy, such as `terminateUntilConfirmed`.
+     */
     readonly terminate: (sessionId: string) => Effect.Effect<Termination>;
     readonly downloadClip: (
       clip: ClipReady,
@@ -1277,3 +1289,52 @@ export const layerConfig: Layer.Layer<
     return yield* make({ apiUrl, ...(Option.isSome(apiKey) ? { apiKey: apiKey.value } : {}) });
   }),
 );
+
+/**
+ * How `terminateUntilConfirmed` asks again by default: 5 s after the first end, doubling to at
+ * most 5 minutes apart, jittered so that ends asked together spread out.
+ */
+const confirming: Schedule.Schedule<Duration.Duration> = Schedule.min([
+  Schedule.exponential("5 seconds"),
+  Schedule.spaced("5 minutes"),
+]).pipe(Schedule.jittered);
+
+/** A DELETE refused outright (401 or 403) fails the end: asking again would be refused again. */
+const refused = (sessionId: string) => (termination: Termination) => {
+  const status = termination.deleteStatus;
+  return status === 401 || status === 403
+    ? Effect.fail(
+        ReactorError.make({
+          reason: Http.make({ message: `terminate: HTTP ${String(status)}`, status }),
+          context: { operation: "terminate", sessionId, outcome: "replied" },
+        }),
+      )
+    : Effect.succeed(termination);
+};
+
+/**
+ * Ends `sessionId` with this client's credential, and asks again, waiting longer each time, until
+ * Reactor confirms it ended: 5 s, doubling, at most 5 minutes apart, for as long as it runs. It
+ * fails when the coordinator refuses the end outright (401 or 403), since asking again would be
+ * refused again, and when a `schedule` the caller passes ends with the end unconfirmed.
+ */
+export const terminateUntilConfirmed = Effect.fn("CoordinatorClient.terminateUntilConfirmed", {
+  kind: "client",
+})(function* (
+  sessionId: string,
+  options?: { readonly schedule?: Schedule.Schedule<unknown, Termination> | undefined },
+): Effect.fn.Return<ConfirmedTermination, ReactorError, CoordinatorClient> {
+  yield* Effect.annotateCurrentSpan("reactor.session.id", sessionId);
+  const client = yield* CoordinatorClient;
+  return yield* client.terminate(sessionId).pipe(
+    Effect.flatMap(refused(sessionId)),
+    Effect.repeat({ schedule: options?.schedule ?? confirming, until: isConfirmed }),
+    Effect.filterOrFail(isConfirmed, () =>
+      ReactorError.fromCode(
+        "Indeterminate",
+        "the end was not confirmed before the schedule ended",
+        { operation: "terminate", sessionId },
+      ),
+    ),
+  );
+});
