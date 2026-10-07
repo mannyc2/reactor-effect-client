@@ -4677,7 +4677,7 @@ const decide = <Req extends ClipRequest>(
               (clip.sessionId === onAir || clip.sessionId === targetId) &&
               clip.readyAt <= time &&
               sameClip(follows, clip.tag) &&
-              (clip.item === undefined || queuedAt(clip.item, time)),
+              (clip.item === undefined || queuedAtPlaceIn(clip.item, time)),
           )
         );
       const buildMs = medianBuildMs(item.spec.lane, item.spec.seconds, false);
@@ -4774,7 +4774,10 @@ const decide = <Req extends ClipRequest>(
       const last = aired.at(-1)?.clip;
       if (onTarget && last !== undefined && sameClip(tag, last.tag)) return t;
       const queued = pool
-        .filter((clip) => clip.sessionId === targetId && clip.readyAt <= time && airsAt(clip, time))
+        .filter(
+          (clip) =>
+            clip.sessionId === targetId && clip.readyAt <= time && airsAtPlaceIn(clip, time),
+        )
         .sort(byRank);
       const index = queued.findIndex((clip) => sameClip(tag, clip.tag));
       if (index < 0) return undefined;
