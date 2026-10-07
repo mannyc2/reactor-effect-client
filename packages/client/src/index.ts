@@ -12,5 +12,6 @@ export * as Playout from "./Playout.js";
 export * as Reactor from "./Reactor.js";
 export * as ReactorError from "./ReactorError.js";
 export * as ReactorTest from "./ReactorTest.js";
+export * as References from "./References.js";
 export * as Session from "./Session.js";
 export * as ViduS2Avatar from "./ViduS2Avatar.js";
