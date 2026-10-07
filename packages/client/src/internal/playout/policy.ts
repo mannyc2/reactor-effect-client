@@ -3750,14 +3750,17 @@ const decide = <Req extends ClipRequest>(
       now.mono < (followUncoveredAt(item) ?? Infinity)
     );
   }
-  /** Whether the clip `item` follows is Ready and queued to air where it would air before it. */
+  /**
+   * Whether the clip `item` follows is Ready and queued to air at its place, a member its group
+   * holds back included, where it would air before it.
+   */
   function followedReady(item: Item<Req>): boolean {
     const follows = item.spec.follows;
     if (follows === undefined) return false;
     return [session(state.air), preferred()].some((value) =>
       (value === undefined ? [] : readyOf(value)).some((clip) => {
         const other = itemOf(clip);
-        return sameClip(follows, clip.tag) && (other === undefined || queuedToAir(roster, other));
+        return sameClip(follows, clip.tag) && (other === undefined || queuedAtPlace(roster, other));
       }),
     );
   }
@@ -4000,9 +4003,10 @@ const decide = <Req extends ClipRequest>(
   ): { readonly _tag: "wait" } | { readonly _tag: "from"; readonly clipId: string | undefined } {
     const onAir = target.id === state.air ? target.source?.playing : undefined;
     const playing = onAir !== undefined && sameClip(follows, onAir.tag);
+    // Each Ready clip counts where it will air, a member its group holds back included.
     const queued = waitingOf(target)
-      .filter(airs)
-      .sort((a, b) => compareRank(rankClip(a), rankClip(b)));
+      .filter((clip) => airsAtPlaceOf(roster, clip, now))
+      .sort((a, b) => compareRank(placeRankOf(a), placeRankOf(b)));
     const index = playing ? -1 : queued.findIndex((clip) => sameClip(follows, clip.tag));
     const predecessor = playing ? onAir.clipId : queued[index]?.clipId;
     if (predecessor === undefined) {
@@ -4067,19 +4071,20 @@ const decide = <Req extends ClipRequest>(
     const playingEnd = playing.at + playing.seconds * 1000;
     if (sameClip(follows, playing.tag)) return playingEnd;
     if (item.followsAired === true) return undefined;
+    // Each Ready clip and item counts where it will air, a member its group holds back included.
     const queued = readyOf(air)
-      .filter((clip) => clip.clipId !== playing.clipId && airs(clip))
-      .sort((a, b) => compareRank(rankClip(a), rankClip(b)));
+      .filter((clip) => clip.clipId !== playing.clipId && airsAtPlaceOf(roster, clip, now))
+      .sort((a, b) => compareRank(placeRankOf(a), placeRankOf(b)));
     const index = queued.findIndex((clip) => sameClip(follows, clip.tag));
     if (index < 0) return undefined;
     // An item not built yet that ranks ahead of that clip may still air before it.
-    const rank = rankClip(queued[index]!);
+    const rank = placeRankOf(queued[index]!);
     const unbuilt = [...items.values()].some(
       (other) =>
         other !== item &&
         other.withdraw === undefined &&
         (other.phase === "Accepted" || other.phase === "Building" || other.phase === "Unknown") &&
-        compareRank(rankItem(other), rank) < 0,
+        compareRank(placeRank(other), rank) < 0,
     );
     if (unbuilt) return undefined;
     return (

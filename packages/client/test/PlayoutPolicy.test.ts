@@ -2714,4 +2714,124 @@ describe("PlayoutPolicy, groups", () => {
         assert.isBelow(first, second, `p2 queued ahead of p1: ${order.join(", ")}`);
     }
   });
+
+  // An insert that follows a part waiting behind the part before it airs right after that part, so
+  // its continued build continues from that part's clip. The part counted for nothing while it
+  // waited, so the insert was built independent.
+  it("continues an insert from the waiting part it follows", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("x"));
+    policy.reply({ _tag: "Done", clipId: "c-x" });
+    const x = clip("c-x", item("x"), 20);
+    policy.observe({ ready: [x], continuable: ["c-x"] });
+    policy.event({ _tag: "Started", clip: x }, "s1", 100);
+    policy.observe({ playing: x, continuable: ["c-x"] }, "s1", 101);
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p1"), spec("p2")],
+        fingerprint: "g",
+      },
+    ]);
+    policy.reply({ _tag: "Done", clipId: "c-p1" });
+    const p1 = clip("c-p1", item("p1"));
+    policy.observe({ playing: x, ready: [p1], continuable: ["c-x", "c-p1"] });
+    policy.reply({ _tag: "Done", clipId: "c-p2" });
+    const p2 = clip("c-p2", item("p2"));
+    policy.observe({ playing: x, ready: [p1, p2], continuable: ["c-x", "c-p1", "c-p2"] });
+    const before = policy.actions.length;
+    policy.edit([
+      {
+        _tag: "Insert",
+        spec: { ...spec("y"), continuity: true, follows: item("p2") },
+        anchor: key("p2"),
+        side: "after",
+      },
+    ]);
+    // The follower's fence goes up first.
+    for (let round = 0; round < 4; round++) {
+      const busy = policy.busy();
+      if (busy === undefined || busy._tag === "Enqueue") break;
+      policy.reply({ _tag: "Done" });
+    }
+    const enqueue = commands(policy.actions.slice(before)).find(
+      (action) => action.command._tag === "Enqueue",
+    )?.command;
+    assert.deepStrictEqual(
+      enqueue?._tag === "Enqueue" ? [enqueue.tag, enqueue.continueFrom] : enqueue,
+      [item("y"), "c-p2"],
+    );
+  });
+
+  // A part waiting behind the part before it still airs ahead of what is queued after it, so a
+  // follower of a later clip is projected against that clip's end with the part counted. Left out,
+  // the end came 5 s early, and the follower, which could be Ready in time, was dropped as late.
+  it("projects a follower's clip behind a waiting part where it airs", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    let ready: Array<SourceClip> = [];
+    let playing: SourceClip | undefined;
+    const building: Array<SourceClip> = [];
+    const show = (time?: number) => policy.observe({ playing, ready, building }, "s1", time);
+    /** Answers the moves in flight, applying each to the scripted queue. */
+    const moves = () => {
+      for (let round = 0; round < 6; round++) {
+        const busy = policy.busy();
+        if (busy?._tag !== "Move") return;
+        policy.reply({ _tag: "Done" });
+        const moved = ready.find((value) => value.clipId === busy.clipId);
+        if (moved === undefined) return;
+        ready = ready.filter((value) => value !== moved);
+        ready.splice(busy.position, 0, moved);
+        show();
+      }
+    };
+    /** Builds `name`, whose enqueue is in flight: Ready 2 s after it went, at 0.4 s a second. */
+    const build = (name: string) => {
+      const busy = policy.busy();
+      assert.deepStrictEqual(busy?._tag === "Enqueue" ? busy.tag : busy, item(name));
+      const sentAt = policy.state().items.get(key(name))?.dispatchedAt ?? policy.now();
+      policy.reply({ _tag: "Done", clipId: `c-${name}` });
+      ready = [...ready, clip(`c-${name}`, item(name))];
+      show(sentAt + 2_000);
+      moves();
+    };
+    policy.submit(spec("x"), 10);
+    const x = clip("c-x", item("x"), 20);
+    build("x");
+    ready = [];
+    playing = x;
+    policy.event({ _tag: "Started", clip: x }, "s1", 2_100);
+    show(2_101);
+    policy.edit(
+      [
+        {
+          _tag: "SubmitGroup",
+          key: key("g"),
+          lane: 1,
+          parts: [spec("p1"), spec("p2")],
+          fingerprint: "g",
+        },
+      ],
+      false,
+      15_000,
+    );
+    build("p1");
+    build("p2");
+    policy.submit(spec("z"));
+    build("z");
+    // w holds the build slot for 10 s; y follows z and waits for the slot.
+    policy.submit(spec("w", 1, 25));
+    policy.reply({ _tag: "Done", clipId: "c-w" });
+    building.push(clip("c-w", item("w"), 25));
+    show();
+    policy.submit({ ...spec("y"), follows: item("z") });
+    policy.tick(policy.now() + 50);
+    assert.deepStrictEqual(statuses(policy.actions, "y"), ["Accepted"]);
+  });
 });
