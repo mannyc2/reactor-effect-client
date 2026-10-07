@@ -836,6 +836,9 @@ layer(hosted)("time", (it) => {
       for (const handle of measured) yield* handle.outcome;
       const median = (yield* playout.state).estimates.build?.median ?? 0;
       assert.isAbove(median, 0);
+      // The plan counts a build per second of the length H3 builds, and each build measured asked
+      // for 5 s.
+      const perBuilt = (median * 5) / H3Source.model.builtSeconds(5);
       // Nothing airs, and none may build before 5 s: each would miss its startBy from 8 s less
       // its own build on, a time for each length. Each goes alone, on the lane that cuts, which
       // airs a clip once it is Ready, so only that projection decides it.
@@ -858,7 +861,8 @@ layer(hosted)("time", (it) => {
         )[0] ?? Number.NaN;
       const late = lengths.map((seconds) => {
         const name = `firm ${String(seconds)}`;
-        return at(name, "Dropped") - at(name, "Accepted") - (8_000 - seconds * median * 1_000);
+        const build = H3Source.model.builtSeconds(seconds) * perBuilt * 1_000;
+        return at(name, "Dropped") - at(name, "Accepted") - (8_000 - build);
       });
       // The virtual clock's wall and monotonic readings part by less than a microsecond here.
       assert.deepStrictEqual(
@@ -2079,6 +2083,58 @@ layer(hosted)("local renderer", (it) => {
         }
       }
       assert.deepStrictEqual(shorter, []);
+    }),
+  );
+
+  // Silent filler builds at once and items take 0.8 s a requested second: the median of every
+  // build is a filler's, which would project an item's build at nothing.
+  it.effect("refuses a firm item its lane's builds cannot make, though filler builds at once", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const playout = yield* Playout.make({
+        open: LocalSource.open({
+          build: (local) =>
+            local.request.prompt.startsWith("idle")
+              ? Effect.succeed({ value: undefined })
+              : Effect.as(Effect.sleep(Duration.seconds(0.8 * local.seconds)), {
+                  value: undefined,
+                }),
+        }),
+        ...Playout.lineup({
+          runway: { floor: "4 seconds", target: "8 seconds" },
+          clip: ({ index }) => clip(`idle ${index}`),
+        }),
+      });
+      yield* Effect.sleep("30 seconds");
+      const items = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const item of items) yield* item.outcome;
+      const mixed = (yield* playout.state).estimates.build?.median;
+      assert.isBelow(mixed ?? Infinity, 0.1, "the median of every build is a filler's");
+      // About 2.2 s of a filler clip is left: the next boundary is before the deadline, but a 4 s
+      // build is not.
+      yield* playout.events.pipe(
+        Stream.filter((event) => event._tag === "Filler" && event.phase === "Started"),
+        Stream.runHead,
+      );
+      yield* Effect.sleep("3 seconds");
+      const firm = yield* Effect.result(
+        playout.submit({
+          key: key("firm"),
+          lane: "line",
+          request: clip("firm"),
+          window: { startBy: "3 seconds", firm: true },
+        }),
+      );
+      assert.strictEqual(
+        Result.isFailure(firm) ? firm.failure._tag : "admitted",
+        "WouldMissDeadline",
+      );
+      const { estimates } = yield* playout.state;
+      const line = estimates.lanes.find((lane) => lane.name === "line");
+      assert.approximately(line?.build?.median ?? Infinity, 0.8, 0.05);
+      assert.isBelow(estimates.filler.build?.median ?? Infinity, 0.1);
     }),
   );
 

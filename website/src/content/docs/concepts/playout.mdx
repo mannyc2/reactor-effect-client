@@ -132,8 +132,8 @@ whenever the air it has secured runs low. The air secured, `state.runwaySeconds`
 and the Ready clips that will air after it, on the session on air and then on its replacement.
 
 - `runway: { floor, target }`: below `floor`, filler refills up to `target`. Once three builds
-  are measured, the floor covers at least one slow (p95) build, so a refill started there is
-  Ready in time.
+  are measured, the floor covers at least one of filler's slow (p95) builds, so a refill started
+  there is Ready in time.
 - `clip(context)`: called once per filler clip, with its `index`, the `runwaySeconds` and the
   `seconds` to ask for. Keep it pure. A request outside its model's limits fails the playout with
   `InvalidFiller`, since asking again would get the same request.
@@ -352,10 +352,12 @@ when it would start (`startsAt`), how to submit it (`anchor`: insert after that 
 `"next"`, an `Asap` submission to the lowest lane) and what the projection rests on (`basis`:
 `ready`, `projected` or `unmeasured`).
 
-`place` projects the plan as it is, at the median build rates, and reserves nothing. `before` is
-not enforced, since a clip submitted after the call may come between. A clip not built yet
-counts at the length the last clip that asked for as much aired at, else at the length its model
-builds for it. A `follows` clip gets no filler cover, and a cutting lane refuses it.
+`place` projects the plan as it is, at the median build rates, and reserves nothing: each lane's
+items and filler at their own rate once three of their builds are measured, per second of the
+length their model builds. `before` is not enforced, since a clip submitted after the call may
+come between. A clip not built yet counts at the length the last clip that asked for as much aired
+at, else at the length its model builds for it. A `follows` clip gets no filler cover, and a
+cutting lane refuses it.
 
 While a follower waits, autoplay is fenced before its build once a clip H3 reported starting plays
 on that session, so an early end cannot air it before the clip it follows. A follower not Ready,
@@ -488,7 +490,9 @@ export const asRunLog = (playout: Playout.Playout["Service"]) =>
 `Moderated`, `Reconnecting` and `Reconnected`), each filler clip's start and end, a
 `ReaderOverflow` when a reader of the picture or sound falls behind, and `Starved` when nothing is
 left to play. `playout.state` holds the clip on air, the lanes, each session's role (`on-air`,
-`replacement` or `retiring`), the runway and the build estimates the playout has learned.
+`replacement` or `retiring`), the runway and the build estimates the playout has learned: over
+every build, and each lane's and filler's apart (`estimates.lanes`, `estimates.filler`), which
+it projects that lane's items and filler with.
 `playout.video` and `playout.audio` are the on-air picture and sound as decoded frames, continuing
 across renewals.
 
