@@ -121,12 +121,22 @@ const drive = (options: { readonly config?: Policy.Config; readonly from?: Polic
 /** A session's queues as a scripted provider holds them, how many clips it made, and its orders. */
 interface Queues {
   ready: Array<SourceClip>;
+  /** Clips of the items `slow` names: each stays building until the test moves it on. */
+  building: Array<SourceClip>;
+  readonly slow: Set<string>;
   playing: SourceClip | undefined;
   made: number;
   /** The Ready queue's order after each command. */
   readonly orders: Array<ReadonlyArray<string>>;
 }
-const queues = (playing?: SourceClip): Queues => ({ ready: [], playing, made: 0, orders: [] });
+const queues = (playing?: SourceClip): Queues => ({
+  ready: [],
+  building: [],
+  slow: new Set(),
+  playing,
+  made: 0,
+  orders: [],
+});
 /** The Ready clip of the item `name` in `held`. */
 const readyIn = (held: Queues, name: string): SourceClip => {
   const found = held.ready.find((value) => value.tag?._tag === "Item" && value.tag.key === name);
@@ -135,10 +145,59 @@ const readyIn = (held: Queues, name: string): SourceClip => {
 };
 const nameOf = (tag: ClipTag): string =>
   tag._tag === "Item" ? tag.key : `filler-${String(tag.index)}`;
+/** Shows the plan `sessionId`'s queues as `held` has them, at `time`. */
+const shown = (
+  policy: ReturnType<typeof drive>,
+  sessionId: string,
+  held: Queues,
+  time?: number,
+): void => {
+  policy.observe(
+    {
+      ready: [...held.ready],
+      building: [...held.building],
+      playing: held.playing,
+      continuable: [...held.ready, ...(held.playing === undefined ? [] : [held.playing])].map(
+        (value) => value.clipId,
+      ),
+    },
+    sessionId,
+    time,
+  );
+};
+/**
+ * A boundary at `time` on `sessionId`, as H3 with autoplay on takes it: the clip `held` plays
+ * ends, and its Ready head starts 40 ms later.
+ */
+const boundary = (
+  policy: ReturnType<typeof drive>,
+  sessionId: string,
+  held: Queues,
+  time: number,
+): void => {
+  const ended = held.playing;
+  if (ended !== undefined)
+    policy.event({ _tag: "Ended", clip: ended, termination: "finished" }, sessionId, time);
+  const [head, ...rest] = held.ready;
+  held.playing = head;
+  held.ready = rest;
+  if (head !== undefined) policy.event({ _tag: "Started", clip: head }, sessionId, time + 40);
+  shown(policy, sessionId, held, time + 41);
+};
+/** The items that started, in the order they did. */
+const startOrder = (actions: ReadonlyArray<Policy.Action>): ReadonlyArray<string> =>
+  actions.flatMap((action) =>
+    action._tag === "Emit" &&
+    action.event._tag === "AsRun" &&
+    action.event.event.status._tag === "Started"
+      ? [String(action.event.event.key)]
+      : [],
+  );
 /**
  * Answers up to `rounds` commands on `sessionId` as a provider would: an enqueue's clip is Ready
- * `buildMs` later, a removal or a move applies at once, anything else succeeds. With nothing in
- * flight, time moves on a second. Each enqueue and removal goes into `log`.
+ * `buildMs` later, or stays building if `held.slow` names its item; a removal or a move applies at
+ * once, anything else succeeds. With nothing in flight, time moves on a second. Each enqueue and
+ * removal goes into `log`.
  */
 const provide = (
   policy: ReturnType<typeof drive>,
@@ -150,17 +209,7 @@ const provide = (
 ): void => {
   const show = (time?: number) => {
     held.orders.push(held.ready.map((value) => value.clipId));
-    policy.observe(
-      {
-        ready: [...held.ready],
-        playing: held.playing,
-        continuable: [...held.ready, ...(held.playing === undefined ? [] : [held.playing])].map(
-          (value) => value.clipId,
-        ),
-      },
-      sessionId,
-      time,
-    );
+    shown(policy, sessionId, held, time);
   };
   for (let round = 0; round < rounds; round++) {
     const busy = policy.busy(sessionId);
@@ -177,8 +226,14 @@ const provide = (
           `enqueue ${name}${busy.continueFrom === undefined ? "" : ` from ${busy.continueFrom}`}`,
         );
         policy.reply({ _tag: "Done", clipId }, undefined, sessionId);
-        held.ready = [...held.ready, clip(clipId, busy.tag, busy.request.seconds)];
-        show(policy.now() + buildMs);
+        const made = clip(clipId, busy.tag, busy.request.seconds);
+        if (held.slow.has(name)) {
+          held.building = [...held.building, made];
+          show();
+        } else {
+          held.ready = [...held.ready, made];
+          show(policy.now() + buildMs);
+        }
         break;
       }
       case "Remove": {
@@ -3267,5 +3322,233 @@ describe("PlayoutPolicy, groups", () => {
       policy.reply({ _tag: "Done" }, undefined, "s2");
       assert.strictEqual(policy.state().items.get(key("p2"))?.phase, "Accepted");
     }
+  });
+
+  const moved = (actions: ReadonlyArray<Policy.Action>) =>
+    commands(actions).filter((action) => action.command._tag === "Move").length;
+
+  // An insert a pending batch withdraws ranks behind the rest of its lane until the batch commits,
+  // and the part waiting behind it ranked at its own place: each queue read moved the part ahead of
+  // the insert, which took it out of turn, and back, and the part aired before the insert.
+  it("keeps a part behind an insert that a pending batch withdraws", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    const log: Array<string> = [];
+    const held = queues();
+    policy.submit(spec("x", 1, 60));
+    provide(policy, "s1", 1, held, log);
+    const x = readyIn(held, "x");
+    held.ready = [];
+    held.playing = x;
+    policy.event({ _tag: "Started", clip: x }, "s1", 3_000);
+    shown(policy, "s1", held);
+    policy.edit([group(1, ["p1", "p2"])]);
+    provide(policy, "s1", 10, held, log);
+    policy.edit([{ _tag: "Insert", spec: spec("i"), anchor: key("p1"), side: "after" }]);
+    provide(policy, "s1", 10, held, log);
+    const before = moved(policy.actions);
+    // z builds for as long as the test runs, and i goes once it is Ready.
+    held.slow.add("z");
+    policy.edit(
+      [
+        { _tag: "Submit", spec: spec("z") },
+        { _tag: "Withdraw", key: key("i") },
+      ],
+      true,
+    );
+    provide(policy, "s1", 12, held, log);
+    policy.submit(spec("w"));
+    provide(policy, "s1", 12, held, log);
+    boundary(policy, "s1", held, 63_000);
+    provide(policy, "s1", 6, held, log);
+    boundary(policy, "s1", held, 68_100);
+    provide(policy, "s1", 6, held, log);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "i"]);
+    assert.isAtMost(moved(policy.actions) - before, 2);
+  });
+
+  // An insert whose continued build would end after the parts around it continues from a lower
+  // lane's clip behind them and airs right behind it, while it still holds the part after it. That
+  // part ranked at its own place once the insert was Ready ahead of it, and behind it otherwise:
+  // each queue read moved one past the other.
+  it("keeps a part behind an insert that continues from a lower lane's clip", () => {
+    const lanes: Policy.Config = {
+      ...config,
+      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false }],
+    };
+    const policy = drive({ config: lanes, from: measured });
+    policy.tick(0);
+    policy.open();
+    const log: Array<string> = [];
+    const held = queues();
+    policy.submit(spec("x", 1, 30), 10);
+    provide(policy, "s1", 1, held, log);
+    const x = readyIn(held, "x");
+    held.ready = [];
+    held.playing = x;
+    policy.event({ _tag: "Started", clip: x }, "s1", 13_000);
+    shown(policy, "s1", held, 13_001);
+    policy.edit([group(1, ["p1", "p2"])], false, 13_100);
+    policy.submit(spec("y", 2, 10), 13_200);
+    provide(policy, "s1", 12, held, log);
+    // With 5 s of x left, i's continued build of 21 s ends after p1 and p2 would: it continues
+    // from y, and follows it.
+    const continued = { ...spec("i", 1, 20), continuity: true };
+    policy.edit(
+      [{ _tag: "Insert", spec: continued, anchor: key("p1"), side: "after" }],
+      false,
+      38_000,
+    );
+    const before = moved(policy.actions);
+    provide(policy, "s1", 12, held, log);
+    assert.include(log, "enqueue i from c-y-3");
+    for (const time of [43_000, 48_100, 58_200, 78_300]) {
+      boundary(policy, "s1", held, time);
+      provide(policy, "s1", 6, held, log);
+    }
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "y", "i", "p2"]);
+    assert.isAtMost(moved(policy.actions) - before, 4);
+  });
+
+  // A part waiting behind a part held for its time does not air before the clips behind it, though
+  // it is Ready at its place ahead of them: the reader that projects when a followed clip ends
+  // counted it ahead of that clip, and a follower whose continued build would be Ready only after
+  // that clip ended continued from it.
+  it("counts no part waiting behind a held part ahead of a clip a follower continues from", () => {
+    const lanes: Policy.Config = {
+      ...config,
+      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false }],
+    };
+    const policy = drive({ config: lanes, from: measured });
+    policy.tick(0);
+    policy.open();
+    const log: Array<string> = [];
+    const held = queues();
+    policy.submit(spec("x", 1, 60), 10);
+    provide(policy, "s1", 1, held, log);
+    const x = readyIn(held, "x");
+    held.ready = [];
+    held.playing = x;
+    policy.event({ _tag: "Started", clip: x }, "s1", 30_000);
+    shown(policy, "s1", held, 30_001);
+    // x ends at 90,000, z airs to 100,000 and b to 130,000; the group starts at 110,000.
+    const first: Policy.Spec = {
+      ...spec("p1", 2),
+      start: { _tag: "At", time: 110_000, late: "nextBoundary" },
+    };
+    policy.edit(
+      [
+        {
+          _tag: "SubmitGroup",
+          key: key("g"),
+          lane: 2,
+          parts: [first, spec("p2", 2)],
+          fingerprint: "g",
+        },
+      ],
+      false,
+      30_100,
+    );
+    policy.submit(spec("z", 2, 10), 30_200);
+    policy.submit(spec("b", 2, 30), 30_300);
+    provide(policy, "s1", 30, held, log);
+    assert.deepStrictEqual(
+      held.ready.map((value) => value.clipId),
+      ["c-z-1", "c-b-2", "c-p1-3", "c-p2-4"],
+    );
+    // With 10 s of x left, y's continued build of 23 s would end after z does.
+    policy.submit({ ...spec("y", 1, 22), continuity: true, follows: item("z") }, 80_000);
+    provide(policy, "s1", 3, held, log);
+    assert.include(log, "enqueue y");
+  });
+
+  // A part's replacement still building beside the part, Ready ahead, took the part behind them
+  // out of turn: it was moved behind a lower lane's clip, which aired between the two parts, and it
+  // left the air secured.
+  it("keeps a part in turn behind a part whose replacement is still building", () => {
+    const lanes: Policy.Config = {
+      ...config,
+      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false }],
+    };
+    const policy = drive({ config: lanes });
+    policy.tick(0);
+    policy.open();
+    const log: Array<string> = [];
+    const held = queues();
+    policy.submit(spec("x", 1, 20));
+    provide(policy, "s1", 1, held, log);
+    const x = readyIn(held, "x");
+    held.ready = [];
+    held.playing = x;
+    policy.event({ _tag: "Started", clip: x }, "s1", 3_000);
+    shown(policy, "s1", held);
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p1", 1, 2), spec("p2")],
+        fingerprint: "g",
+      },
+    ]);
+    policy.submit(spec("y", 2));
+    provide(policy, "s1", 10, held, log);
+    const runway = () => Policy.view(lanes, policy.state(), { mono: 0, wall: 0 }).runwaySeconds;
+    const secured = runway();
+    held.slow.add("p1r");
+    policy.edit([{ _tag: "Replace", key: key("p1"), spec: spec("p1r", 1, 2) }]);
+    assert.strictEqual(runway(), secured);
+    const before = moved(policy.actions);
+    provide(policy, "s1", 10, held, log);
+    boundary(policy, "s1", held, 23_000);
+    boundary(policy, "s1", held, 25_000);
+    provide(policy, "s1", 6, held, log);
+    assert.strictEqual(moved(policy.actions) - before, 0);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2"]);
+  });
+
+  // The same replacement left the part behind it out of the air secured, and filler went out to
+  // cover air that was there.
+  it("sends no filler for a part behind a part whose replacement is still building", () => {
+    const covering: Policy.Config = {
+      ...config,
+      maxBuildsInFlight: 2,
+      filler: {
+        floor: 40,
+        target: 40,
+        clip: ({ index }) => ({ prompt: `filler ${String(index)}`, seconds: 5 }),
+        lengths: { min: 5, max: 15 },
+        invalid: () => undefined,
+        protect: "air",
+      },
+    };
+    const policy = drive({ config: covering });
+    policy.tick(0);
+    policy.open();
+    const log: Array<string> = [];
+    const held = queues();
+    policy.submit(spec("x", 1, 20));
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p1", 1, 2), spec("p2", 1, 30)],
+        fingerprint: "g",
+      },
+    ]);
+    provide(policy, "s1", 12, held, log);
+    boundary(policy, "s1", held, policy.now() + 1);
+    provide(policy, "s1", 12, held, log);
+    const now = { mono: policy.now(), wall: policy.now() };
+    const secured = () => Policy.view(covering, policy.state(), now).runwaySeconds;
+    const before = secured();
+    held.slow.add("p1r");
+    const sent = log.length;
+    policy.edit([{ _tag: "Replace", key: key("p1"), spec: spec("p1r", 1, 2) }]);
+    provide(policy, "s1", 8, held, log);
+    assert.deepStrictEqual(log.slice(sent), ["enqueue p1r"]);
+    assert.strictEqual(secured(), before);
   });
 });
