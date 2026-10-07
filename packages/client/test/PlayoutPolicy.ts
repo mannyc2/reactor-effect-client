@@ -207,6 +207,13 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
   /** Keys submitted to follow a clip, and the clip each follows. */
   const paired = new Map<string, ClipTag>();
   /**
+   * Each group member's group and its order in the lane as the plan admitted it: a part's and its
+   * replacements' order is their place's, and an insert's falls between the places around it.
+   */
+  const members = new Map<string, { readonly group: string; readonly order: number }>();
+  /** For each action, the input it answered, by its index in `inputs`. */
+  const inputOf: Array<number> = [];
+  /**
    * Each clip that started, the clip its item was accepted to follow, and whether the plan had
    * asked for its removal by then.
    */
@@ -277,6 +284,7 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     }
     for (const action of result.actions) {
       actions.push(action);
+      inputOf.push(inputs.length - 1);
       if (action._tag === "Command") {
         const command = action.command;
         if (closed.has(action.sessionId))
@@ -418,15 +426,21 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     const before = actions.length;
     send({ _tag: "Edit", id, edits: list, batch });
     // An item takes its lane when accepted, a replacement its item's and an insert its anchor's;
-    // a key the plan holds already keeps the one it has.
+    // a key the plan holds already keeps the one it has. A replacement or an insert joins its
+    // item's or its anchor's group, if it has one.
     for (const action of actions.slice(before))
       if (
         action._tag === "Emit" &&
         action.event._tag === "AsRun" &&
         action.event.event.status._tag === "Accepted"
       ) {
-        const lane = state.items.get(action.event.event.key)?.spec.lane;
-        if (lane !== undefined) lanes.set(action.event.event.key, lane);
+        const admitted = state.items.get(action.event.event.key);
+        if (admitted !== undefined) lanes.set(action.event.event.key, admitted.spec.lane);
+        if (admitted?.group !== undefined)
+          members.set(action.event.event.key, {
+            group: admitted.group.key,
+            order: admitted.order,
+          });
       }
     // A group or a replacement the plan refused is none: its key may yet name an item of its own.
     if (actions.some((action) => action._tag === "Refused" && action.id === id)) {
@@ -758,7 +772,20 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     }
   });
   send({ _tag: "Close" });
-  return { actions, inputs, edits, drains, problems, groups, named, replaced, paired, starts };
+  return {
+    actions,
+    inputs,
+    inputOf,
+    edits,
+    drains,
+    problems,
+    groups,
+    members,
+    named,
+    replaced,
+    paired,
+    starts,
+  };
 };
 
 /**
@@ -786,11 +813,20 @@ const wakes = (script: Script, lifetimes: Lifetimes = lasting): void => {
   }
 };
 const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lasting): void => {
-  const { actions, edits, drains, problems, groups, named, replaced, paired, starts } = simulate(
-    script,
-    from,
-    lifetimes,
-  );
+  const {
+    actions,
+    inputs,
+    inputOf,
+    edits,
+    drains,
+    problems,
+    groups,
+    members,
+    named,
+    replaced,
+    paired,
+    starts,
+  } = simulate(script, from, lifetimes);
   // What `wakes` checks as the script runs: a refusal is then always attributable.
   assert.deepStrictEqual(problems, []);
   const history = new Map<string, Array<Policy.Action & { readonly _tag: "Emit" }>>();
@@ -899,32 +935,116 @@ const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lastin
       if (action.outcome === "not-found")
         assert.notInclude(statuses, "Started", `${name} not found: ${statuses.join(",")}`);
     }
-  // An item is dropped as withdrawn only when a withdrawal or a drain named it, an earlier
-  // part of its group failed or was dropped (a replaced part keeps those after it), or it is
-  // a replacement whose item started first, as 0.7.0 withdrew it.
+  // A group's places are its parts, each with the replacements that took its place. A place is
+  // broken once none of its items has started or settled Unobserved, which may have aired, and
+  // each failed, was dropped or emitted Unknown, so it can no longer air in order; or once an
+  // item of it started and then failed, as a part lost with its session on air does. Each status
+  // counts from the action that carries it.
+  const asRuns = actions.flatMap((action, index) =>
+    action._tag === "Emit" && action.event._tag === "AsRun"
+      ? [{ index, key: String(action.event.event.key), status: action.event.event.status }]
+      : [],
+  );
+  /** `name`'s as-run statuses among the actions before `end`. */
+  const statusesBefore = (name: string, end: number): ReadonlyArray<string> =>
+    asRuns.flatMap((entry) => (entry.key === name && entry.index < end ? [entry.status._tag] : []));
+  /** A group's places, each by the keys of its items and its order in the lane. */
+  const placesOf = (
+    group: string,
+  ): ReadonlyArray<{ readonly keys: ReadonlyArray<string>; readonly order: number }> => {
+    const byPlace = new Map<number, Array<string>>();
+    for (const part of groups.get(group) ?? [])
+      byPlace.set(part.place, [...(byPlace.get(part.place) ?? []), part.key]);
+    return [...byPlace.values()].flatMap((keys) => {
+      const order = keys.map((key) => members.get(key)?.order).find((value) => value !== undefined);
+      return order === undefined ? [] : [{ keys, order }];
+    });
+  };
+  /** Whether a place is broken by the action at `end`, among the items it had by then. */
+  const brokenBy = (keys: ReadonlyArray<string>, end: number): boolean => {
+    const had = keys.map((key) => statusesBefore(key, end)).filter((so) => so.includes("Accepted"));
+    if (had.some((so) => so.includes("Started") && so.includes("Failed"))) return true;
+    return (
+      had.length > 0 &&
+      !had.some((so) => so.includes("Started") || so.includes("Unobserved")) &&
+      had.every((so) =>
+        so.some((status) => status === "Failed" || status === "Dropped" || status === "Unknown"),
+      )
+    );
+  };
+  // An item is dropped as withdrawn only when a withdrawal or a drain named it, a place of its
+  // group ahead of it is broken, then or once the script ends (a withdrawal still landing may drop
+  // the item that breaks it later), or it is a replacement whose item started first, as 0.7.0
+  // withdrew it.
   if (drains.length === 0) {
-    const reasons = (name: string) =>
-      (history.get(name) ?? []).flatMap((action) =>
-        action.event._tag === "AsRun" && action.event.event.status._tag === "Dropped"
-          ? [action.event.event.status.reason]
-          : [],
+    const allowed = (name: string, index: number): boolean => {
+      if (named.has(name)) return true;
+      for (let old = replaced.get(name); old !== undefined; old = replaced.get(old))
+        if (tags(old).includes("Started")) return true;
+      const member = members.get(name);
+      return (
+        member !== undefined &&
+        placesOf(member.group).some(
+          (place) =>
+            place.order < member.order &&
+            (brokenBy(place.keys, index) || brokenBy(place.keys, Infinity)),
+        )
       );
-    const allowed = new Set(named);
-    for (const parts of groups.values()) {
-      const broken = parts.filter(
-        (part) =>
-          tags(part.key).includes("Failed") ||
-          reasons(part.key).some((reason) => reason !== "replaced"),
+    };
+    for (const entry of asRuns)
+      if (entry.status._tag === "Dropped" && entry.status.reason === "withdrawn")
+        assert.isTrue(
+          allowed(entry.key, entry.index),
+          `${entry.key} was dropped though nothing withdrew it`,
+        );
+  }
+  // A group's members start in order, and none starts once a place ahead of it is broken: each
+  // place ahead had started first, or was broken by the end of the step that started the member,
+  // since one read of a session's queues names a clip playing before the one that left them
+  // unseen settles. A start the plan had asked to remove is excused, as a follower's is below.
+  /** The index just past the last action of the step that took the action at `index`. */
+  const stepEnd = (index: number): number => {
+    let end = index + 1;
+    while (end < actions.length && inputOf[end] === inputOf[index]) end++;
+    return end;
+  };
+  /** Whether the clip whose start the action at `index` records had been asked to go first. */
+  const removalAsked = (index: number): boolean => {
+    const input = inputs[inputOf[index] ?? -1];
+    const event = input?._tag === "Source" ? input.event : undefined;
+    const clipId =
+      event?._tag === "Started"
+        ? event.clip.clipId
+        : event?._tag === "State"
+          ? event.state.playing?.clipId
+          : undefined;
+    return actions
+      .slice(0, index)
+      .some(
+        (action) =>
+          action._tag === "Command" &&
+          action.command._tag === "Remove" &&
+          action.command.clipId === clipId,
       );
-      const from = Math.min(...broken.map((part) => part.place));
-      for (const part of parts) if (part.place > from) allowed.add(part.key);
+  };
+  for (const entry of asRuns) {
+    const member = members.get(entry.key);
+    if (entry.status._tag !== "Started" || member === undefined || removalAsked(entry.index))
+      continue;
+    const settled = stepEnd(entry.index);
+    for (const place of placesOf(member.group)) {
+      if (place.order >= member.order) continue;
+      const first = place.keys.some((key) => statusesBefore(key, entry.index).includes("Started"));
+      const unseen = place.keys.some((key) => statusesBefore(key, settled).includes("Unobserved"));
+      assert.isTrue(
+        first || unseen || brokenBy(place.keys, settled),
+        `${entry.key} started before ${place.keys.join(" or ")}, ahead of it in its group`,
+      );
+      assert.isFalse(
+        brokenBy(place.keys, entry.index),
+        `${entry.key} started after ${place.keys.join(" or ")}, ahead of it in its group, broke`,
+      );
     }
-    for (const next of replaced.keys())
-      for (let old = replaced.get(next); old !== undefined; old = replaced.get(old))
-        if (tags(old).includes("Started")) allowed.add(next);
-    for (const name of history.keys())
-      if (reasons(name).includes("withdrawn"))
-        assert.isTrue(allowed.has(name), `${name} was dropped though nothing withdrew it`);
   }
   // Only an item that follows a clip is dropped as displaced.
   for (const name of history.keys()) {

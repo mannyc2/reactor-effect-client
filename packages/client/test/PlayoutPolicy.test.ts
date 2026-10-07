@@ -1529,6 +1529,47 @@ describe("PlayoutPolicy, edits", () => {
     assert.notDeepEqual(policy.busy(), { _tag: "Remove", clipId: "c-p3" });
   });
 
+  // An enqueue whose reply is lost holds no build slot, so the part after it was built behind it,
+  // listed Ready and aired, while the lost one might still air after it. Nothing is sent again,
+  // so the group cannot air in order: the parts after it go.
+  it("a group's later part waits for an earlier part whose enqueue reply was lost, and goes with the group", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p1"), spec("p2")],
+        fingerprint: "g",
+      },
+    ]);
+    assert.deepStrictEqual(policy.busy(), {
+      _tag: "Enqueue",
+      request: spec("p1").request,
+      tag: item("p1"),
+      continueFrom: undefined,
+    });
+    policy.reply(failed("unknown"));
+    const enqueued = commands(policy.actions).flatMap((action) =>
+      action.command._tag === "Enqueue" ? [action.command.tag] : [],
+    );
+    assert.deepStrictEqual(enqueued, [item("p1")]);
+    assert.deepStrictEqual(statuses(policy.actions, "p2"), ["Accepted", "Dropped"]);
+    assert.include(
+      policy.actions.flatMap((action) =>
+        action._tag === "Emit" &&
+        action.event._tag === "AsRun" &&
+        action.event.event.key === key("p2") &&
+        action.event.event.status._tag === "Dropped"
+          ? [action.event.event.status.reason]
+          : [],
+      ),
+      "withdrawn",
+    );
+  });
+
   // 0.7.0 SchedulerWindows: an At item Ready too early is taken off and built again later.
   it("rebuilds an At item exposed after it was Ready, rather than dropping it", () => {
     const policy = drive();
