@@ -353,7 +353,7 @@ export const answer = Effect.fn("answer")(function* (
     case "NotAired":
       return `never aired: ${outcome.first._tag}`;
     case "Indeterminate":
-      return "the playout stopped first";
+      return "the playout died before it could settle the group";
   }
 });
 ```

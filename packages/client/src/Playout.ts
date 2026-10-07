@@ -423,7 +423,10 @@ export type GroupOutcome =
       /** Each place's outcome, in order. */
       readonly parts: readonly [Settled, ...ReadonlyArray<Settled>];
     }
-  /** The playout stopped before the group settled, as when it crashed: what aired is not known. */
+  /**
+   * The playout died and could not settle the group as it closed: what aired is not known. A
+   * playout that closes settles each place it had not, so its groups are `Aired` or `NotAired`.
+   */
   | { readonly _tag: "Indeterminate" };
 
 export type EditResult =
