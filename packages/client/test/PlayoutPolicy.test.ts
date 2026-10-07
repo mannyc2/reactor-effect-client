@@ -2981,4 +2981,49 @@ describe("PlayoutPolicy, groups", () => {
       ["follow", "follow"],
     );
   });
+
+  // A part waiting behind an insert not built yet airs only if that insert is Ready ahead of it in
+  // time; otherwise it is taken off and built again. The runway counted it as secured air all the
+  // same, so the filler floor, the cover sent ahead of a build and the cap read air the plan did
+  // not have.
+  it("leaves a part waiting behind an insert not built yet out of the runway", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    policy.edit(
+      [
+        {
+          _tag: "SubmitGroup",
+          key: key("g"),
+          lane: 1,
+          parts: [spec("p1"), spec("p2")],
+          fingerprint: "g",
+        },
+      ],
+      false,
+      10,
+    );
+    const log: Array<string> = [];
+    const held = queues();
+    provide(policy, "s1", 4, held, log);
+    // p1 airs with p2 Ready behind it.
+    const p1 = readyIn(held, "p1");
+    readyIn(held, "p2");
+    held.ready = held.ready.filter((value) => value !== p1);
+    held.playing = p1;
+    const startedAt = policy.now() + 1;
+    policy.event({ _tag: "Started", clip: p1 }, "s1", startedAt);
+    policy.observe({ ready: held.ready, playing: p1 });
+    const runway = () =>
+      Policy.view(config, policy.state(), { mono: policy.now(), wall: policy.now() }).runwaySeconds;
+    assert.isAbove(runway(), 5);
+    // 1.5 s in, xi goes in before p2, and its 10 s build goes out at once.
+    policy.edit(
+      [{ _tag: "Insert", spec: spec("xi", 1, 25), anchor: key("p2"), side: "before" }],
+      false,
+      startedAt + 1_500,
+    );
+    assert.strictEqual(policy.state().items.get(key("xi"))?.phase, "Building");
+    assert.isBelow(runway(), 5);
+  });
 });

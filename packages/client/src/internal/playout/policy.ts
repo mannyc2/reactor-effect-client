@@ -1035,9 +1035,44 @@ const waitingOf = (value: Session<ClipRequest> | undefined): ReadonlyArray<Sourc
 };
 
 /**
+ * The Ready clips of `value` but the one it plays that `queued` keeps, in its queue's order. A
+ * member its group holds back is among them only once each member it waits behind is kept ahead
+ * of it there or, on a session not on air, is among `onAir`, the items kept on the one that is:
+ * it airs once those have. Behind one not built yet, it would be taken off and built again.
+ */
+const inTurnOf = (
+  roster: Roster,
+  value: Session<ClipRequest> | undefined,
+  queued: (clip: SourceClip) => boolean,
+  onAir: ReadonlySet<string> = new Set(),
+): ReadonlyArray<SourceClip> => {
+  const kept = new Set<string>();
+  return waitingOf(value).filter((clip) => {
+    if (!queued(clip)) return false;
+    const item = clip.tag?._tag === "Item" ? roster.items.get(clip.tag.key) : undefined;
+    if (item === undefined) return true;
+    if (item.group !== undefined)
+      for (const key of roster.members(item.group.key)) {
+        const other = roster.items.get(key);
+        if (other !== undefined && !kept.has(key) && !onAir.has(key) && holds(roster, other, item))
+          return false;
+      }
+    kept.add(item.spec.key);
+    return true;
+  });
+};
+/** The items of `clips`, by key. */
+const keysOf = (clips: ReadonlyArray<SourceClip>): ReadonlySet<string> =>
+  new Set(clips.flatMap((clip) => (clip.tag?._tag === "Item" ? [clip.tag.key] : [])));
+/** Seconds of `clips`. */
+const secondsOf = (clips: ReadonlyArray<SourceClip>): number =>
+  clips.reduce((total, clip) => total + clip.seconds, 0);
+
+/**
  * Seconds of air secured: the playing clip's rest, then the Ready clips that
  * air from the session on air and from its replacement once that takes over,
- * a member its group holds back among them, as it airs once those ahead have.
+ * a member its group holds back among them once the members it waits behind
+ * are Ready ahead of it, as `inTurnOf` keeps them.
  */
 const securedOf = (
   roster: Roster,
@@ -1046,11 +1081,10 @@ const securedOf = (
 ): number => {
   const air = state.sessions.find((value) => value.id === state.air);
   const replacement = state.sessions.find((value) => value.id !== state.air && !value.retiring);
-  const ready = (value: Session<ClipRequest> | undefined): number =>
-    waitingOf(value)
-      .filter((clip) => airsAtPlaceOf(roster, clip, now))
-      .reduce((total, clip) => total + clip.seconds, 0);
-  return playingRestOf(air, now.mono) / 1000 + ready(air) + ready(replacement);
+  const queued = (clip: SourceClip): boolean => airsAtPlaceOf(roster, clip, now);
+  const aired = inTurnOf(roster, air, queued);
+  const next = inTurnOf(roster, replacement, queued, keysOf(aired));
+  return playingRestOf(air, now.mono) / 1000 + secondsOf(aired) + secondsOf(next);
 };
 
 type Rank = readonly [number, number, number, number];
@@ -1503,19 +1537,30 @@ const decide = <Req extends ClipRequest>(
   const playingRestMs = (value: Session<Req> | undefined): number => playingRestOf(value, now.mono);
   const airs = (clip: SourceClip): boolean => airsOf(roster, clip, now);
   /**
+   * `inTurnOf` for `value` in the plan as it stands: on a session not on air, a member its group
+   * holds back counts behind those it waits behind kept on the one that is, which airs first.
+   */
+  const inTurn = (
+    value: Session<Req> | undefined,
+    queued: (clip: SourceClip) => boolean,
+  ): ReadonlyArray<SourceClip> => {
+    const air = session(state.air);
+    if (value === undefined || value.id === air?.id) return inTurnOf(roster, value, queued);
+    return inTurnOf(roster, value, queued, keysOf(inTurnOf(roster, air, queued)));
+  };
+  /**
    * The runway as the time passes: at `time` it is `(Math.max(end, time) - time) / 1000 +
    * seconds`. It falls while the clip on air plays, to that clip's end, and holds still with
    * none, or with one whose length or start is unknown, counted as `playingRestOf` counts it.
-   * A member its group holds back counts, since it airs once the members ahead of it have.
+   * A member its group holds back counts once the members it waits behind are Ready ahead of it,
+   * as `inTurnOf` keeps it, since it airs once those have.
    */
   const runwayTerms = (): { readonly end: number; readonly seconds: number } => {
     const target = preferred() ?? session(state.air);
     if (target === undefined) return { end: -Infinity, seconds: 0 };
     const onAir = target.id === state.air;
     const end = onAir ? playingEndOf(target) : undefined;
-    const ready = waitingOf(target)
-      .filter((clip) => airsAtPlaceOf(roster, clip, now))
-      .reduce((total, clip) => total + clip.seconds, 0);
+    const ready = secondsOf(inTurn(target, (clip) => airsAtPlaceOf(roster, clip, now)));
     return end === undefined
       ? { end: -Infinity, seconds: (onAir ? playingRestMs(target) / 1000 : 0) + ready }
       : { end, seconds: ready };
@@ -3796,14 +3841,15 @@ const decide = <Req extends ClipRequest>(
     const target = preferred();
     if (target === undefined) return undefined;
     const air = session(state.air);
-    // An `At` clip kept Ready airs at its time, which the air ahead of it reaches.
+    // An `At` clip kept Ready airs at its time, which the air ahead of it reaches, and a member its
+    // group holds back once those it waits behind have, as the runway counts it.
     const queuedMs = (value: Session<Req> | undefined): number =>
-      waitingOf(value)
-        .filter((clip) => {
+      secondsOf(
+        inTurn(value, (clip) => {
           const other = itemOf(clip);
-          return other === undefined || queuedToAir(roster, other);
-        })
-        .reduce((total, clip) => total + clip.seconds * 1000, 0);
+          return other === undefined || queuedAtPlace(roster, other);
+        }),
+      ) * 1000;
     const aheadMs = queuedMs(air) + (target.id === air?.id ? 0 : queuedMs(target));
     const buildMs = medianBuildMs(item.spec.lane, item.spec.seconds, false);
     return aheadMs - buildMs - exposureMarginMs;
@@ -3918,9 +3964,7 @@ const decide = <Req extends ClipRequest>(
   function airedAheadAt(target: Session<Req>): number {
     // A member its group holds back airs once the members ahead of it have, before the cap too.
     const queuedMs = (value: Session<Req>): number =>
-      waitingOf(value)
-        .filter((clip) => airsAtPlaceOf(roster, clip, now))
-        .reduce((total, clip) => total + clip.seconds * 1000, 0);
+      secondsOf(inTurn(value, (clip) => airsAtPlaceOf(roster, clip, now))) * 1000;
     const onAir = session(state.air);
     const startsAt =
       target.id === state.air || onAir === undefined
@@ -4655,13 +4699,39 @@ const decide = <Req extends ClipRequest>(
       ];
     };
     const byRank = (a: Projected, b: Projected): number => compareRank(rankIn(a), rankIn(b));
+    // As `inTurnOf`: a member its group holds back counts once each member it waits behind that
+    // has not aired or gone counts ahead of it, Ready by `time` on its session or, on a session
+    // not on air, on the one that is.
+    const inTurnIn = (
+      clip: Projected,
+      time: number,
+      queued: (clip: Projected, time: number) => boolean,
+    ): boolean =>
+      clip.item === undefined ||
+      (holdersOf.get(clip.item) ?? []).every(
+        (other) =>
+          done.has(other) ||
+          gone.has(other) ||
+          pool.some(
+            (ahead) =>
+              ahead.item === other &&
+              ahead.readyAt <= time &&
+              (ahead.sessionId === clip.sessionId ||
+                (clip.sessionId !== onAir && ahead.sessionId === onAir)) &&
+              queued(ahead, time) &&
+              inTurnIn(ahead, time, queued),
+          ),
+      );
     /** Seconds of air secured on the session taking new work, as `runway` counts them at `time`. */
     const runwayAt = (time: number): number => {
       const rest = targetId === onAir && current ? Math.max(0, t - time) : 0;
       const ready = pool
         .filter(
           (clip) =>
-            clip.sessionId === targetId && clip.readyAt <= time && airsAtPlaceIn(clip, time),
+            clip.sessionId === targetId &&
+            clip.readyAt <= time &&
+            airsAtPlaceIn(clip, time) &&
+            inTurnIn(clip, time, airsAtPlaceIn),
         )
         .reduce((total, clip) => total + clip.seconds * 1000, 0);
       return (rest + ready) / 1000;
@@ -4685,13 +4755,16 @@ const decide = <Req extends ClipRequest>(
     };
     /** As `followCovered` counts the air ahead of a clip sent at `time`. */
     const aheadAt = (time: number): number => {
+      const queued = (clip: Projected, at: number): boolean =>
+        clip.item === undefined || queuedAtPlaceIn(clip.item, at);
       const readyOn = (id: string): number =>
         pool
           .filter(
             (clip) =>
               clip.sessionId === id &&
               clip.readyAt <= time &&
-              (clip.item === undefined || queuedAt(clip.item, time)),
+              queued(clip, time) &&
+              inTurnIn(clip, time, queued),
           )
           .reduce((total, clip) => total + clip.seconds * 1000, 0);
       const rest = current ? Math.max(0, t - time) : 0;
