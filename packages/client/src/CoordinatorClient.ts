@@ -17,13 +17,12 @@ import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as Headers from "effect/http/Headers";
 import * as HttpClient from "effect/http/HttpClient";
 import type * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
-import type * as HttpClientResponse from "effect/http/HttpClientResponse";
+import { bodyWithin, checkedUrl } from "./internal/http.js";
 import * as Recording from "./internal/recording.js";
 import { IceCandidate, IceServer, Mapping, Track } from "./Peer.js";
 import type { ClipReady } from "./Session.js";
@@ -547,58 +546,12 @@ interface Call {
   readonly onStatus?: (status: number) => Effect.Effect<void>;
 }
 
-const checkedUrl = (url: string, base?: string): Effect.Effect<URL, ReactorError> =>
-  Effect.try({
-    try: () => new URL(url, base),
-    catch: (cause) => ReactorError.fromCode("Protocol", "HTTP URL is malformed", { detail: cause }),
-  }).pipe(
-    Effect.filterOrFail(
-      (value) =>
-        (value.protocol === "https:" || value.protocol === "http:") &&
-        value.username === "" &&
-        value.password === "",
-      () =>
-        ReactorError.fromCode(
-          "Protocol",
-          "HTTP URL must use http(s) and contain no embedded credentials",
-        ),
-    ),
-  );
-
 /** A response's `Retry-After` when it names a delay in seconds; an HTTP date is not read. */
 const retryAfterOf = (headers: Headers.Headers): Duration.Duration | undefined => {
   const raw = headers["retry-after"];
   if (raw === undefined || !/^\s*(?:\d+(?:\.\d*)?|\.\d+)\s*$/.test(raw)) return undefined;
   const seconds = Number(raw);
   return Number.isFinite(seconds) ? Duration.seconds(seconds) : undefined;
-};
-
-/** The body within `maxBytes` and 16,384 chunks, since every chunk, even an empty one, costs memory. */
-const bodyWithin = (
-  response: HttpClientResponse.HttpClientResponse,
-  maxBytes: number,
-): Effect.Effect<Uint8Array, HttpClientError.HttpClientError | ReactorError> => {
-  const overflow = ReactorError.fromCode(
-    "Overflow",
-    `response exceeds its ${maxBytes} byte bound`,
-    {
-      outcome: "replied",
-    },
-  );
-  const refused: Stream.Stream<Uint8Array, HttpClientError.HttpClientError | ReactorError> =
-    Stream.fail(overflow);
-  return response.stream.pipe(
-    Stream.catchIf(
-      (error) => error.reason._tag === "EmptyBodyError",
-      () => Stream.empty,
-    ),
-    Stream.limitBytes(maxBytes, () => refused),
-    Stream.zipWithIndex,
-    Stream.mapEffect(([chunk, index]) =>
-      index < 16_384 ? Effect.succeed(chunk) : Effect.fail(overflow),
-    ),
-    Stream.mkUint8Array,
-  );
 };
 
 /** A transport failure once a request may have reached the server: its outcome is unknown. */
