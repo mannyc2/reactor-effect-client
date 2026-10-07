@@ -3068,4 +3068,67 @@ describe("PlayoutPolicy, groups", () => {
     assert.deepStrictEqual(commands(policy.actions.slice(before)), []);
     assert.deepStrictEqual(names(), ["p2", "z"]);
   });
+
+  /**
+   * A group whose first part waits Ready behind x on the session on air while a replacement takes
+   * new work: the second part's enqueue, if it goes there, and that part Ready at its head, or
+   * still being built there.
+   */
+  const acrossRenewal = (built = true) => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open("s1");
+    policy.submit(spec("x", 1, 60));
+    policy.reply({ _tag: "Done", clipId: "c-x" });
+    const x = clip("c-x", item("x"), 60);
+    policy.observe({ ready: [x] }, "s1");
+    policy.event({ _tag: "Started", clip: x }, "s1", 100);
+    policy.observe({ playing: x }, "s1", 101);
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p1", 1, 1), spec("p2")],
+        fingerprint: "g",
+      },
+    ]);
+    // p1's enqueue is in flight on s1 as a replacement opens.
+    policy.send({ _tag: "Opened", sessionId: "s2", lifetimeMs: 600_000 }, 200);
+    policy.observe({}, "s2", 201);
+    for (let round = 0; round < 3 && policy.busy("s2")?._tag === "Autoplay"; round++)
+      policy.reply({ _tag: "Done" }, undefined, "s2");
+    policy.reply({ _tag: "Done", clipId: "c-p1" }, undefined, "s1");
+    const p1 = clip("c-p1", item("p1"), 1);
+    policy.observe({ playing: x, ready: [p1] }, "s1", 2_300);
+    const sent = policy.busy("s2");
+    policy.reply({ _tag: "Done", clipId: "c-p2" }, undefined, "s2");
+    const p2 = clip("c-p2", item("p2"));
+    policy.observe(built ? { ready: [p2] } : { building: [p2] }, "s2", built ? 4_300 : 2_400);
+    return { policy, sent };
+  };
+
+  // A replacement takes new work while the first part waits Ready on the session on air, whose
+  // clips air first. The second part waited for the first to start before it was sent, so a first
+  // part shorter than its build left the air dark at the switch.
+  it("builds a later part on the replacement while the part before it waits Ready on air", () => {
+    const { policy, sent } = acrossRenewal();
+    assert.deepStrictEqual(sent?._tag === "Enqueue" ? sent.tag : sent, item("p2"));
+    // Ready at the head of the replacement's queue, it is not taken off: p1 airs first, on s1.
+    assert.isUndefined(policy.busy("s2"));
+    assert.deepStrictEqual(statuses(policy.actions, "p2"), ["Accepted", "Building", "Ready"]);
+  });
+
+  // Once s1 is lost with p1, to be built again, s2 takes the air with nothing playing and p2 Ready
+  // at its head, or still being built there. Its autoplay would start p2 the moment it went on, or
+  // as its build ended, before p1: p2 is taken off first, to be built again behind p1.
+  it("takes a later part off a replacement taking the air before its autoplay goes on", () => {
+    for (const built of [true, false]) {
+      const { policy } = acrossRenewal(built);
+      policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" });
+      assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-p2" }, `${built}`);
+      policy.reply({ _tag: "Done" }, undefined, "s2");
+      assert.strictEqual(policy.state().items.get(key("p2"))?.phase, "Accepted");
+    }
+  });
 });

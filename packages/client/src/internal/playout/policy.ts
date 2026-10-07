@@ -3237,13 +3237,16 @@ const decide = <Req extends ClipRequest>(
     );
   }
   /**
-   * The withdrawal to remove next on `value`: one whose removal was not refused as its queues
-   * stand, or whose clip H3 starts next while autoplay is on there or coming on.
+   * The removal to make next on `value`: a withdrawal whose removal was not refused as its queues
+   * stand, or whose clip H3 starts next while autoplay is on there or coming on; or, with autoplay
+   * coming on, a member waiting behind an earlier member of its group whose clip H3 would start
+   * next, Ready as exposure takes it off or as its build ends, taken off to be built again behind
+   * those (`again`).
    */
   function removalDue(
     value: Session<Req>,
     autoplay: boolean,
-  ): { readonly key: ItemKey; readonly clipId: string } | undefined {
+  ): { readonly key: ItemKey; readonly clipId: string; readonly again: boolean } | undefined {
     if (value.source?.available !== true) return undefined;
     for (const item of items.values())
       if (
@@ -3254,8 +3257,39 @@ const decide = <Req extends ClipRequest>(
         (item.blockedRemove !== signature(value) ||
           ((value.autoplay !== false || autoplay) && startsNext(value, item)))
       )
-        return { key: item.spec.key, clipId: item.clipId };
-    return undefined;
+        return { key: item.spec.key, clipId: item.clipId, again: false };
+    if (!autoplay || value.autoplay === true) return undefined;
+    // What H3 would start first: the Ready head, or with nothing Ready or playing, the first build.
+    const source = value.source;
+    const first =
+      waitingOf(value)[0] ?? (source.playing === undefined ? source.building[0] : undefined);
+    const next = itemOf(first);
+    const clipId = next?.clipId;
+    if (
+      next === undefined ||
+      clipId === undefined ||
+      next.withdraw !== undefined ||
+      !startsNext(value, next) ||
+      !behindInGroup(roster, next)
+    )
+      return undefined;
+    // Ready, it goes as exposure would take it off; building, it would start as its build ends.
+    const index = readyOf(value).findIndex((clip) => clip.clipId === clipId);
+    return next.phase === "Building" || exposure(value, next, index)
+      ? { key: next.spec.key, clipId, again: true }
+      : undefined;
+  }
+  /** Takes `key`'s clip `clipId` off `value`: the item goes back to the plan, to be built again. */
+  function takeBack(value: Session<Req>, key: ItemKey, clipId: string): void {
+    set(key, {
+      phase: "Accepted",
+      dispatchedAt: undefined,
+      clipId: undefined,
+      sessionId: undefined,
+      covered: undefined,
+      discarded: { sessionId: value.id, clipId },
+    });
+    queueCommand(value.id, { _tag: "Remove", clipId }, key);
   }
   /** A session's queues as they stand: a clip finishing its build changes them too. */
   function signature(value: Session<Req> | undefined): string {
@@ -3365,7 +3399,8 @@ const decide = <Req extends ClipRequest>(
     const autoplay =
       value.wantAutoplay && state.cutting?.sessionId !== value.id && !(guarded && fenceable);
     const removal = removalDue(value, autoplay);
-    // A clip the plan withdrew is removed before autoplay comes on: H3 arms its Ready head then.
+    // A clip the plan withdrew, or a waiting member exposure takes off, is removed before autoplay
+    // comes on: H3 arms its Ready head then.
     if (
       value.source?.available === true &&
       value.autoplay !== autoplay &&
@@ -3412,7 +3447,8 @@ const decide = <Req extends ClipRequest>(
       return decideCommand(sessionId);
     }
     // Withdrawals the plan wants, retried once a refused one's session changes, or at once while
-    // H3 would start its clip next.
+    // H3 would start its clip next; and a waiting member it would start as autoplay comes on.
+    if (removal?.again === true) return takeBack(value, removal.key, removal.clipId);
     if (removal !== undefined)
       return queueCommand(value.id, { _tag: "Remove", clipId: removal.clipId }, removal.key);
     // A drain withdraws filler once nothing accepted still needs it to cover the wait.
@@ -3500,15 +3536,7 @@ const decide = <Req extends ClipRequest>(
           return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId }, item.spec.key);
         }
         // It goes back to the plan, to be built again once the air ahead covers its wait.
-        set(item.spec.key, {
-          phase: "Accepted",
-          dispatchedAt: undefined,
-          clipId: undefined,
-          sessionId: undefined,
-          covered: undefined,
-          discarded: { sessionId: value.id, clipId: clip.clipId },
-        });
-        return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId }, item.spec.key);
+        return takeBack(value, item.spec.key, clip.clipId);
       }
     }
     // A constrained clip cannot be left to autoplay: an early end or unexpectedly slow build
@@ -3783,8 +3811,9 @@ const decide = <Req extends ClipRequest>(
   }
   /**
    * Whether each earlier member of its group that `item` waits behind is Ready or Building on
-   * `target`, the session taking new work: built before them, it would be Ready at the head of a
-   * queue with nothing ahead of it, then removed and built again.
+   * `target`, the session taking new work, or on the session on air, whose clips air first: built
+   * before them, it would be Ready at the head of a queue with nothing ahead of it, then removed and
+   * built again.
    */
   function builtBehind(item: Item<Req>, target: Session<Req> | undefined): boolean {
     if (item.group === undefined) return true;
@@ -3793,7 +3822,10 @@ const decide = <Req extends ClipRequest>(
       if (
         other !== undefined &&
         holds(roster, other, item) &&
-        !((other.phase === "Ready" || other.phase === "Building") && other.sessionId === target?.id)
+        !(
+          (other.phase === "Ready" || other.phase === "Building") &&
+          (other.sessionId === target?.id || other.sessionId === state.air)
+        )
       )
         return false;
     }
@@ -3877,19 +3909,27 @@ const decide = <Req extends ClipRequest>(
     return at === undefined || covered(item) ? undefined : at - runwayTerms().seconds * 1000;
   }
   /**
-   * Whether `item`, Ready on `value` at `index`, has a member it waits behind Ready ahead of it
-   * there, held or not: it cannot air before that one, and is never taken off while one is there.
+   * Whether `item`, Ready on `value` at `index`, has a member it waits behind that airs before it,
+   * held or not: Ready ahead of it there, or, on a session not on air yet, Ready or Building on the
+   * one that is, whose clips air first. It cannot air before that one, and is never taken off
+   * while one is there.
    */
   function holderAhead(value: Session<Req>, index: number, item: Item<Req>): boolean {
     if (item.group === undefined) return false;
     const ahead = readyOf(value).slice(0, index);
     for (const key of roster.members(item.group.key)) {
       const other = items.get(key);
+      if (other === undefined || !holds(roster, other, item)) continue;
       if (
-        other?.phase === "Ready" &&
+        other.phase === "Ready" &&
         other.sessionId === value.id &&
-        holds(roster, other, item) &&
         ahead.some((clip) => clip.clipId === other.clipId)
+      )
+        return true;
+      if (
+        value.id !== state.air &&
+        other.sessionId === state.air &&
+        (other.phase === "Ready" || other.phase === "Building")
       )
         return true;
     }
@@ -4843,13 +4883,16 @@ const decide = <Req extends ClipRequest>(
       return admitted(item) && !followsUnbuilt(item, time) && builtBehindIn(item);
     };
     // As `builtBehind`: each earlier member it waits behind has a clip built or building on the
-    // session taking new work.
+    // session taking new work, or on the session on air as the run starts.
     const builtBehindIn = (item: PlanItem): boolean =>
       (holdersOf.get(item) ?? []).every(
         (other) =>
           done.has(other) ||
           gone.has(other) ||
-          pool.some((clip) => clip.item === other && clip.sessionId === targetId),
+          pool.some(
+            (clip) =>
+              clip.item === other && (clip.sessionId === targetId || clip.sessionId === air.id),
+          ),
       );
     /** When `tag` ends, as `followContinuation` projects it at `time`: on air, or Ready behind what airs first. */
     const endOf = (tag: ClipTag, time: number): number | undefined => {

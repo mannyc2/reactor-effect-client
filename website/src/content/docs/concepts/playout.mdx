@@ -358,9 +358,10 @@ export const answer = Effect.fn("answer")(function* (
 });
 ```
 
-After a session is lost unplanned, a part already Ready at the head of the next session's queue
-may air once before the playout can take it back; the as-run shows it. Group order has run only
-on the simulated Reactor and in the policy's property checks, not on hosted H3.
+After a session is lost unplanned, the next session takes a part that would air there before
+the part ahead of it off before its autoplay comes on; if that removal fails, the part may air
+once out of order, and the as-run shows it. Group order has run only on the simulated Reactor and
+in the policy's property checks, not on hosted H3.
 
 ## Placement
 
