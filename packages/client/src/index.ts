@@ -4,6 +4,7 @@ export * as FastH3 from "./FastH3.js";
 export * as FastH3Source from "./FastH3Source.js";
 export * as H3 from "./H3.js";
 export * as H3Source from "./H3Source.js";
+export * as Ledger from "./Ledger.js";
 export * as LocalSource from "./LocalSource.js";
 export * as Media from "./Media.js";
 export * as Peer from "./Peer.js";

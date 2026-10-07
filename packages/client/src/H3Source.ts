@@ -18,6 +18,7 @@ import * as H3 from "./H3.js";
 import type { ClipModel, Source } from "./Playout.js";
 import { clipModel } from "./internal/h3/clipModel.js";
 import * as Source_ from "./internal/h3/source.js";
+import type { Opener } from "./Ledger.js";
 import type { Reactor, CreateOptions } from "./Reactor.js";
 import type { AcquisitionFailure } from "./ReactorError.js";
 import type { Session } from "./Session.js";
@@ -142,3 +143,33 @@ export const resume = (
   options: ResumeOptions,
 ): Effect.Effect<Source, AcquisitionFailure, Reactor | Crypto.Crypto | Scope.Scope> =>
   Source_.resume(h3)(options);
+
+/**
+ * A ledger opener for H3 sessions: `ledger.source(H3Source.opener({ tokens }))`. It opens with
+ * `open`, recording each session before it connects, and resumes an entry with `resume`, the same
+ * options and tokens bound to its session.
+ */
+export const opener = (
+  options: Omit<OpenOptions, "onAllocated">,
+): Opener<H3.Request, Reactor | Crypto.Crypto> => ({
+  model: H3.modelName,
+  open: (record) =>
+    open({
+      ...options,
+      onAllocated: ({ allocation }) =>
+        record({ sessionId: allocation.sessionId, endsAt: allocation.endsAt }),
+    }),
+  resume: (entry) =>
+    resume({
+      holdLastFrame: options.holdLastFrame,
+      provider: options.provider,
+      recovery: options.recovery,
+      tokens: options.tokens,
+      allocation: {
+        sessionId: entry.sessionId,
+        ownership: "owned",
+        model: entry.model,
+        ...(entry.endsAt === undefined ? {} : { endsAt: entry.endsAt }),
+      },
+    }),
+});
