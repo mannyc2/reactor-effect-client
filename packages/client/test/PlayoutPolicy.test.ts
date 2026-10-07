@@ -1701,6 +1701,47 @@ describe("PlayoutPolicy, edits", () => {
     assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-r" });
   });
 
+  // Found by the property: the removal was refused once its item had left the air,
+  // its clip still building. It went again only once the queues changed, and with nothing playing
+  // or Ready there that change is the build ending, as H3, autoplay on, starts the clip.
+  it("asks again at once for a refused removal of the clip H3 starts next", () => {
+    const { policy, removing } = replacedAfterStart();
+    policy.event({ _tag: "Ended", clip: removing.first, termination: "finished" });
+    policy.observe({ building: [removing.clip] });
+    policy.reply(failed("replied"));
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-r" });
+  });
+
+  // Ready right behind the clip on air, it starts as that clip ends: the change the
+  // refusal waited for.
+  it("asks again at once for a refused removal of a clip Ready next behind the clip on air", () => {
+    const { policy, removing } = replacedAfterStart();
+    policy.observe({ playing: removing.first, ready: [removing.clip] });
+    policy.reply(failed("replied"));
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-r" });
+  });
+
+  // A session taking the air turned autoplay on before it removed a replacement it had
+  // withdrawn, and H3 arms its Ready head as autoplay comes on.
+  it("removes a withdrawn replacement before turning autoplay on as its session takes the air", () => {
+    const policy = drive();
+    policy.tick(0);
+    // s1 lasts 20 s, so its replacement is wanted at once.
+    policy.open("s1", 20_000);
+    policy.submit(spec("a"));
+    policy.reply({ _tag: "Done", clipId: "c-a" }, undefined, "s1");
+    const first = clip("c-a", item("a"));
+    policy.observe({ ready: [first] }, "s1");
+    policy.open("s2");
+    policy.edit([{ _tag: "Replace", key: key("a"), spec: spec("r") }]);
+    policy.event({ _tag: "Started", clip: first }, "s1");
+    policy.observe({ playing: first }, "s1");
+    policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" });
+    policy.observe({ ready: [clip("c-r", item("r"))] }, "s2");
+    policy.reply({ _tag: "Done", clipId: "c-r" }, undefined, "s2");
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-r" });
+  });
+
   // One whose outcome is unknown was held back the same way, with nothing left to change.
   it("asks again at once for a removal whose outcome is unknown", () => {
     const { policy, removing } = replacedAfterStart();

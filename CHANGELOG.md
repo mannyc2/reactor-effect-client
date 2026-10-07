@@ -29,6 +29,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Builds are projected per built second, each lane at its own rate once three are measured, and filler at filler's. One median over every build, filler's included, projected every item: a local renderer whose filler builds at once, and whose items took 0.8 s a requested second, admitted a firm item as if its 4 s build took nothing. It is now refused with `WouldMissDeadline`.
 - `CoordinatorClient.terminate`, and so `session.close`, confirms a session gone only when two reads in a row find it gone; one missing read used to confirm it. A coordinator can answer 404 for one read of a running session, so after a `DELETE` that did not take, such a session was reported confirmed ended and `Session.mayStillBill` said false.
 
+### Fixed
+
+- A replacement whose item started first could air after it, though `replace` drops it as `withdrawn`. A removal of its clip refused while H3 would start that clip next was asked again only once the session's queues changed, and that change was the clip's start: its build ending with nothing playing, or the clip ahead of it ending. A session taking the air also turned autoplay on before it removed such a clip, and H3 arms its Ready head as autoplay comes on. Such a removal now goes again at once, and before autoplay comes on.
+
 ### Documentation
 
 - The session and cost-control guidance no longer promises that Reactor ends a dropped session after 30 seconds. Reactor documents that deadline, but a hosted session whose owner was killed stayed live past 60 seconds and was billed until the API key ended it. End sessions explicitly and cap them.

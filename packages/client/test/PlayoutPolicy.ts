@@ -485,6 +485,7 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     const command = busy.command;
     let clipId: string | undefined;
     let refused = false;
+    let armed = false;
     if (value !== undefined)
       switch (command._tag) {
         case "Enqueue":
@@ -536,6 +537,8 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
         }
         case "Autoplay":
           value.autoplay = command.enabled;
+          // As autoplay comes on with nothing playing, H3 arms its Ready head at once.
+          armed = command.enabled && value.playing === undefined && value.ready.length > 0;
           break;
       }
     send({
@@ -543,6 +546,11 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
       id: busy.id,
       result: refused ? failed("replied") : { _tag: "Done", clipId },
     });
+    if (armed && value !== undefined) {
+      const next = Array.getUnsafe(value.ready.splice(0, 1), 0);
+      value.playing = next;
+      send({ _tag: "Source", sessionId: busy.sessionId, event: { _tag: "Started", clip: next } });
+    }
     observe(busy.sessionId);
   };
   /** The provider opens the session the plan asked for. */
@@ -1107,6 +1115,21 @@ const counterexamples: ReadonlyArray<Script> = [
   // scripted provider started it after an early end, with autoplay off there and the lane busy
   // with another enqueue, where H3 starts nothing and the plan sent no play.
   ["urgent", "insert", "start", "urgent", "start", "ready", "end", "start"],
+  // A replacement whose item started first aired too: its removal, refused once the item had left
+  // the air, went again only as its build ended, when the provider started it.
+  [
+    "open",
+    "unknown",
+    "batch",
+    "wake",
+    "done",
+    "replace",
+    "start",
+    "start",
+    "end",
+    "refused",
+    "start",
+  ],
 ];
 
 export {
