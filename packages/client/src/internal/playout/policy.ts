@@ -2884,6 +2884,43 @@ const decide = <Req extends ClipRequest>(
       )
     );
   }
+  /**
+   * Whether H3 starts `item`'s clip next on `value`: it heads the Ready queue, or nothing is Ready
+   * or playing there and it heads the builds. With autoplay on it starts at the next boundary or
+   * as its build ends, and that is the change a refused removal would wait for.
+   */
+  function startsNext(value: Session<Req>, item: Item<Req>): boolean {
+    const source = value.source;
+    if (source === undefined) return false;
+    if (item.phase === "Ready") return waitingOf(value)[0]?.clipId === item.clipId;
+    return (
+      item.phase === "Building" &&
+      source.playing === undefined &&
+      source.ready.length === 0 &&
+      source.building[0]?.clipId === item.clipId
+    );
+  }
+  /**
+   * The withdrawal to remove next on `value`: one whose removal was not refused as its queues
+   * stand, or whose clip H3 starts next while autoplay is on there or coming on.
+   */
+  function removalDue(
+    value: Session<Req>,
+    autoplay: boolean,
+  ): { readonly key: ItemKey; readonly clipId: string } | undefined {
+    if (value.source?.available !== true) return undefined;
+    for (const item of items.values())
+      if (
+        item.withdraw !== undefined &&
+        item.clipId !== undefined &&
+        item.sessionId === value.id &&
+        (item.phase === "Building" || item.phase === "Ready") &&
+        (item.blockedRemove !== signature(value) ||
+          ((value.autoplay !== false || autoplay) && startsNext(value, item)))
+      )
+        return { key: item.spec.key, clipId: item.clipId };
+    return undefined;
+  }
   /** A session's queues as they stand: a clip finishing its build changes them too. */
   function signature(value: Session<Req> | undefined): string {
     const source = value?.source;
@@ -2981,7 +3018,13 @@ const decide = <Req extends ClipRequest>(
         now.mono < (playingRestFallsTo(value, readinessMarginMs) ?? Infinity));
     const autoplay =
       value.wantAutoplay && state.cutting?.sessionId !== value.id && !(guarded && fenceable);
-    if (value.source?.available === true && value.autoplay !== autoplay) {
+    const removal = removalDue(value, autoplay);
+    // A clip the plan withdrew is removed before autoplay comes on: H3 arms its Ready head then.
+    if (
+      value.source?.available === true &&
+      value.autoplay !== autoplay &&
+      !(autoplay && removal !== undefined)
+    ) {
       // Nothing else goes before it, even while a failed one waits to be asked again.
       const retry = value.autoplayRetry;
       if (retry === undefined || retry.enabled !== autoplay || now.mono >= retry.at)
@@ -3022,17 +3065,10 @@ const decide = <Req extends ClipRequest>(
       state = { ...state, cutting: undefined };
       return decideCommand(sessionId);
     }
-    // Withdrawals the plan wants, retried once a refused one's session changes.
-    for (const item of items.values())
-      if (
-        item.withdraw !== undefined &&
-        item.clipId !== undefined &&
-        item.sessionId === value.id &&
-        (item.phase === "Building" || item.phase === "Ready") &&
-        value.source?.available === true &&
-        item.blockedRemove !== signature(value)
-      )
-        return queueCommand(value.id, { _tag: "Remove", clipId: item.clipId }, item.spec.key);
+    // Withdrawals the plan wants, retried once a refused one's session changes, or at once while
+    // H3 would start its clip next.
+    if (removal !== undefined)
+      return queueCommand(value.id, { _tag: "Remove", clipId: removal.clipId }, removal.key);
     // A drain withdraws filler once nothing accepted still needs it to cover the wait.
     const fillerNeeded =
       state.drains.every((drain) => drain.finish === "accepted") &&
