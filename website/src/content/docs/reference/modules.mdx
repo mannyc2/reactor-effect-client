@@ -29,6 +29,7 @@ host and loads no native code.
 | `H3`                | The H3 Reference Turbo Realtime provider over a session                        |
 | `FastH3`            | The FastH3 provider over a session: frames or clip ids as opener and closer     |
 | `ViduS2Avatar`      | The Vidu S2-Avatar provider over a session: an avatar and its calls            |
+| `References`        | Reference images and voice samples from a data URI, a file or a URL, bounded and validated |
 | `Playout`           | A keyed schedule in priority lanes, aired across sessions it renews            |
 | `H3Source`          | A paid H3 session as a playout source                                          |
 | `FastH3Source`      | A paid FastH3 session as a playout source, with built retained continuation hints |
@@ -86,6 +87,14 @@ the playout. See [FastH3](/reactor-effect-client/concepts/h3/#fasth3) and
 `AvatarImage`, `ImageType`, `Call`, `CallUpdate`, `Vad`, `Llm` and `ReferenceImage`; what the model
 reports: `State`, `Phase`, `Transcript`, `Voice`, `Voices`, `CallEnded` and `CommandError`. See
 [A talking character](/reactor-effect-client/guides/avatar/).
+
+### `References`
+
+`reactor-effect-client/References`. `image` and `audio`, which read a reference and validate it as
+H3 does; `read`, which reads its bytes alone; the `Location` (`DataLocation`, `FileLocation` or
+`UrlLocation`) that `file`, `url` and `locate` make; `ReadOptions` (`maxBytes`, 16 MiB by default,
+and `timeout`). A file needs a `FileSystem` and a URL an `HttpClient`; no error or span names the
+location. See [Loading references](/reactor-effect-client/concepts/h3/#loading-references).
 
 ### `Playout`
 

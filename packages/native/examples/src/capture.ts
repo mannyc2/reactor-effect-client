@@ -1,20 +1,11 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  Config,
-  Console,
-  Deferred,
-  Effect,
-  FileSystem,
-  Fiber,
-  Layer,
-  Option,
-  Stream,
-} from "effect";
+import { Config, Console, Deferred, Effect, Fiber, Layer, Option, Stream } from "effect";
 import { Command, Flag } from "effect/cli";
 import * as Reactor from "reactor-effect-client/Reactor";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
+import * as References from "reactor-effect-client/References";
 import { NativePeer } from "reactor-effect-native";
 import { toMp4 } from "./Recording.ts";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
@@ -39,7 +30,7 @@ const record = Effect.fn("record")(function* (options: {
   readonly grant: CoordinatorClient.TokenGrant;
   readonly prompt: string;
   readonly seconds: number;
-  readonly references: ReadonlyArray<H3.Reference>;
+  readonly references: ReadonlyArray<H3.ValidatedReference>;
   readonly out: string;
 }) {
   const reactor = yield* Reactor.Reactor;
@@ -133,6 +124,12 @@ const capture = Command.make(
     ),
   },
   Effect.fn(function* ({ prompt, seconds, reference, out }) {
+    // An image H3 would refuse, or one larger than a session uploads, is refused here, before a
+    // token is minted or a session allocated.
+    const references = yield* Option.match(reference, {
+      onNone: () => Effect.succeed([]),
+      onSome: (path) => Effect.map(References.image(References.file(path)), (image) => [image]),
+    });
     const apiKey = yield* Config.Redacted("REACTOR_API_KEY");
     const coordinator = yield* CoordinatorClient.CoordinatorClient;
     const rate = yield* CoordinatorClient.modelRate(yield* coordinator.pricing, H3.modelName);
@@ -147,12 +144,6 @@ const capture = Command.make(
       modelName: H3.modelName,
       maxSessionDuration: `${sessionSeconds} seconds`,
       expiresAfter: `${sessionSeconds + 60} seconds`,
-    });
-    const fs = yield* FileSystem.FileSystem;
-    const references = yield* Option.match(reference, {
-      onNone: () => Effect.succeed([]),
-      onSome: (path) =>
-        fs.readFile(path).pipe(Effect.map((bytes): H3.Reference[] => [{ _tag: "Bytes", bytes }])),
     });
     yield* record({ grant, prompt, seconds, references, out });
   }),

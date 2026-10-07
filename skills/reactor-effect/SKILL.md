@@ -12,7 +12,7 @@ models. A session is a scoped Effect resource; H3, FastH3 and Vidu S2-Avatar are
 **Packages** (one version for all, published to npm):
 
 - `reactor-effect-client`: `Reactor`, `Session`, `CoordinatorClient`, `H3`, `FastH3`, `ViduS2Avatar`,
-  `H3Source`, `FastH3Source`, `LocalSource`, `Ledger`, `Playout`, `Media`, `Peer`, `ReactorError`, `ReactorTest`. Portable: Node, Bun and
+  `References`, `H3Source`, `FastH3Source`, `LocalSource`, `Ledger`, `Playout`, `Media`, `Peer`, `ReactorError`, `ReactorTest`. Portable: Node, Bun and
   browsers.
 - `reactor-effect-browser`: `BrowserPeer.layer` on `RTCPeerConnection`, `BrowserMedia` for tracks.
 - `reactor-effect-native`: `NativePeer.layer()`, or `NativePeer.layerIsolated()` under Node, on a
@@ -94,6 +94,11 @@ const program = Effect.gen(function* () {
   it records each session before it connects, ends or resumes what a crashed process left before
   allocating more, and ends each session until Reactor confirms it. One store per process and
   account.
+- **Load reference images and voice samples with `References`**, not a reader of your own:
+  `References.image` and `References.audio` take a base64 `data:` URI, a `file://` URI or absolute
+  path, or an http(s) URL, or `References.file(path)` for a relative path; they read at most 16 MiB
+  (a session's upload limit, below H3's 25 MiB) within 10 s and validate as H3 does. Load them
+  before allocating a session. Errors and spans never name the location.
 - **Never resend a command whose failure's `context.outcome` is `"unknown"`**: it may have reached
   Reactor. `"not-submitted"` is safe to retry. The SDK itself never resends an unknown enqueue.
 - **Errors are tagged**: handle them with `Effect.catchTag` and `Effect.catchReason` on the tagged

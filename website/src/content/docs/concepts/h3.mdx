@@ -150,6 +150,49 @@ reused the first clip's image and audio references and uploaded nothing
 2026-09-28). `ReactorTest.pngBytes` and `ReactorTest.wavBytes` make references that pass these
 checks, for tests.
 
+## Loading references
+
+`References` loads a reference from where your application keeps it, then validates it as above:
+`References.image` an image, which FastH3 also takes as an opening or closing frame, and
+`References.audio` a voice sample. Either takes a location, made by `References.file(path)` from a
+path absolute or relative to the working directory, or by `References.url(url)` from an http(s)
+URL, which it refuses if the URL carries credentials. Either also takes a string, which
+`References.locate` reads: a base64 `data:` URI (its declared type is ignored, since validation
+reads the bytes), a `file://` URI or an absolute path, or an `http(s)://` URL. A location asks only
+for its own service: a file a `FileSystem`, a URL an `HttpClient`, a `data:` URI none.
+
+```ts
+import { Effect } from "effect";
+import { References } from "reactor-effect-client";
+
+// Settings of mixed kinds: a FileSystem and an HttpClient.
+export const stills = (uris: ReadonlyArray<string>) =>
+  Effect.forEach(uris, (uri) => References.image(uri));
+
+// A path on a command line: a FileSystem only.
+export const still = (path: string) =>
+  References.image(References.file(path));
+
+// A signed URL in a page: an HttpClient only.
+export const voice = Effect.fn("voice")(function* (signedUrl: string) {
+  return yield* References.audio(yield* References.url(signedUrl));
+});
+```
+
+A read takes at most `maxBytes`, 16 MiB by default, which is the most a session uploads unless
+`Reactor.layer({ maxUploadBytes })` raises it; pass the same limit when you raise that one. H3's
+own bounds admit 25 MiB, so a larger image would pass validation and fail only at its upload. A
+read gives up after `timeout`, 10 seconds by default. A download sends no cookies and follows
+redirects. A malformed location, a reference too large or unreadable, and one validation refuses
+fail as `InvalidInput`; a download answered with a status other than 2xx fails as `Http` with that
+status, and one that fails in transit as `Http` without one; a read past its deadline fails as
+`Timeout`.
+
+No error or span names the location, since a signed URL's query or a file's path can carry a
+secret. The URL-parser, file-system and HTTP-client errors that quote it are replaced by the
+library's own, and the HTTP client's tracing, which records the full URL, is off for the download.
+Spans name the scheme (`data`, `file` or `http`) and the bytes read.
+
 ## The queue and its commands
 
 H3 keeps two queues. The generation queue holds clips waiting to build, the build in flight
