@@ -3403,8 +3403,8 @@ const decide = <Req extends ClipRequest>(
     const autoplay =
       value.wantAutoplay && state.cutting?.sessionId !== value.id && !(guarded && fenceable);
     const removal = removalDue(value, autoplay);
-    // A clip the plan withdrew, or a waiting member exposure takes off, is removed before autoplay
-    // comes on: H3 arms its Ready head then.
+    // A clip the plan withdrew, or a waiting member H3 would start first, is removed before autoplay
+    // comes on: H3 arms its Ready head then, and starts a clip as its build ends.
     if (
       value.source?.available === true &&
       value.autoplay !== autoplay &&
