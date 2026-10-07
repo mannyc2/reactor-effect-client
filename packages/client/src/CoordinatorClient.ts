@@ -125,7 +125,8 @@ export interface Allocation {
 
 /**
  * A remote termination verdict. A DELETE response alone is never proof: an
- * independent read confirms the session is gone or terminal.
+ * independent read confirms the session terminal, and two in a row confirm it
+ * gone, since a coordinator can answer 404 for one read of a session that runs.
  */
 export const Termination = Schema.Struct({
   attempted: Schema.Boolean,
@@ -823,7 +824,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           state: null,
           error: summarize(error),
         });
-        const confirmation = yield* Effect.result(
+        const read = Effect.result(
           request({
             operation: "terminate",
             request: HttpClientRequest.get(path),
@@ -831,19 +832,24 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
             timeout: "3 seconds",
           }),
         );
+        const first = yield* read;
+        if (first._tag === "Failure") return failed(first.failure);
+        if (first.success.status === 404 && (deleteStatus === 401 || deleteStatus === 403))
+          return failed(
+            ReactorError.make({
+              reason: Http.make({
+                message: "remote termination could not be confirmed after authority refusal",
+                status: deleteStatus,
+              }),
+              context: { operation: "terminate", outcome: "replied" },
+            }),
+          );
+        // A coordinator can lose a running session for one read, so a session found missing is
+        // read again, and only a second 404 confirms it gone.
+        const confirmation = first.success.status === 404 ? yield* read : first;
         if (confirmation._tag === "Failure") return failed(confirmation.failure);
         if (confirmation.success.status === 404)
-          return deleteStatus === 401 || deleteStatus === 403
-            ? failed(
-                ReactorError.make({
-                  reason: Http.make({
-                    message: "remote termination could not be confirmed after authority refusal",
-                    status: deleteStatus,
-                  }),
-                  context: { operation: "terminate", outcome: "replied" },
-                }),
-              )
-            : { ...base, confirmed: true, evidence: "absent", state: null };
+          return { ...base, confirmed: true, evidence: "absent", state: null };
         const described = yield* Effect.result(
           decodeReply(
             TerminalState,

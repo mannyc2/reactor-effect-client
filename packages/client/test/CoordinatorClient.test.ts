@@ -316,6 +316,21 @@ alone("termination is confirmed by the independent read, not by the DELETE respo
   }),
 );
 
+// A coordinator can lose a running session for one read, so a 404 alone does not prove the end.
+alone(
+  "a session missing from one read, after a DELETE that did not take, is not confirmed ended",
+  () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const { id, signaling } = yield* created;
+      yield* test.inject({ _tag: "IgnoreDelete" });
+      yield* test.inject({ _tag: "MissingSession", nth: 1 });
+      const ended = yield* signaling.terminate(id);
+      assert.deepStrictEqual([ended.confirmed, ended.state], [false, "ACTIVE"]);
+    }),
+);
+
 // A server that holds only the key can ask whether a session it recorded still runs, and not end it.
 alone("a CoordinatorClient with only the key inspects a session with the key", () =>
   Effect.gen(function* () {

@@ -388,7 +388,9 @@ Reactor's billing page says waiting for a GPU is not billed.
 
 `session.close` is idempotent. For a session this process owns, it asks Reactor to terminate it
 and then confirms the end with an independent read, since a `DELETE` response alone proves
-nothing. It returns a `CloseReport`, a Schema you can persist:
+nothing: a read that finds the session `CLOSED` confirms it, and so do two reads in a row that find
+it gone, since a coordinator can answer one read of a running session with 404. It returns a
+`CloseReport`, a Schema you can persist:
 
 | Field                                         | What it says                                                        |
 | --------------------------------------------- | ------------------------------------------------------------------- |

@@ -20,8 +20,9 @@ $2.10 a minute and $126 an hour from `ready` until it is terminated, idle or not
   too. A grant Reactor echoes wider than asked is refused (`Protocol`), and a narrower one caps the
   session at what it grants.
 - **Termination is confirmed, not assumed.** `session.close` sends the `DELETE`, then reads the
-  session once, independently, since a `DELETE` response alone proves nothing: only a read that
-  finds it gone or `CLOSED` confirms it, and any other answer leaves `confirmed` false and
+  session independently, since a `DELETE` response alone proves nothing: a read that finds it
+  `CLOSED` confirms it, and so do two reads in a row that find it gone, since a coordinator can
+  lose a running session for one read. Any other answer leaves `confirmed` false and
   `Session.mayStillBill` true. The `CloseReport`'s `remote` says what happened: `attempted`,
   `responseReceived`, `confirmed`, the `evidence` (`"absent"` or `"terminal"`), the `DELETE` status
   and the state read. Only `CLOSED` is terminal: a session that reads `INACTIVE` is still live and
