@@ -146,14 +146,15 @@ export interface PlaceProbe {
 
 /**
  * Where a clip submitted to follow `after` would land. It projects the plan as
- * it is at the call, at the median build rates, and reserves nothing: a clip
- * submitted later may still come between the call and the clip, or after it.
+ * it is at the call, at the median build rates, each lane's and filler's own
+ * once three of their builds are measured, per second of the length their
+ * model builds, and reserves nothing: a clip submitted later may still come
+ * between the call and the clip, or after it.
  * A clip not built yet counts at the length the last clip that asked for as
- * much aired at, else at the median ratio of aired to requested length, so
- * `startsAt` may be off by up to a step of the provider's grid (0.7 s on H3)
- * for each clip ahead at a length not asked for before. While a `follows`
- * item waits on a session, that session starts its clips with a provider
- * command, whose latency is not projected.
+ * much aired at, else at the length its model builds (`ClipModel.builtSeconds`),
+ * scaled by the median ratio of the lengths clips aired at to those their model
+ * built. While a `follows` item waits on a session, that session starts its
+ * clips with a provider command, whose latency is not projected.
  */
 export interface Placement {
   /** The clip it would follow: pass it as `follows`. */
@@ -506,10 +507,27 @@ export interface State {
    * longer; and an item's actual over requested length.
    */
   readonly estimates: {
-    readonly build: { readonly median: number; readonly p95: number } | undefined;
-    readonly continuedBuild: { readonly median: number; readonly p95: number } | undefined;
+    readonly build: BuildSpread | undefined;
+    readonly continuedBuild: BuildSpread | undefined;
     readonly length: number;
+    /**
+     * Each lane's own builds, per requested second, once three were measured;
+     * the playout projects a lane's items with them.
+     */
+    readonly lanes: ReadonlyArray<{
+      readonly name: string;
+      readonly build: BuildSpread | undefined;
+      readonly continuedBuild: BuildSpread | undefined;
+    }>;
+    /** Filler's own builds, per requested second; the floor covers one of filler's slow builds. */
+    readonly filler: { readonly build: BuildSpread | undefined };
   };
+}
+
+/** Build seconds per second of clip over measured builds: their median and their p95. */
+export interface BuildSpread {
+  readonly median: number;
+  readonly p95: number;
 }
 
 /** Identifies what a clip was enqueued for, read back from the provider's clip metadata. */
@@ -606,6 +624,12 @@ export interface ClipModel<Req extends ClipRequest = Request> {
   /** The length a request without `seconds` is sent and planned at. */
   readonly defaultSeconds: number;
   /**
+   * The length the model builds for a request of `seconds` within `lengths`: H3 and FastH3 align
+   * it up to their frame grid. The playout counts a clip not built yet at this length and measures
+   * its build per second of it; a renderer that builds what it is asked answers `seconds`.
+   */
+  readonly builtSeconds: (seconds: number) => number;
+  /**
    * Where a request for the clip `tag` falls outside the model's limits: one
    * entry per field, naming the field and the limit, never the value, which may
    * be a prompt. Empty when the request is within them.
@@ -697,8 +721,8 @@ export interface FillContext {
    * (`filler.protect`), as long as that takes; otherwise the shortest, which
    * keeps boundaries, and so reactions, frequent. The playout plans with this
    * length: the tiling before an `At` anchor and `place`'s `startsAt` count a
-   * filler clip not yet sent at it, so a request for another length moves them
-   * by the difference.
+   * filler clip not yet sent at the length its model builds for it, so a request
+   * for another length moves them by the difference.
    */
   readonly seconds: number;
 }

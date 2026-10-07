@@ -803,7 +803,9 @@ describe("PlayoutPolicy", () => {
     assert.deepStrictEqual(moves, []);
     assert.strictEqual(state().items.get(key("xc"))?.phase, "Ready");
     assert.deepStrictEqual(state().samples.build.length, 2);
-    assert.deepStrictEqual(state().samples.continued, [0.4]);
+    assert.deepStrictEqual(state().samples.continued, [
+      { lane: 1, perBuilt: 0.4, perRequested: 0.4 },
+    ]);
   });
 });
 
@@ -1149,9 +1151,16 @@ describe("PlayoutPolicy, air before queue order", () => {
   // At 0.8 s a second, covering the 3 s missing takes more than a 15 s clip, whose build alone
   // outlasts the air; one airing while the item builds, 8 s, leaves the air dark least.
   it("sends a filler clip that airs no longer than the item takes to build", () => {
+    const build = { lane: 1, perBuilt: 0.8, perRequested: 0.8 };
     const slow = {
       ...measured,
-      samples: { build: [0.8, 0.8, 0.8], continued: [], length: [], aired: [] },
+      samples: {
+        build: [build, build, build],
+        continued: [],
+        length: [],
+        overBuilt: [],
+        aired: [],
+      },
     };
     const { policy } = airing(protecting("air"), 6, slow);
     policy.submit(spec("ten", 1, 10));

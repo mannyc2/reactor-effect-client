@@ -8,6 +8,8 @@ import { CommandFailure, ReactorError } from "../src/ReactorError.js";
 
 const config: Policy.Config = {
   defaultSeconds: 5,
+  // The scripted provider builds what is asked.
+  builtSeconds: (seconds) => seconds,
   lanes: [
     { name: "urgent", conflict: "queue", cut: true },
     { name: "line", conflict: "queue", cut: false },
@@ -71,10 +73,20 @@ const buildFailed = (value: SourceClip): SourceEvent => ({
   provider: Redacted.make("the provider's words"),
 });
 
-/** Three builds measured at 0.4 s per requested second: a continued one is projected at 1 s. */
+/**
+ * Three builds of the line's items measured at 0.4 s per second, built or requested alike: every
+ * lane and filler project with them, and a continued build is projected at 1 s a second.
+ */
+const lineBuild = { lane: 1, perBuilt: 0.4, perRequested: 0.4 };
 const measured: Policy.State = {
   ...Policy.initial,
-  samples: { build: [0.4, 0.4, 0.4], continued: [], length: [], aired: [] },
+  samples: {
+    build: [lineBuild, lineBuild, lineBuild],
+    continued: [],
+    length: [],
+    overBuilt: [],
+    aired: [],
+  },
 };
 /**
  * A provider for the property below: it answers the command in flight as the

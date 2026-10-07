@@ -7,7 +7,7 @@ import type { ReactorError } from "../../ReactorError.js";
 import * as Tag from "../playout/tag.js";
 import { metadataMaxChars } from "../h3/profile.js";
 import { validateReference } from "../h3/references.js";
-import { requestSeconds } from "./profile.js";
+import { builtSeconds, requestSeconds } from "./profile.js";
 import { Request } from "./request.js";
 
 /** Field limits and references, with metadata counted as sent; never report their values. */
@@ -50,11 +50,15 @@ const check = (request: Request, tag: ClipTag): ReadonlyArray<string> => {
   );
 };
 
-/** FastH3 as the playout plans for it: its documented request limits. */
+/**
+ * FastH3 as the playout plans for it: its documented request limits, and the frame grid it aligns
+ * each length up to.
+ */
 export const clipModel: ClipModel<Request> = {
   name: "FastH3",
   lengths: requestSeconds,
   // FastH3's 14.375 s session default would outlast a playout item planned at the minimum.
   defaultSeconds: requestSeconds.min,
+  builtSeconds,
   check,
 };

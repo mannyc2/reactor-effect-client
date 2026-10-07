@@ -125,6 +125,7 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
 ) {
   const config: Policy.Config<Req> = {
     defaultSeconds: model.defaultSeconds,
+    builtSeconds: model.builtSeconds,
     lanes: options.lanes.map((lane) => ({
       name: lane.name,
       conflict: lane.conflict ?? "queue",

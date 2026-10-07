@@ -73,9 +73,10 @@ export interface Rendered<A> {
   /** Handed to `present` when the clip plays. */
   readonly value: A;
   /**
-   * The built length in seconds, when it differs from the requested one. It
-   * must be positive and finite, or the clip fails, since a playout times its
-   * plan by the lengths its clips report.
+   * The built length in seconds, when it differs from the length the source's
+   * model builds for the request (`ClipModel.builtSeconds`), which a clip
+   * without it takes. It must be positive and finite, or the clip fails, since
+   * a playout times its plan by the lengths its clips report.
    */
   readonly seconds?: number | undefined;
 }
@@ -88,7 +89,8 @@ export interface Sink {
 
 /**
  * The application's hooks, which render each clip; or none, for a stand-in
- * whose clips build for `buildRatio` of their length and play for their length.
+ * whose clips build for `buildRatio` of their requested length and play for
+ * the length their model builds, so a stand-in for H3 airs H3's lengths.
  * Pass `model` to `open` for the model the source runs, which the playout's own
  * `model` must name alike; H3's by default. A renderer with its own lengths,
  * such as speech shorter than H3's 5 s, declares them here and passes the same
@@ -398,7 +400,7 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2, Req extends ClipReque
           release(scope, built),
         );
       if (Exit.isFailure(built)) return yield* fails("the local build failed", words(built.cause));
-      const seconds = built.value.seconds ?? next.seconds;
+      const seconds = built.value.seconds ?? model.builtSeconds(next.seconds);
       if (!(Number.isFinite(seconds) && seconds > 0))
         return yield* fails(
           "the local build gave a length that is not a positive, finite number of seconds",

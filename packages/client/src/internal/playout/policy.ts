@@ -17,6 +17,7 @@ import type { Request } from "../../H3.js";
 import type { CommandFailure } from "../../ReactorError.js";
 import type {
   AsRunStatus,
+  BuildSpread,
   ClipRequest,
   ClipTag,
   Event,
@@ -212,6 +213,8 @@ export type Action<Req extends ClipRequest = Request> =
 export interface Config<Req extends ClipRequest = Request> {
   /** The length a request without `seconds` is planned at: its model's default. */
   readonly defaultSeconds: number;
+  /** The length its model builds for a request of `seconds`. */
+  readonly builtSeconds: (seconds: number) => number;
   readonly lanes: ReadonlyArray<{
     readonly name: string;
     readonly conflict: "queue" | "replace" | "skip";
@@ -388,6 +391,13 @@ interface Session<Req extends ClipRequest = Request> {
   >;
 }
 
+/** One measured build, by whose it was: a lane's items, by the lane's index, or filler. */
+interface BuildSample<Subject extends number | "filler"> {
+  readonly lane: Subject;
+  readonly perBuilt: number;
+  readonly perRequested: number;
+}
+
 interface Batch {
   readonly id: number;
   readonly adds: ReadonlyArray<ItemKey>;
@@ -458,14 +468,20 @@ export interface State<Req extends ClipRequest = Request> {
   readonly accepting: boolean;
   readonly closed: boolean;
   /**
-   * Recent builds, in build seconds per requested second, of independent
-   * clips and of clips continued from another; actual over requested length;
-   * and the length recent clips aired at, by the length each asked for.
+   * What recent clips measured: actual over requested length, the public
+   * ratio; actual over the length the model builds, the planner's; and the
+   * length recent clips aired at, by the length each asked for.
    */
   readonly samples: {
-    readonly build: ReadonlyArray<number>;
-    readonly continued: ReadonlyArray<number>;
+    /**
+     * Build seconds per built and per requested second of independent builds, newest last: each
+     * lane's items and filler apart, the newest `maxSamples` of each.
+     */
+    readonly build: ReadonlyArray<BuildSample<number | "filler">>;
+    /** The same of builds continued from another clip, which take longer: only items continue. */
+    readonly continued: ReadonlyArray<BuildSample<number>>;
     readonly length: ReadonlyArray<number>;
+    readonly overBuilt: ReadonlyArray<number>;
     readonly aired: ReadonlyArray<{ readonly requested: number; readonly seconds: number }>;
   };
   /**
@@ -533,7 +549,7 @@ export const initial: State<never> = {
   drains: [],
   accepting: true,
   closed: false,
-  samples: { build: [], continued: [], length: [], aired: [] },
+  samples: { build: [], continued: [], length: [], overBuilt: [], aired: [] },
   cut: undefined,
   cutting: undefined,
   starving: false,
@@ -581,10 +597,20 @@ const quantile = (values: ReadonlyArray<number>, q: number): number => {
   return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0;
 };
 
-const spreadOf = (samples: ReadonlyArray<number>) =>
+const spreadOf = (samples: ReadonlyArray<number>): BuildSpread | undefined =>
   samples.length < minimumSamples
     ? undefined
     : { median: quantile(samples, 0.5), p95: quantile(samples, 0.95) };
+
+/** `samples` with `sample` newest, keeping the newest `maxSamples` of its lane. */
+const withSample = <S extends BuildSample<number | "filler">>(
+  samples: ReadonlyArray<S>,
+  sample: S,
+): ReadonlyArray<S> => {
+  const full = samples.filter((other) => other.lane === sample.lane).length >= maxSamples;
+  const oldest = full ? samples.findIndex((other) => other.lane === sample.lane) : -1;
+  return [...samples.filter((_, index) => index !== oldest), sample];
+};
 
 /** Records that a clip asking for `requested` seconds aired at `seconds`, newest last. */
 const airedSample = (
@@ -601,18 +627,67 @@ const airedSample = (
 
 /**
  * The length a clip asking for `requested` seconds is projected to air at: that of the latest one
- * that asked for as much, since a provider's grid maps a length to one; else at the median ratio,
- * which a length on another grid step does not carry to (`fillLength`).
+ * that asked for as much, since a provider's grid maps a length to one; else the length its model
+ * builds, by the median ratio of the lengths clips aired at to those their model built.
  */
-const airedLengthOf = (samples: State<never>["samples"], requested: number): number =>
+const airedLengthOf = (
+  samples: State<never>["samples"],
+  requested: number,
+  builtSeconds: (seconds: number) => number,
+): number =>
   samples.aired.find((sample) => Math.abs(sample.requested - requested) <= 1e-6)?.seconds ??
-  requested * estimatesOf(samples).length;
+  builtSeconds(requested) * (samples.overBuilt.length === 0 ? 1 : quantile(samples.overBuilt, 0.5));
 
-const estimatesOf = (samples: State<never>["samples"]): PublicState["estimates"] => ({
-  build: spreadOf(samples.build),
-  continuedBuild: spreadOf(samples.continued),
-  length: samples.length.length === 0 ? 1 : quantile(samples.length, 0.5),
-});
+/**
+ * The longest request within `lengths`, in whole milliseconds, that `lengthOf` counts at no more
+ * than `roomSeconds`; `lengths.min` when none is. A longer request builds at least as long, so it
+ * bisects over whole milliseconds, keeping the longest it checked to fit. A length a hair above a
+ * grid point would count at that point here, but build a whole step more on a provider that
+ * aligns it without the plan's tolerance.
+ */
+const longestWithin = (
+  roomSeconds: number,
+  lengths: { readonly min: number; readonly max: number },
+  lengthOf: (seconds: number) => number,
+): number => {
+  if (!(lengthOf(lengths.min) <= roomSeconds)) return lengths.min;
+  const lowest = Math.ceil(lengths.min * 1000);
+  // The longest checked to fit, and the shortest checked not to, in milliseconds; each bound is
+  // only assumed until a check moves it.
+  let fit = lowest - 1;
+  let over = Math.floor(lengths.max * 1000) + 1;
+  while (over - fit > 1) {
+    const middle = Math.floor((fit + over) / 2);
+    if (lengthOf(middle / 1000) <= roomSeconds) fit = middle;
+    else over = middle;
+  }
+  return fit >= lowest ? fit / 1000 : lengths.min;
+};
+
+/**
+ * The public estimates, per requested second: over the newest `maxSamples` builds of any kind, as
+ * before builds were kept by lane, and of each lane and of filler apart.
+ */
+const estimatesOf = (
+  config: Pick<Config<never>, "lanes">,
+  samples: State<never>["samples"],
+): PublicState["estimates"] => {
+  const perRequested = (values: ReadonlyArray<BuildSample<number | "filler">>) =>
+    spreadOf(values.map((sample) => sample.perRequested));
+  const own = (values: ReadonlyArray<BuildSample<number | "filler">>, lane: number | "filler") =>
+    perRequested(values.filter((sample) => sample.lane === lane));
+  return {
+    build: perRequested(samples.build.slice(-maxSamples)),
+    continuedBuild: perRequested(samples.continued.slice(-maxSamples)),
+    length: samples.length.length === 0 ? 1 : quantile(samples.length, 0.5),
+    lanes: config.lanes.map((lane, index) => ({
+      name: lane.name,
+      build: own(samples.build, index),
+      continuedBuild: own(samples.continued, index),
+    })),
+    filler: { build: own(samples.build, "filler") },
+  };
+};
 
 /**
  * Until a continued build is measured, one is projected at this multiple of an
@@ -621,18 +696,53 @@ const estimatesOf = (samples: State<never>["samples"]): PublicState["estimates"]
  */
 const continuedBuildFactor = 2.5;
 
+/** The p95 of three or more `values`, else the longest of one or two; undefined with none. */
+const longestOf = (values: ReadonlyArray<number>): number | undefined => {
+  if (values.length === 0) return undefined;
+  return values.length >= minimumSamples ? quantile(values, 0.95) : Math.max(...values);
+};
+
 /**
- * Build seconds per requested second a continued build is projected at, erring
- * long: the p95 of measured continued builds, or their longest below three
- * samples; failing those, the same of independent builds times
- * `continuedBuildFactor`. Undefined before any build was measured.
+ * How each rule reads a set of builds: `"median"` projects one, from three builds on; `"long"`
+ * errs long, at their p95, and for a continued build, from one build on, at the longest below
+ * three.
  */
-const continuedBuildRate = (samples: State<never>["samples"]): number | undefined => {
-  const long = (values: ReadonlyArray<number>) =>
-    values.length >= minimumSamples ? quantile(values, 0.95) : Math.max(...values);
-  if (samples.continued.length > 0) return long(samples.continued);
-  if (samples.build.length > 0) return long(samples.build) * continuedBuildFactor;
-  return undefined;
+const ruleOf = {
+  median: {
+    independent: (values: ReadonlyArray<number>) => spreadOf(values)?.median,
+    continued: (values: ReadonlyArray<number>) => spreadOf(values)?.median,
+  },
+  long: {
+    independent: (values: ReadonlyArray<number>) => spreadOf(values)?.p95,
+    continued: longestOf,
+  },
+};
+
+/**
+ * Build seconds per built second for `subject`'s builds, a lane's items or filler, by `rule`. The
+ * subject's own builds decide, else the newest of every subject's; a continued build not measured
+ * yet is an independent one's, read as a continued one is, times `continuedBuildFactor`.
+ * Undefined while nothing is measured.
+ */
+const buildRateOf = (
+  samples: State<never>["samples"],
+  subject: number | "filler",
+  rule: "median" | "long",
+  continued: boolean,
+): number | undefined => {
+  const pick = (
+    values: ReadonlyArray<BuildSample<number | "filler">>,
+    read: (perBuilt: ReadonlyArray<number>) => number | undefined,
+  ): number | undefined =>
+    read(values.filter((sample) => sample.lane === subject).map((sample) => sample.perBuilt)) ??
+    read(values.slice(-maxSamples).map((sample) => sample.perBuilt));
+  const read = ruleOf[rule];
+  if (!continued) return pick(samples.build, read.independent);
+  const independent = pick(samples.build, read.continued);
+  return (
+    pick(samples.continued, read.continued) ??
+    (independent === undefined ? undefined : independent * continuedBuildFactor)
+  );
 };
 
 /**
@@ -855,6 +965,8 @@ interface Hypothesis {
 /** A build in flight when a forward run starts. */
 interface Flight {
   readonly at: number;
+  /** Whose build it is, which projects it at that one's rate: a lane's items, or filler. */
+  readonly subject: number | "filler";
   readonly seconds: number;
   readonly continued: boolean;
   readonly tag: ClipTag | undefined;
@@ -1130,7 +1242,25 @@ const decide = <Req extends ClipRequest>(
     });
   };
 
-  const estimates = (): PublicState["estimates"] => estimatesOf(state.samples);
+  const estimates = (): PublicState["estimates"] => estimatesOf(config, state.samples);
+  /** Seconds a clip asking for `seconds`, not built yet, is projected to air. */
+  const lengthOf = (seconds: number): number =>
+    airedLengthOf(state.samples, seconds, config.builtSeconds);
+  /**
+   * Build seconds per built second for `subject`'s builds, by `rule`; undefined when nothing is
+   * measured. Every rate the plan projects with comes from here.
+   */
+  const buildRate = (
+    subject: number | "filler",
+    rule: "median" | "long",
+    continued: boolean,
+  ): number | undefined => buildRateOf(state.samples, subject, rule, continued);
+  /**
+   * Milliseconds `subject`'s build of a clip asking for `seconds` takes at its median rate, per
+   * second of the length its model builds; none while nothing is measured.
+   */
+  const medianBuildMs = (subject: number | "filler", seconds: number, continued: boolean): number =>
+    config.builtSeconds(seconds) * (buildRate(subject, "median", continued) ?? 0) * 1000;
   const playingRestMs = (value: Session<Req> | undefined): number => playingRestOf(value, now.mono);
   const airs = (clip: SourceClip): boolean => airsOf(items, clip, now);
   /**
@@ -1199,7 +1329,7 @@ const decide = <Req extends ClipRequest>(
         keeps(other, memo),
     );
     const unbuiltMs = unbuilt.reduce(
-      (total, other) => total + airedLengthOf(state.samples, other.spec.seconds) * 1000,
+      (total, other) => total + lengthOf(other.spec.seconds) * 1000,
       0,
     );
     const aheadMs = readyMs + unbuiltMs;
@@ -1209,20 +1339,20 @@ const decide = <Req extends ClipRequest>(
       from: (end ?? -Infinity) + aheadMs,
       after: (end === undefined ? playingRestMs(air) : 0) + aheadMs,
     };
-    const perSecond = estimates().build?.median;
-    if (perSecond === undefined) return playable;
-    const buildMs = (seconds: number) => seconds * perSecond * 1000;
+    // Until builds are measured none is counted; then each item's builds at its own lane's median.
+    if (buildRate(item.spec.lane, "median", false) === undefined) return playable;
+    const buildMs = (other: Item<Req>) => medianBuildMs(other.spec.lane, other.spec.seconds, false);
     const inFlight = [
       ...[...items.values()].flatMap((other) =>
         other.phase === "Building" &&
         other.dispatchedAt !== undefined &&
         other.spec.key !== item.spec.key
-          ? [other.dispatchedAt + buildMs(other.spec.seconds)]
+          ? [other.dispatchedAt + buildMs(other)]
           : [],
       ),
       ...(target?.fillerSent === undefined
         ? []
-        : [target.fillerSent.at + buildMs(target.fillerSent.seconds)]),
+        : [target.fillerSent.at + medianBuildMs("filler", target.fillerSent.seconds, false)]),
     ];
     const first = [...items.values()]
       .filter(
@@ -1236,20 +1366,18 @@ const decide = <Req extends ClipRequest>(
           previousAdmitted(other) &&
           buildOrder(other, item) < 0,
       )
-      .reduce((total, other) => total + buildMs(other.spec.seconds), 0);
-    const waits = first + buildMs(item.spec.seconds);
+      .reduce((total, other) => total + buildMs(other), 0);
+    const waits = first + buildMs(item);
     let from = Math.max(playable.from, Math.max(...inFlight) + waits);
     let after = Math.max(playable.after, waits);
     // The clips ahead still to build air once the first of them is Ready: one in flight as its
     // build ends, else one sent once the builds in flight are done.
     const building = unbuilt.filter((other) => other.phase === "Building");
     if (building.length > 0) {
-      const ready = building.map(
-        (other) => (other.dispatchedAt ?? now.mono) + buildMs(other.spec.seconds),
-      );
+      const ready = building.map((other) => (other.dispatchedAt ?? now.mono) + buildMs(other));
       from = Math.max(from, Math.min(...ready) + unbuiltMs);
     } else if (unbuilt.length > 0) {
-      const shortest = Math.min(...unbuilt.map((other) => buildMs(other.spec.seconds)));
+      const shortest = Math.min(...unbuilt.map(buildMs));
       from = Math.max(from, Math.max(...inFlight) + shortest + unbuiltMs);
       after = Math.max(after, shortest + unbuiltMs);
     }
@@ -1745,8 +1873,8 @@ const decide = <Req extends ClipRequest>(
       _tag: "Started",
       at: now.wall,
       sessionId,
-      // A clip the provider named without its length is counted at the length requested.
-      seconds: clip.seconds ?? item.spec.seconds,
+      // A clip the provider named without its length is counted at the length its model builds.
+      seconds: clip.seconds ?? config.builtSeconds(item.spec.seconds),
       ...(late === undefined ? {} : { lateByMillis: Math.round(late) }),
     });
     // A withdrawal that waited on it is too late: it answers now, not when the clip ends.
@@ -1808,6 +1936,10 @@ const decide = <Req extends ClipRequest>(
       samples: {
         ...airedSample(state.samples, item.spec.seconds, clip.seconds),
         length: [...state.samples.length, clip.seconds / item.spec.seconds].slice(-maxSamples),
+        overBuilt: [
+          ...state.samples.overBuilt,
+          clip.seconds / config.builtSeconds(item.spec.seconds),
+        ].slice(-maxSamples),
       },
     };
   };
@@ -1905,11 +2037,30 @@ const decide = <Req extends ClipRequest>(
     for (const clip of source.ready) listed.set(clip.clipId, "Ready");
     if (source.playing !== undefined) listed.set(source.playing.clipId, "Playing");
     const fillers = new Map(session(sessionId)?.fillers);
-    const sample = (kind: "build" | "continued", dispatchedAt: number, seconds: number): void => {
-      const value = (now.mono - dispatchedAt) / 1000 / seconds;
+    /**
+     * Records a build measured now, sent at `dispatchedAt` for a clip asking for `requested`
+     * seconds: per second of the length its model builds, and per requested second, kept with
+     * its lane's or filler's. A continued build, which only an item's is, is kept apart.
+     */
+    const sample = (
+      kind: "build" | "continued",
+      lane: number | "filler",
+      dispatchedAt: number,
+      requested: number,
+    ): void => {
+      const elapsed = (now.mono - dispatchedAt) / 1000;
+      const perBuilt = elapsed / config.builtSeconds(requested);
+      const perRequested = elapsed / requested;
+      const samples = state.samples;
       state = {
         ...state,
-        samples: { ...state.samples, [kind]: [...state.samples[kind], value].slice(-maxSamples) },
+        samples:
+          kind === "continued" && lane !== "filler"
+            ? {
+                ...samples,
+                continued: withSample(samples.continued, { lane, perBuilt, perRequested }),
+              }
+            : { ...samples, build: withSample(samples.build, { lane, perBuilt, perRequested }) },
       };
     };
     for (const clip of [
@@ -1923,7 +2074,7 @@ const decide = <Req extends ClipRequest>(
         const build = fillers.get(clip.clipId)?.build;
         const where = listed.get(clip.clipId);
         if (build !== undefined && where === "Ready") {
-          sample("build", build.dispatchedAt, build.seconds);
+          sample("build", "filler", build.dispatchedAt, build.seconds);
           if (clip.seconds !== undefined)
             state = { ...state, samples: airedSample(state.samples, build.seconds, clip.seconds) };
         }
@@ -1957,6 +2108,7 @@ const decide = <Req extends ClipRequest>(
         if (item.dispatchedAt !== undefined && !item.everUnknown)
           sample(
             item.continued === true ? "continued" : "build",
+            item.spec.lane,
             item.dispatchedAt,
             item.spec.seconds,
           );
@@ -2744,7 +2896,9 @@ const decide = <Req extends ClipRequest>(
   function cueAt(item: Item<Req>, cue: Spec<Req>["cues"][number]): number {
     return cue.from === "start"
       ? item.startedAt! + cue.offsetMs
-      : item.startedAt! + (item.airSeconds ?? item.spec.seconds) * 1000 - cue.offsetMs;
+      : item.startedAt! +
+          (item.airSeconds ?? config.builtSeconds(item.spec.seconds)) * 1000 -
+          cue.offsetMs;
   }
   /** The cut's cutter while it waits Ready on its session, and whether the plan still wants it. */
   function cutterOf(): { readonly cutter: SourceClip | undefined; readonly wanted: boolean } {
@@ -3095,16 +3249,18 @@ const decide = <Req extends ClipRequest>(
     // long to air before the cap would come to fit with nothing to wake the plan. A new clip asks
     // instead for what airs before the cap, if the shortest the filler takes does.
     if (state.filler.retries.length > 0 || !fits(target, filler.lengths.min)) return;
-    sendFiller(filler, target, Math.max(filler.lengths.min, longestFit(target)), room);
+    const untilCap = (capOf(target) - airedAheadAt(target)) / 1000;
+    sendFiller(filler, target, longestWithin(untilCap, filler.lengths, lengthOf), room);
   }
   /**
-   * `item`'s p95 build in seconds, at the continued rate if it continues a
-   * clip. Unknown until three builds were measured.
+   * `item`'s p95 build in seconds at its lane's rate, at the continued rate if it
+   * continues a clip. Unknown until three builds were measured.
    */
   function buildOf(item: Item<Req>, continued: boolean): number | undefined {
-    const p95 = estimates().build?.p95;
+    const p95 = buildRate(item.spec.lane, "long", false);
     if (p95 === undefined) return undefined;
-    return (continued ? (continuedBuildRate(state.samples) ?? p95) : p95) * item.spec.seconds;
+    const rate = continued ? (buildRate(item.spec.lane, "long", true) ?? p95) : p95;
+    return rate * config.builtSeconds(item.spec.seconds);
   }
   /**
    * Protecting the air, sends a filler clip ahead of `item` when its p95 build
@@ -3127,7 +3283,8 @@ const decide = <Req extends ClipRequest>(
     if (filler === undefined || !protects(item) || item.covered === true || !fillerFree())
       return false;
     const build = buildOf(item, continued);
-    const rate = estimates().build?.p95;
+    // The cover is a filler clip: it builds at filler's rate, per second of what its model builds.
+    const rate = buildRate("filler", "long", false);
     if (build === undefined || rate === undefined) return false;
     const dark = build - securedOf({ ...state, items }, now);
     const short = dark + lookaheadMarginSeconds;
@@ -3143,7 +3300,7 @@ const decide = <Req extends ClipRequest>(
     );
     // A refused clip goes again as it was asked for: it must build sooner and fit at its length.
     const length = fillerLength(seconds);
-    if (rate * length >= build || !fits(target, length)) return false;
+    if (rate * config.builtSeconds(length) >= build || !fits(target, length)) return false;
     set(item.spec.key, { covered: true });
     sendFiller(filler, target, seconds, room);
     return true;
@@ -3299,7 +3456,7 @@ const decide = <Req extends ClipRequest>(
         })
         .reduce((total, clip) => total + clip.seconds * 1000, 0);
     const aheadMs = queuedMs(air) + (target.id === air?.id ? 0 : queuedMs(target));
-    const buildMs = item.spec.seconds * (estimates().build?.median ?? 0) * 1000;
+    const buildMs = medianBuildMs(item.spec.lane, item.spec.seconds, false);
     return aheadMs - buildMs - exposureMarginMs;
   }
   /** When `followCovered` stops holding for `item` as the clip on air plays; undefined if not. */
@@ -3366,21 +3523,17 @@ const decide = <Req extends ClipRequest>(
     return air === undefined ? undefined : exposedAt(air, readyAheadMs(air, Infinity) + readyMs);
   }
   /**
-   * Whether a clip of `seconds` built on `target` now would finish airing before
-   * the session's cap, counting everything that airs ahead of it there: the
+   * Whether a clip asking for `seconds`, built on `target` now, would finish airing
+   * before the session's cap, counting everything that airs ahead of it there: the
    * playing clip's rest, its Ready clips, its builds in flight and, for a
    * replacement, what the session on air still has. A clip no fresh session
    * could air whole is not held back.
    */
   function fits(target: Session<Req>, seconds: number): boolean {
     if (target.lifetimeMs === Infinity) return true;
-    const lengthMs = seconds * estimates().length * 1000;
+    const lengthMs = lengthOf(seconds) * 1000;
     if (lengthMs > target.lifetimeMs - lookaheadMarginSeconds * 1000) return true;
     return airedAheadAt(target) + lengthMs <= capOf(target);
-  }
-  /** The most seconds a clip built on `target` now may ask for and still air before its cap. */
-  function longestFit(target: Session<Req>): number {
-    return (capOf(target) - airedAheadAt(target)) / (estimates().length * 1000);
   }
   /** When a clip built on `target` must have aired by: its cap, less the margin. */
   function capOf(target: Session<Req>): number {
@@ -3388,7 +3541,6 @@ const decide = <Req extends ClipRequest>(
   }
   /** When all that airs ahead of a clip built on `target` now has aired. */
   function airedAheadAt(target: Session<Req>): number {
-    const ratio = estimates().length;
     const queuedMs = (value: Session<Req>): number =>
       waitingOf(value)
         .filter(airs)
@@ -3404,7 +3556,7 @@ const decide = <Req extends ClipRequest>(
           (item) =>
             item.sessionId === target.id && (item.phase === "Building" || item.phase === "Unknown"),
         )
-        .reduce((total, item) => total + item.spec.seconds * ratio * 1000, 0) +
+        .reduce((total, item) => total + lengthOf(item.spec.seconds) * 1000, 0) +
       (target.source?.building ?? [])
         .filter((clip) => clip.tag?._tag === "Filler")
         .reduce((total, clip) => total + clip.seconds * 1000, 0);
@@ -3422,11 +3574,14 @@ const decide = <Req extends ClipRequest>(
   function clipFloor(): number {
     const filler = config.filler;
     if (filler === undefined || filler.floor <= 0) return 0;
-    const p95 = estimates().build?.p95;
+    const p95 = buildRate("filler", "long", false);
     // A floor covers one p95 build of the next filler clip, so a refill started there is Ready in time.
     return p95 === undefined
       ? filler.floor
-      : Math.max(filler.floor, p95 * filler.lengths.min + lookaheadMarginSeconds);
+      : Math.max(
+          filler.floor,
+          p95 * config.builtSeconds(filler.lengths.min) + lookaheadMarginSeconds,
+        );
   }
   /**
    * What a continuing item continues from: the clip that airs just before it on
@@ -3444,8 +3599,7 @@ const decide = <Req extends ClipRequest>(
         readonly clipId: string | undefined;
         readonly follows?: string | undefined;
       } {
-    if (item.spec.follows !== undefined)
-      return followContinuation(item.spec.follows, target, item.spec.seconds);
+    if (item.spec.follows !== undefined) return followContinuation(item.spec.follows, target, item);
     const place = rankItem(item);
     const before = (rank: Rank) => compareRank(rank, place) < 0;
     let best: { readonly rank: Rank; readonly clipId: string | undefined } | undefined;
@@ -3491,7 +3645,7 @@ const decide = <Req extends ClipRequest>(
   function followContinuation(
     follows: ClipTag,
     target: Session<Req>,
-    seconds: number,
+    item: Item<Req>,
   ): { readonly _tag: "wait" } | { readonly _tag: "from"; readonly clipId: string | undefined } {
     const onAir = target.id === state.air ? target.source?.playing : undefined;
     const playing = onAir !== undefined && sameClip(follows, onAir.tag);
@@ -3508,9 +3662,10 @@ const decide = <Req extends ClipRequest>(
     }
     if (target.source?.continuable.includes(predecessor) !== true)
       return { _tag: "from", clipId: undefined };
-    const rate = continuedBuildRate(state.samples);
+    const rate = buildRate(item.spec.lane, "long", true);
     if (rate === undefined) return { _tag: "from", clipId: predecessor };
-    const readyAt = now.mono + (rate * seconds + lookaheadMarginSeconds) * 1000;
+    const buildSeconds = rate * config.builtSeconds(item.spec.seconds);
+    const readyAt = now.mono + (buildSeconds + lookaheadMarginSeconds) * 1000;
     const end =
       now.mono +
       (onAir === undefined ? 0 : playingRestMs(target)) +
@@ -3584,38 +3739,37 @@ const decide = <Req extends ClipRequest>(
   /**
    * When an item that follows a clip, not sent yet, is projected, at the median, unable to be
    * Ready a readiness margin before that clip ends: as `projection` does, from the builds in
-   * flight and those ahead of it in build order, at the continued rate for continued ones. Its own
-   * build counts as independent, since a continued one that would miss falls back to that. The
-   * projection grows with the time once nothing holds it, as `misses` has it.
+   * flight and those ahead of it in build order, each at its own lane's or filler's rate, and at
+   * the continued rate for continued ones. Its own build counts as independent, since a continued
+   * one that would miss falls back to that. The projection grows with the time once nothing holds
+   * it, as `misses` has it.
    */
   function projectedLate(item: Item<Req>): { readonly due: number } | undefined {
-    const perSecond = estimates().build?.median;
     if (
       item.spec.follows === undefined ||
       item.phase !== "Accepted" ||
       item.dispatchedAt !== undefined ||
-      perSecond === undefined ||
+      buildRate(item.spec.lane, "median", false) === undefined ||
       // Its enqueue goes out once the fence raised for it is up.
       state.sessions.some((value) => value.guardItem === item.spec.key)
     )
       return undefined;
     const end = followsEnd(item);
     if (end === undefined) return undefined;
-    const continued = estimates().continuedBuild?.median ?? perSecond * continuedBuildFactor;
-    const buildMs = (seconds: number, again: boolean) =>
-      seconds * (again ? continued : perSecond) * 1000;
+    const buildMs = (other: Item<Req>, again: boolean) =>
+      medianBuildMs(other.spec.lane, other.spec.seconds, again);
     const target = preferred() ?? session(state.air);
     const inFlight = [
       ...[...items.values()].flatMap((other) =>
         other.phase === "Building" &&
         other.dispatchedAt !== undefined &&
         other.spec.key !== item.spec.key
-          ? [other.dispatchedAt + buildMs(other.spec.seconds, other.continued === true)]
+          ? [other.dispatchedAt + buildMs(other, other.continued === true)]
           : [],
       ),
       ...(target?.fillerSent === undefined
         ? []
-        : [target.fillerSent.at + buildMs(target.fillerSent.seconds, false)]),
+        : [target.fillerSent.at + medianBuildMs("filler", target.fillerSent.seconds, false)]),
     ];
     const first = [...items.values()]
       .filter(
@@ -3629,8 +3783,8 @@ const decide = <Req extends ClipRequest>(
           previousAdmitted(other) &&
           buildOrder(other, item) < 0,
       )
-      .reduce((total, other) => total + buildMs(other.spec.seconds, other.spec.continuity), 0);
-    const after = first + buildMs(item.spec.seconds, false);
+      .reduce((total, other) => total + buildMs(other, other.spec.continuity), 0);
+    const after = first + buildMs(item, false);
     const from = Math.max(-Infinity, ...inFlight) + after;
     return {
       due: from + readinessMarginMs >= end ? now.mono : end - readinessMarginMs - after,
@@ -3649,9 +3803,10 @@ const decide = <Req extends ClipRequest>(
     predecessor: string,
     target: Session<Req>,
   ): { readonly clipId: string; readonly follows?: string | undefined } {
-    const rate = continuedBuildRate(state.samples);
+    const rate = buildRate(item.spec.lane, "long", true);
     if (rate === undefined) return { clipId: predecessor };
-    const readyAt = now.mono + (rate * item.spec.seconds + lookaheadMarginSeconds) * 1000;
+    const buildSeconds = rate * config.builtSeconds(item.spec.seconds);
+    const readyAt = now.mono + (buildSeconds + lookaheadMarginSeconds) * 1000;
     const onAir = target.id === state.air ? target.source?.playing : undefined;
     const queued = waitingOf(target)
       .filter(airs)
@@ -3844,17 +3999,6 @@ const decide = <Req extends ClipRequest>(
     const opensAt = opensAtOf();
     const replacementId = replacement?.id ?? "\u0000replacement";
     let targetId = target.id;
-    const measured = estimates();
-    const perSecond = measured.build?.median;
-    const continuedPerSecond = measured.continuedBuild?.median;
-    // Under three builds nothing is known of the build: none is counted.
-    const buildMs = (seconds: number, continued: boolean): number => {
-      if (perSecond === undefined) return 0;
-      const rate = continued ? (continuedPerSecond ?? perSecond * continuedBuildFactor) : perSecond;
-      return seconds * rate * 1000;
-    };
-    const ratio = measured.length;
-    const lengthOf = (seconds: number): number => airedLengthOf(state.samples, seconds);
     const filler = config.filler;
     const floorSeconds = fillerFloor();
     const targetSeconds = Math.max(filler?.target ?? 0, floorSeconds);
@@ -3912,12 +4056,27 @@ const decide = <Req extends ClipRequest>(
     // Builds in flight, in the order H3 takes them, each once the one before it is done.
     for (const value of sessions) {
       const busy = value.busy?.command;
+      const sending: ReadonlyArray<Flight> =
+        busy?._tag === "Enqueue" && busy.tag._tag === "Filler"
+          ? [
+              {
+                at: value.fillerSent?.at ?? now.mono,
+                subject: "filler",
+                seconds: value.fillerSent?.seconds ?? config.defaultSeconds,
+                continued: false,
+                tag: busy.tag,
+                item: undefined,
+                clipId: undefined,
+              },
+            ]
+          : [];
       const flights: Array<Flight> = [
         ...[...items.values()].flatMap((item): ReadonlyArray<Flight> =>
           item.phase === "Building" && item.sessionId === value.id && item.withdraw === undefined
             ? [
                 {
                   at: item.dispatchedAt ?? now.mono,
+                  subject: item.spec.lane,
                   seconds: item.spec.seconds,
                   continued: item.continued === true,
                   tag: { _tag: "Item", key: item.spec.key },
@@ -3933,6 +4092,7 @@ const decide = <Req extends ClipRequest>(
             : [
                 {
                   at: owner.build.dispatchedAt,
+                  subject: "filler",
                   seconds: owner.build.seconds,
                   continued: false,
                   tag: { _tag: "Filler", index: owner.index },
@@ -3941,24 +4101,16 @@ const decide = <Req extends ClipRequest>(
                 },
               ],
         ),
-        ...(busy?._tag === "Enqueue" && busy.tag._tag === "Filler"
-          ? [
-              {
-                at: value.fillerSent?.at ?? now.mono,
-                seconds: value.fillerSent?.seconds ?? config.defaultSeconds,
-                continued: false,
-                tag: busy.tag,
-                item: undefined,
-                clipId: undefined,
-              },
-            ]
-          : []),
+        ...sending,
       ].sort((a, b) => a.at - b.at);
       let readyAt = -Infinity;
+      // Each build goes at its own lane's median, or filler's; under three builds nothing is known
+      // of the build, and none is counted.
       for (const flight of flights) {
         readyAt = Math.max(
           now.mono,
-          Math.max(readyAt, flight.at) + buildMs(flight.seconds, flight.continued),
+          Math.max(readyAt, flight.at) +
+            medianBuildMs(flight.subject, flight.seconds, flight.continued),
         );
         pool.push({
           tag: flight.tag,
@@ -4077,7 +4229,7 @@ const decide = <Req extends ClipRequest>(
     /** As `followCovered`, at `time`. */
     const coveredFor = (item: PlanItem, time: number): boolean => {
       const follows = item.spec.follows;
-      if (perSecond === undefined)
+      if (estimates().build === undefined)
         return (
           follows !== undefined &&
           pool.some(
@@ -4088,7 +4240,8 @@ const decide = <Req extends ClipRequest>(
               (clip.item === undefined || queuedAt(clip.item, time)),
           )
         );
-      return aheadAt(time) > buildMs(item.spec.seconds, false) + exposureMarginMs;
+      const buildMs = medianBuildMs(item.spec.lane, item.spec.seconds, false);
+      return aheadAt(time) > buildMs + exposureMarginMs;
     };
     /** As `followCovered` counts the air ahead of a clip sent at `time`. */
     const aheadAt = (time: number): number => {
@@ -4188,15 +4341,21 @@ const decide = <Req extends ClipRequest>(
       if (follows === undefined) return true;
       const end = endOf(follows, time);
       if (end === undefined) return false;
-      const rate = continuedBuildRate(state.samples);
+      const rate = buildRate(item.spec.lane, "long", true);
       return (
         rate === undefined ||
-        time + (rate * item.spec.seconds + lookaheadMarginSeconds) * 1000 <= end
+        time + (rate * config.builtSeconds(item.spec.seconds) + lookaheadMarginSeconds) * 1000 <=
+          end
       );
     };
-    const build = (clip: Omit<Projected, "readyAt">, seconds: number, time: number): number => {
+    const build = (
+      clip: Omit<Projected, "readyAt">,
+      subject: number | "filler",
+      seconds: number,
+      time: number,
+    ): number => {
       const start = Math.max(free.get(targetId) ?? -Infinity, time);
-      const readyAt = start + buildMs(seconds, clip.continued);
+      const readyAt = start + medianBuildMs(subject, seconds, clip.continued);
       free.set(targetId, readyAt);
       pool.push({ ...clip, readyAt });
       return readyAt;
@@ -4214,6 +4373,7 @@ const decide = <Req extends ClipRequest>(
           projected: true,
           continued: decision,
         },
+        item.spec.lane,
         item.spec.seconds,
         time,
       );
@@ -4232,7 +4392,7 @@ const decide = <Req extends ClipRequest>(
       const openedAt =
         targetId === air.id ? air.openedAt : (replacement?.openedAt ?? opensAt ?? now.mono);
       if (lifetimeMs === Infinity) return true;
-      const lengthMs = seconds * ratio * 1000;
+      const lengthMs = lengthOf(seconds) * 1000;
       const marginMs = lookaheadMarginSeconds * 1000;
       if (lengthMs > lifetimeMs - marginMs) return true;
       const queuedMs = (id: string): number =>
@@ -4262,7 +4422,7 @@ const decide = <Req extends ClipRequest>(
       const [retry, ...rest] = retries;
       const seconds =
         retry === undefined
-          ? fillLength(gap - room, filler.lengths, ratio)
+          ? fillLength(gap - room, filler.lengths, estimates().length)
           : (retry.request.seconds ?? config.defaultSeconds);
       if (!fitsAt(seconds, time)) return false;
       const index = retry?.index ?? nextIndex;
@@ -4278,6 +4438,7 @@ const decide = <Req extends ClipRequest>(
           projected: true,
           continued: false,
         },
+        "filler",
         seconds,
         time,
       );
@@ -4637,7 +4798,7 @@ export const view: {
         ready: (value.source?.ready ?? []).map(own),
       })),
       starved: state.starved,
-      estimates: estimatesOf(state.samples),
+      estimates: estimatesOf(config, state.samples),
     };
   },
 );
