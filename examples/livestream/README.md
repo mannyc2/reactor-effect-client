@@ -21,11 +21,11 @@ Offline, the channel runs on `ReactorTest`, the SDK's simulated Reactor, at the 
 CHANNEL_MODE=live REACTOR_API_KEY=rk_… node examples/livestream/src/main.ts
 ```
 
-The API key stays on the server. Each session starts on a token the server mints for it, capped at `CHANNEL_SESSION_LENGTH` (10 minutes), and the playout opens its replacement 45 seconds before the cap. `CHANNEL_MAX_SESSIONS` (3) is how many sessions a run may open; after the last one's cap the channel goes off air. Live mode needs the native addon: npm ships it prebuilt for linux-x64 and darwin-arm64, and in this repository you build it first ([packages/native](../../packages/native/README.md)).
+The API key stays on the server. Each session starts on a token the server mints for it, capped at `CHANNEL_SESSION_LENGTH` (10 minutes), and the playout opens its replacement 45 seconds before the cap. `CHANNEL_MAX_SESSIONS` (3) is how many sessions a run may allocate, a session it resumes not counted; after the last one's cap the channel goes off air. Live mode needs the native addon: npm ships it prebuilt for linux-x64 and darwin-arm64, and in this repository you build it first ([packages/native](../../packages/native/README.md)).
 
 Reactor's pricing API stated H3's rate as $0.035 a second on 2026-09-30 (its billing page still says per session-minute), from `ready` until the session ends: $2.10 a minute, $126 an hour on air. Each renewal adds up to 45 seconds of a second session, about $1.58. With the defaults a run is at most three 10-minute sessions, $63. For a channel that runs all day, raise both settings: with 6-hour sessions, renewals add about $6 a day.
 
-A crash can't run up an open-ended bill. Every session is created capped, so Reactor ends it by its cap whatever happens to the server (a paid probe saw a 60-second session ended 60.09 s after allocation: `integration/hosted/evidence/0.8.0-probe/summary.md`). A crash costs at most the two sessions open during a renewal, $42 at the defaults, and `allocations.jsonl` names each session before it connects. On Ctrl-C the server terminates its sessions and writes their close reports to `cleanup.jsonl`.
+A crash can't run up an open-ended bill. Every session is created capped, so Reactor ends it by its cap whatever happens to the server (a paid probe saw a 60-second session ended 60.09 s after allocation: `integration/hosted/evidence/0.8.0-probe/summary.md`). Left alone, a crash costs at most the two sessions open during a renewal, $42 at the defaults. The SDK's ledger records each session in `ledger-live.json` before it connects, so a restart settles what a crashed run left before it allocates anything: it resumes the newest session with a minute of its cap left and ends the others, each until Reactor confirms the end, and `ledger-live.json` lists what is still being ended. On Ctrl-C the server terminates its sessions and writes their close reports to `cleanup.jsonl`.
 
 This example's live mode has not run on hosted Reactor. The 0.8.0 playout has, on 2026-09-28: three 75-second sessions, a dropped connection and a moderated session, 20 clips with 53–169 ms seams and no dark frame (`integration/hosted/evidence/0.8.0-api/summary.md`). 0.9.0's playout has run only on `ReactorTest`.
 
@@ -53,9 +53,9 @@ CHANNEL_RTMP_URL=rtmp://127.0.0.1:1935/live/test node examples/livestream/src/ma
 | `CHANNEL_SESSION_LENGTH` | `10 minutes` live, `2 minutes` | Each session's cap                                               |
 | `CHANNEL_RENEWAL_LEAD`   | `45 seconds`                   | How long before the cap the replacement opens                    |
 | `CHANNEL_CLIP_SECONDS`   | `8`                            | Every clip's length, within H3's 5 to 15.084 seconds             |
-| `CHANNEL_MAX_SESSIONS`   | `3`                            | Live only; sessions a run may open                               |
+| `CHANNEL_MAX_SESSIONS`   | `3`                            | Live only; sessions a run may allocate                           |
 | `CHANNEL_RTMP_URL`       |                                | An `rtmp://` or `rtmps://` ingest that also receives the program |
-| `CHANNEL_EVIDENCE_DIR`   | `.channel`                     | Where `allocations.jsonl` and `cleanup.jsonl` are appended       |
+| `CHANNEL_EVIDENCE_DIR`   | `.channel`                     | Where `ledger-<mode>.json` and `cleanup.jsonl` are kept          |
 | `HOST`, `PORT`           | `127.0.0.1`, `3000`            | Anyone who can reach the server can watch and send prompts       |
 
 ## How it works
@@ -73,7 +73,7 @@ flowchart LR
 ```
 
 - **One `Playout`** (`src/Channel.ts`) holds a `viewer` lane for prompts and the house rotation as its `filler`, which keeps 8 to 16 seconds of air secured whenever no viewer has asked for anything.
-- **Sessions** come from `H3Source.open`: it mints the session's token with `coordinator.tokens`, allocates, records the owner through `onAllocated`, and only then connects. Live, the connection runs on `NativePeer.layerIsolated()`, each peer in a child process of its own, so a crash in libwebrtc ends one connection, not the server. Offline the same code runs on `ReactorTest.layer`.
+- **Sessions** come from the SDK's `Ledger`, through `ledger.source(H3Source.opener({ tokens }))` with tokens from `coordinator.tokens`. Before it allocates, the ledger resumes or ends what a crashed run left in `ledger-<mode>.json`; it records each new session there before the session connects, and forgets it once Reactor confirms its end, asking again until it does. One file per mode keeps a simulated run from ending live sessions. Live, the connection runs on `NativePeer.layerIsolated()`, each peer in a child process of its own, so a crash in libwebrtc ends one connection, not the server. Offline the same code runs on `ReactorTest.layer`.
 - **Renewal** is the playout's: `renewal.lead` before a session's cap it opens the replacement, builds new clips there, and switches the air at a clip boundary once the old session has played what it holds.
 - **Admission** (`src/Programme.ts`): a prompt joins the end of the viewer lane, so it is taken only if the rest of the clip on air and the viewer prompts already lined up leave it room to start within the renewal lead less one clip. Otherwise the reply is `429` with `retryAfterSeconds`. The prompt goes in with a firm window, and the playout drops one that still can't start in time as `late`.
 - **The broadcast** (`src/Broadcast.ts`) reads `playout.video` and `playout.audio`, which continue across renewals, and feeds ffmpeg a steady 24 frames a second. ffmpeg's tee muxer writes the one encode as fragmented MP4 for the browsers, which `Stream.share` fans out, and as FLV to the ingest.
@@ -82,11 +82,11 @@ flowchart LR
 | File               | What it does                                                                    |
 | ------------------ | ------------------------------------------------------------------------------- |
 | `src/Api.ts`       | The `HttpApi` contract: prompts, the status and its event feed, the MP4 stream  |
-| `src/Channel.ts`   | The playout over `H3Source`, live or on `ReactorTest`, and the house rotation   |
+| `src/Channel.ts`   | The playout over `H3Source` through the ledger, live or on `ReactorTest`        |
 | `src/Programme.ts` | Viewers' prompts as keyed items with a firm window, and their refusals          |
 | `src/Broadcast.ts` | The frame clock, the encoder, the fan-out to browsers and the ingest            |
 | `src/Monitor.ts`   | What is on air, lined up and aired, and the sessions carrying it                |
-| `src/Ledger.ts`    | Owner records and the cleanup report                                            |
+| `src/Evidence.ts`  | The evidence directory, which holds the ledger, and the cleanup report          |
 | `src/Settings.ts`  | The settings above, checked before any session opens                            |
 | `src/App.ts`       | The layers, built so that what fails for free fails before a paid session opens |
 
