@@ -3026,4 +3026,46 @@ describe("PlayoutPolicy, groups", () => {
     assert.strictEqual(policy.state().items.get(key("xi"))?.phase, "Building");
     assert.isBelow(runway(), 5);
   });
+
+  // A part waiting behind the part before it, Ready behind that part on their session, airs next
+  // once that part starts. It waited at the end of the queue, behind a lower lane's clip, and was
+  // moved into its place only once that part had started: a part shorter than the move's round trip
+  // let the lower lane's clip air between them.
+  it("keeps a waiting part in its place behind the part before it", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    const log: Array<string> = [];
+    const held = queues();
+    const names = () =>
+      held.ready.map((value) => (value.tag === undefined ? "" : nameOf(value.tag)));
+    policy.submit(spec("x", 0, 30));
+    provide(policy, "s1", 1, held, log);
+    const x = readyIn(held, "x");
+    held.ready = [];
+    held.playing = x;
+    policy.event({ _tag: "Started", clip: x });
+    policy.observe({ playing: x });
+    policy.edit([
+      {
+        _tag: "SubmitGroup",
+        key: key("g"),
+        lane: 1,
+        parts: [spec("p1", 1, 2), spec("p2")],
+        fingerprint: "g",
+      },
+    ]);
+    policy.submit(spec("z", 2));
+    provide(policy, "s1", 12, held, log);
+    assert.deepStrictEqual(names(), ["p1", "p2", "z"]);
+    const p1 = readyIn(held, "p1");
+    held.ready = held.ready.filter((value) => value !== p1);
+    held.playing = p1;
+    const before = policy.actions.length;
+    policy.event({ _tag: "Ended", clip: x, termination: "finished" }, "s1", 30_000);
+    policy.event({ _tag: "Started", clip: p1 });
+    policy.observe({ ready: held.ready, playing: p1 });
+    assert.deepStrictEqual(commands(policy.actions.slice(before)), []);
+    assert.deepStrictEqual(names(), ["p2", "z"]);
+  });
 });

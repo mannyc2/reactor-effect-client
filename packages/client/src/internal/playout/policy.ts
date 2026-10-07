@@ -3305,7 +3305,17 @@ const decide = <Req extends ClipRequest>(
     const value = session(sessionId);
     if (value === undefined || value.busy !== undefined) return;
     const actual = readyOf(value);
-    const desired = [...actual].sort((a, b) => compareRank(rankClip(a), rankClip(b)));
+    // A member its group holds back waits at the end of the queue, unless each member it waits
+    // behind is Ready ahead of it here: it keeps its place behind them, and needs no move once
+    // they start, which a short one could end before.
+    const inTurnHere = keysOf(inTurn(value, (clip) => airsAtPlaceOf(roster, clip, now)));
+    const rankHere = (clip: SourceClip): Rank => {
+      const owner = itemOf(clip);
+      return owner !== undefined && inTurnHere.has(owner.spec.key)
+        ? placeRank(owner)
+        : rankClip(clip);
+    };
+    const desired = [...actual].sort((a, b) => compareRank(rankHere(a), rankHere(b)));
     // Autoplay as its role wants it: off on a replacement until it takes the air, and off on the
     // air while a cut is under way.
     const selected = value.guardItem === undefined ? undefined : items.get(value.guardItem);
