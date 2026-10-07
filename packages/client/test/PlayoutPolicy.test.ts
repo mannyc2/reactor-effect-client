@@ -1545,6 +1545,94 @@ describe("PlayoutPolicy, clip ids", () => {
     const moves = commands(policy.actions).filter((action) => action.command._tag === "Move");
     assert.deepStrictEqual(moves, []);
   });
+
+  // A clip taken off to be built again stays listed while its removal is refused. Built again
+  // with continuity, behind a clip it would outlast, it continued from that old clip of its own
+  // and followed it: the next look ranked it behind itself, round and round, and threw.
+  it("never continues a clip built again from one of its own still listed", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("x", 1, 30), 10);
+    policy.reply({ _tag: "Done", clipId: "c-x" });
+    const x = clip("c-x", item("x"), 30);
+    policy.event({ _tag: "Started", clip: x }, "s1", 3_000);
+    policy.observe({ playing: x }, "s1", 3_001);
+    const p2 = { ...spec("p2", 1, 10), continuity: true };
+    policy.edit(
+      [
+        {
+          _tag: "SubmitGroup",
+          key: key("g"),
+          lane: 1,
+          parts: [spec("p1", 1, 5), p2],
+          fingerprint: "g",
+        },
+      ],
+      false,
+      3_100,
+    );
+    const builds = () =>
+      commands(policy.actions).flatMap((action) =>
+        action.command._tag === "Enqueue" ? [action.command] : [],
+      );
+    policy.reply({ _tag: "Done", clipId: "c-p1" }, 3_110);
+    const p1Clip = clip("c-p1", item("p1"), 5);
+    policy.observe({ playing: x, ready: [p1Clip], continuable: ["c-x", "c-p1"] }, "s1", 5_110);
+    assert.strictEqual(builds().at(-1)?.continueFrom, "c-p1");
+    policy.reply({ _tag: "Done", clipId: "c-p2" }, 5_120);
+    const p2Clip = clip("c-p2", item("p2"), 10);
+    // A continued build takes a second per second here.
+    policy.observe(
+      { playing: x, ready: [p1Clip, p2Clip], continuable: ["c-x", "c-p1", "c-p2"] },
+      "s1",
+      15_120,
+    );
+    // i goes in before p2 with 2 s of x left, and is still building as p1 starts.
+    policy.edit([{ _tag: "Insert", spec: spec("i", 1, 5), anchor: key("p1"), side: "after" }]);
+    policy.reply({ _tag: "Done", clipId: "c-i" }, 31_000);
+    const iClip = clip("c-i", item("i"), 5);
+    policy.event({ _tag: "Ended", clip: x, termination: "finished" }, "s1", 33_000);
+    policy.event({ _tag: "Started", clip: p1Clip }, "s1", 33_040);
+    policy.observe(
+      { playing: p1Clip, ready: [p2Clip], building: [iClip], continuable: ["c-p1", "c-p2"] },
+      "s1",
+      33_041,
+    );
+    // p2 would start before i: it is taken off, and its removal refused.
+    policy.tick(36_600);
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-p2" });
+    policy.reply(failed("replied"), 36_610);
+    policy.observe(
+      { playing: p1Clip, ready: [p2Clip, iClip], continuable: ["c-p1", "c-p2", "c-i"] },
+      "s1",
+      37_500,
+    );
+    for (let round = 0; round < 4 && policy.busy()?._tag === "Move"; round++) {
+      policy.reply({ _tag: "Done" });
+      policy.observe(
+        { playing: p1Clip, ready: [iClip, p2Clip], continuable: ["c-p1", "c-i", "c-p2"] },
+        "s1",
+      );
+    }
+    policy.reply({ _tag: "Done", clipId: "c-p2-1" });
+    const again = clip("c-p2-1", item("p2"), 10);
+    policy.event({ _tag: "Ended", clip: p1Clip, termination: "finished" }, "s1", 38_100);
+    policy.event({ _tag: "Started", clip: iClip }, "s1", 38_140);
+    policy.observe(
+      { playing: iClip, ready: [p2Clip, again], continuable: ["c-i", "c-p2", "c-p2-1"] },
+      "s1",
+      38_141,
+    );
+    // Its continued build would be Ready only after i ends: it continues from i all the same.
+    assert.deepStrictEqual(builds().at(-1), {
+      _tag: "Enqueue",
+      request: p2.request,
+      tag: item("p2"),
+      continueFrom: "c-i",
+    });
+    assert.deepStrictEqual(statuses(policy.actions, "i").at(-1), "Started");
+  });
 });
 
 const withdrawn = (actions: ReadonlyArray<Policy.Action>) =>

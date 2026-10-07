@@ -827,6 +827,9 @@ const sameClip = (named: ClipTag, tag: ClipTag | undefined): boolean => {
       return tag._tag === "Filler" && tag.index === named.index;
   }
 };
+/** Whether `clip` is `item`'s own: the one it has, or one taken off it and still listed. */
+const ownClip = (item: PlanItem, clip: SourceClip): boolean =>
+  clip.tag?._tag === "Item" && clip.tag.key === item.spec.key;
 /**
  * Whether an item that `follows` a clip must still wait, not airing, for that clip to air. One
  * inserted right after the very item it follows is kept behind it by rank already, while that
@@ -1415,16 +1418,15 @@ const decide = <Req extends ClipRequest>(
       heldForFollows(item)
     );
   };
+  /** Where a held item ranks: behind everything that airs. */
+  const heldRank = (item: PlanItem): Rank => [lanes + 1, 1, item.order, item.generation];
   const rankItem = (item: Item<Req>): Rank =>
-    heldBack(item) || behindInGroup(roster, item)
-      ? [lanes + 1, 1, item.order, item.generation]
-      : airRank(item);
+    heldBack(item) || behindInGroup(roster, item) ? heldRank(item) : airRank(item);
   /**
    * `airRank` for an item held only because it waits behind an earlier member: where it will air
    * once that one starts.
    */
-  const placeRank = (item: Item<Req>): Rank =>
-    heldBack(item) ? [lanes + 1, 1, item.order, item.generation] : airRank(item);
+  const placeRank = (item: Item<Req>): Rank => (heldBack(item) ? heldRank(item) : airRank(item));
   const heldForFollows = (item: Item<Req>): boolean => followHeldOf(roster, item);
   const cuts = (item: PlanItem): boolean => config.lanes[item.spec.lane]?.cut === true;
   /** Whether a lane that skips while busy refuses what is new: it has an item waiting or playing. */
@@ -1444,6 +1446,8 @@ const decide = <Req extends ClipRequest>(
     if (config.filler === undefined) return "there is no filler to follow";
     return undefined;
   };
+  /** The items whose rank is being worked out from the clip each follows. */
+  const following = new Set<ItemKey>();
   /** `rankItem` once nothing holds the item back. */
   const airRank = (item: Item<Req>): Rank => {
     // Its build continues the Ready clip it follows on its session, so it airs right behind that
@@ -1453,7 +1457,11 @@ const decide = <Req extends ClipRequest>(
         ? undefined
         : session(item.sessionId)?.source?.ready.find((clip) => clip.clipId === item.follows);
     if (followed !== undefined) {
+      // Clips that follow one another back to this item never air: it ranks as held.
+      if (following.has(item.spec.key)) return heldRank(item);
+      following.add(item.spec.key);
       const behind = rankClip(followed);
+      following.delete(item.spec.key);
       return [behind[0], behind[1], behind[2], behind[3] + 0.5];
     }
     if (item.mode === "asap") return [-0.5, 0, item.order, item.generation];
@@ -4081,10 +4089,11 @@ const decide = <Req extends ClipRequest>(
     for (const clip of readyOf(target)) {
       const rank = placeRankOf(clip);
       const owner = itemOf(clip);
-      // What this item replaces, or a batch is taking off, is no predecessor.
+      // What this item replaces, or a batch is taking off, is no predecessor, nor a clip of its own.
       if (
         before(rank) &&
         owner?.withdraw === undefined &&
+        !ownClip(item, clip) &&
         (owner === undefined || (!superseded.has(owner.spec.key) && replacedOf(item) !== owner)) &&
         (best === undefined || compareRank(rank, best.rank) > 0)
       )
@@ -4285,9 +4294,10 @@ const decide = <Req extends ClipRequest>(
     const buildSeconds = rate * config.builtSeconds(item.spec.seconds);
     const readyAt = now.mono + (buildSeconds + lookaheadMarginSeconds) * 1000;
     const onAir = target.id === state.air ? target.source?.playing : undefined;
-    // A member its group holds back airs at its place once the members ahead of it have.
+    // A member its group holds back airs at its place once the members ahead of it have. A clip of
+    // its own, taken off and still listed, airs nowhere it could follow.
     const queued = waitingOf(target)
-      .filter((clip) => airsAtPlaceOf(roster, clip, now))
+      .filter((clip) => !ownClip(item, clip) && airsAtPlaceOf(roster, clip, now))
       .sort((a, b) => compareRank(placeRankOf(a), placeRankOf(b)));
     const after =
       onAir?.clipId === predecessor
@@ -4730,6 +4740,8 @@ const decide = <Req extends ClipRequest>(
       const at = atMono(item);
       return (at === undefined || at <= time) && queuedAtPlaceIn(item, time);
     };
+    // As `airRank`'s: the items whose rank is being worked out from the clip each follows.
+    const followingIn = new Set<PlanItem>();
     const rankIn = (clip: Projected): Rank => {
       const item = clip.item;
       if (item === undefined)
@@ -4741,7 +4753,10 @@ const decide = <Req extends ClipRequest>(
               (other) => other.clipId === item.follows && other.sessionId === clip.sessionId,
             );
       if (behind !== undefined) {
+        if (followingIn.has(item)) return heldRank(item);
+        followingIn.add(item);
         const rank = rankIn(behind);
+        followingIn.delete(item);
         return [rank[0], rank[1], rank[2], rank[3] + 0.5];
       }
       if (item.mode === "asap") return [-0.5, 0, item.order, item.generation];
