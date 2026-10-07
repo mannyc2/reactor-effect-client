@@ -3,8 +3,8 @@ import { HttpRouter } from "effect/http";
 import { Playout } from "reactor-effect-client";
 import { Broadcast, ChannelMedia } from "./Broadcast.ts";
 import * as Channel from "./Channel.ts";
+import { Evidence } from "./Evidence.ts";
 import { Routes } from "./Http.ts";
-import { Ledger } from "./Ledger.ts";
 import { Monitor } from "./Monitor.ts";
 import { Programme } from "./Programme.ts";
 import { Settings } from "./Settings.ts";
@@ -28,7 +28,7 @@ export const App = Monitor.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(Programme.layer, Broadcast.layer.pipe(Layer.provide(Media)))),
   Layer.provideMerge(Channel.layer),
   Layer.provideMerge(
-    Layer.mergeAll(Ledger.layer, Broadcast.preflight).pipe(Layer.provideMerge(Settings.layer)),
+    Layer.mergeAll(Evidence.layer, Broadcast.preflight).pipe(Layer.provideMerge(Settings.layer)),
   ),
 );
 

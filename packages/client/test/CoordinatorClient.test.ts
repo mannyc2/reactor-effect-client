@@ -13,6 +13,7 @@ import {
   Predicate,
   Redacted,
   Result,
+  Schedule,
   Schema,
   Stream,
 } from "effect";
@@ -313,6 +314,83 @@ alone("termination is confirmed by the independent read, not by the DELETE respo
     const other = yield* created;
     const running = yield* other.signaling.terminate(other.id);
     assert.deepStrictEqual([running.confirmed, running.state], [false, "ACTIVE"]);
+  }),
+);
+
+// A coordinator can lose a running session for one read, so a 404 alone does not prove the end.
+alone(
+  "a session missing from one read, after a DELETE that did not take, is not confirmed ended",
+  () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const test = yield* ReactorTest.ReactorTest;
+      const { id, signaling } = yield* created;
+      yield* test.inject({ _tag: "IgnoreDelete" });
+      yield* test.inject({ _tag: "MissingSession", nth: 1 });
+      const ended = yield* signaling.terminate(id);
+      assert.deepStrictEqual([ended.confirmed, ended.state], [false, "ACTIVE"]);
+    }),
+);
+
+/** The DELETE requests the simulated coordinator received, refused ones included. */
+const deletesSent = Effect.map(
+  ReactorTest.ReactorTest.pipe(Effect.flatMap((test) => test.log)),
+  (log) => log.filter((entry) => entry.kind === "request" && entry.name.startsWith("DELETE ")),
+);
+
+// The session reads STOPPING for 20 s after its DELETE, so the first ends are not confirmed.
+alone("terminateUntilConfirmed asks again until Reactor confirms the end", () =>
+  Effect.gen(function* () {
+    yield* Effect.forkScoped(ReactorTest.flow());
+    const test = yield* ReactorTest.ReactorTest;
+    const { id } = yield* created;
+    yield* test.inject({ _tag: "SlowDelete", for: Duration.seconds(20) });
+    const server = yield* CoordinatorClient.make({ apiKey: test.apiKey });
+    const ending = yield* CoordinatorClient.terminateUntilConfirmed(id).pipe(
+      Effect.provideService(CoordinatorClient.CoordinatorClient, server),
+      Effect.forkScoped,
+    );
+    const ended = yield* Fiber.join(ending);
+    assert.strictEqual(ended.evidence, "terminal");
+    const session = (yield* test.sessions).find((info) => info.id === id);
+    assert.isAbove(session?.deletes ?? 0, 1);
+  }),
+);
+
+// Without the key or a token the coordinator refuses the end, and would refuse it again.
+alone("terminateUntilConfirmed fails at once when the end is refused", () =>
+  Effect.gen(function* () {
+    yield* Effect.forkScoped(ReactorTest.flow());
+    const test = yield* ReactorTest.ReactorTest;
+    const { id } = yield* created;
+    const anonymous = yield* CoordinatorClient.make({});
+    const refused = yield* CoordinatorClient.terminateUntilConfirmed(id).pipe(
+      Effect.provideService(CoordinatorClient.CoordinatorClient, anonymous),
+      Effect.flip,
+    );
+    assert.deepStrictEqual(
+      [refused.reason._tag, refused.reason._tag === "Http" ? refused.reason.status : undefined],
+      ["Http", 401],
+    );
+    const session = (yield* test.sessions).find((info) => info.id === id);
+    assert.isAtMost(session?.deletes ?? 0, 1);
+    assert.lengthOf(yield* deletesSent, 1);
+  }),
+);
+
+// Every DELETE is accepted and the session runs on, so no end is ever confirmed.
+alone("terminateUntilConfirmed fails when its schedule ends unconfirmed", () =>
+  Effect.gen(function* () {
+    yield* Effect.forkScoped(ReactorTest.flow());
+    const test = yield* ReactorTest.ReactorTest;
+    const { id } = yield* created;
+    yield* test.inject({ _tag: "IgnoreDelete" });
+    const server = yield* CoordinatorClient.make({ apiKey: test.apiKey });
+    const unconfirmed = yield* CoordinatorClient.terminateUntilConfirmed(id, {
+      schedule: Schedule.recurs(1),
+    }).pipe(Effect.provideService(CoordinatorClient.CoordinatorClient, server), Effect.flip);
+    assert.strictEqual(unconfirmed.reason._tag, "Indeterminate");
+    assert.lengthOf(yield* deletesSent, 2);
   }),
 );
 
