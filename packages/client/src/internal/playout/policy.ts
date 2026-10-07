@@ -315,9 +315,12 @@ interface Item<Req extends ClipRequest = Request> {
   /**
    * A clip of its own taken off because it was Ready too early, and its
    * session: never adopted again as queued, nor taken off again for that,
-   * though if it plays anyway, it aired.
+   * though if it plays anyway, it aired. Until a removal of it applies
+   * (`removed`), H3 may still start it.
    */
-  readonly discarded?: { readonly sessionId: string; readonly clipId: string } | undefined;
+  readonly discarded?:
+    | { readonly sessionId: string; readonly clipId: string; readonly removed?: true | undefined }
+    | undefined;
   /** The provider's length for its clip, once it started. */
   readonly airSeconds?: number | undefined;
   /** The clip it `follows` has been on air while it waited. */
@@ -379,8 +382,11 @@ interface Session<Req extends ClipRequest = Request> {
   readonly playing: (PlayingClip & { readonly at: number; readonly wall: number }) | undefined;
   /** What the latest enqueue sent here was for: a moderation verdict names no clip. */
   readonly lastEnqueue: ClipTag | undefined;
-  /** Filler clips whose removal was refused, asked again only once its queues have changed. */
-  readonly refusedFiller: { readonly signature: string; readonly clipIds: ReadonlyArray<string> };
+  /**
+   * Clips no item has as its own, filler or a clip taken back from its item, whose removal was
+   * refused: each is asked again only once its queues have changed.
+   */
+  readonly refusedClips: { readonly signature: string; readonly clipIds: ReadonlyArray<string> };
   /** Its last refused move, by its queues then and the clip: sent again only once they change. */
   readonly blockedMove: string | undefined;
   /** No move goes out before it: one whose command died is asked again a second later. */
@@ -2817,15 +2823,24 @@ const decide = <Req extends ClipRequest>(
         // refused, and the clip is gone. One refused goes again once the queues change.
         const unknown = result._tag === "Failed" && result.cause.context.outcome === "unknown";
         if (owner === undefined) {
-          if (result._tag === "Done") return forgetFiller(sessionId, command.clipId);
+          if (result._tag === "Done") {
+            // A clip taken back from its item is gone, though a read may still list it.
+            const taken = [...items.values()].find(
+              (item) =>
+                item.discarded?.sessionId === sessionId && item.discarded.clipId === command.clipId,
+            );
+            if (taken?.discarded !== undefined)
+              set(taken.spec.key, { discarded: { ...taken.discarded, removed: true } });
+            return forgetFiller(sessionId, command.clipId);
+          }
           if (unknown) return;
           const refused = session(sessionId);
           if (refused === undefined) return;
           const now_ = signature(refused);
           const earlier =
-            refused.refusedFiller.signature === now_ ? refused.refusedFiller.clipIds : [];
+            refused.refusedClips.signature === now_ ? refused.refusedClips.clipIds : [];
           updateSession(sessionId, {
-            refusedFiller: { signature: now_, clipIds: [...earlier, command.clipId] },
+            refusedClips: { signature: now_, clipIds: [...earlier, command.clipId] },
           });
           return;
         }
@@ -2944,7 +2959,7 @@ const decide = <Req extends ClipRequest>(
             unknownFiller: [],
             playing: undefined,
             lastEnqueue: undefined,
-            refusedFiller: { signature: "", clipIds: [] },
+            refusedClips: { signature: "", clipIds: [] },
             blockedMove: undefined,
             moveRetryAt: 0,
             busy: undefined,
@@ -3340,68 +3355,103 @@ const decide = <Req extends ClipRequest>(
       clip.tag?._tag === "Filler" &&
       value.source?.available === true &&
       !(
-        value.refusedFiller.signature === signature(value) &&
-        value.refusedFiller.clipIds.includes(clip.clipId)
+        value.refusedClips.signature === signature(value) &&
+        value.refusedClips.clipIds.includes(clip.clipId)
       )
     );
   }
   /**
-   * Whether H3 starts `item`'s clip next on `value`: it heads the Ready queue, or nothing is Ready
-   * or playing there and it heads the builds. With autoplay on it starts at the next boundary or
-   * as its build ends, and that is the change a refused removal would wait for.
+   * Whether H3 no longer has `clip`, though a read of `value` may still list it: its item settled
+   * with it, as once its removal applied, or a removal of it, taken back from its item, applied.
    */
-  function startsNext(value: Session<Req>, item: Item<Req>): boolean {
-    const source = value.source;
-    if (source === undefined) return false;
-    if (item.phase === "Ready") return waitingOf(value)[0]?.clipId === item.clipId;
+  function removedFrom(value: Session<Req>, clip: SourceClip): boolean {
+    const owner = itemOf(clip);
+    if (owner === undefined) return false;
+    if (owner.clipId === clip.clipId && owner.sessionId === value.id)
+      return owner.phase === "Settled";
+    const taken = owner.discarded;
+    return taken?.sessionId === value.id && taken.clipId === clip.clipId && taken.removed === true;
+  }
+  /**
+   * Whether `clip`, listed on `value`, is a clip the plan took back from its item, whose removal
+   * has not applied: H3 may still start it.
+   */
+  function disowned(value: Session<Req>, clip: SourceClip): boolean {
+    const owner = itemOf(clip);
     return (
-      item.phase === "Building" &&
-      source.playing === undefined &&
-      source.ready.length === 0 &&
-      source.building[0]?.clipId === item.clipId
+      owner !== undefined &&
+      !(owner.clipId === clip.clipId && owner.sessionId === value.id) &&
+      !removedFrom(value, clip)
     );
   }
   /**
-   * The removal to make next on `value`: a withdrawal whose removal was not refused as its queues
-   * stand, or whose clip H3 starts next while autoplay is on there or coming on; or, with autoplay
-   * coming on, a member waiting behind an earlier member of its group whose clip H3 would start
-   * next, Ready as exposure takes it off or as its build ends, taken off to be built again behind
-   * those (`again`).
+   * The clip H3 starts next on `value`: its Ready head, or with nothing Ready or playing there,
+   * its first build. A clip whose removal applied is gone, though a read may still list it.
+   */
+  function nextOf(value: Session<Req>): SourceClip | undefined {
+    const source = value.source;
+    const stays = (clip: SourceClip) => !removedFrom(value, clip);
+    const ready = waitingOf(value).find(stays);
+    return ready ?? (source?.playing === undefined ? source?.building.find(stays) : undefined);
+  }
+  /**
+   * Whether H3 starts the clip `clipId` next on `value`. With autoplay on it starts at the next
+   * boundary or as its build ends, and that is the change a refused removal would wait for.
+   */
+  function startsNext(value: Session<Req>, clipId: string): boolean {
+    return nextOf(value)?.clipId === clipId;
+  }
+  /**
+   * The removal to make next on `value`: a withdrawal, or a clip taken back from its item and
+   * still listed, whose removal was not refused as its queues stand, or whose clip H3 starts next
+   * while autoplay is on there or coming on; or, with autoplay coming on, a member waiting behind
+   * an earlier member of its group whose clip H3 would start next, Ready as exposure takes it off
+   * or as its build ends, taken off to be built again behind those (`again`).
    */
   function removalDue(
     value: Session<Req>,
     autoplay: boolean,
   ): { readonly key: ItemKey; readonly clipId: string; readonly again: boolean } | undefined {
-    if (value.source?.available !== true) return undefined;
+    const source = value.source;
+    if (source?.available !== true) return undefined;
+    const due = (refused: boolean, clipId: string): boolean =>
+      !refused || ((value.autoplay !== false || autoplay) && startsNext(value, clipId));
     for (const item of items.values())
       if (
         item.withdraw !== undefined &&
         item.clipId !== undefined &&
         item.sessionId === value.id &&
         (item.phase === "Building" || item.phase === "Ready") &&
-        (item.blockedRemove !== signature(value) ||
-          ((value.autoplay !== false || autoplay) && startsNext(value, item)))
+        due(item.blockedRemove === signature(value), item.clipId)
       )
         return { key: item.spec.key, clipId: item.clipId, again: false };
+    const refused =
+      value.refusedClips.signature === signature(value) ? value.refusedClips.clipIds : [];
+    for (const clip of [...waitingOf(value), ...source.building]) {
+      const owner = itemOf(clip);
+      if (
+        owner !== undefined &&
+        disowned(value, clip) &&
+        due(refused.includes(clip.clipId), clip.clipId)
+      )
+        return { key: owner.spec.key, clipId: clip.clipId, again: false };
+    }
     if (!autoplay || value.autoplay === true) return undefined;
     // What H3 would start first: the Ready head, or with nothing Ready or playing, the first build.
-    const source = value.source;
-    const first =
-      waitingOf(value)[0] ?? (source.playing === undefined ? source.building[0] : undefined);
+    const first = nextOf(value);
     const next = itemOf(first);
-    const clipId = next?.clipId;
     if (
+      first === undefined ||
       next === undefined ||
-      clipId === undefined ||
+      next.clipId !== first.clipId ||
       next.withdraw !== undefined ||
-      !startsNext(value, next) ||
       !behindInGroup(roster, next)
     )
       return undefined;
     // Ready, it goes as exposure would take it off; building, it would start as its build ends.
-    const index = readyOf(value).findIndex((clip) => clip.clipId === clipId);
+    const index = readyOf(value).findIndex((clip) => clip.clipId === first.clipId);
     return next.phase === "Building" || exposure(value, next, index)
-      ? { key: next.spec.key, clipId, again: true }
+      ? { key: next.spec.key, clipId: first.clipId, again: true }
       : undefined;
   }
   /** Takes `key`'s clip `clipId` off `value`: the item goes back to the plan, to be built again. */

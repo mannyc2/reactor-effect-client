@@ -1654,10 +1654,13 @@ describe("PlayoutPolicy, clip ids", () => {
       "s1",
       33_041,
     );
-    // p2 would start before i: it is taken off, and its removal refused.
+    // p2 would start before i: it is taken off, and its removal refused. Asked again, it applies,
+    // though the reads that follow still list the clip.
     policy.tick(36_600);
     assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-p2" });
     policy.reply(failed("replied"), 36_610);
+    for (let round = 0; round < 2 && policy.busy()?._tag === "Remove"; round++)
+      policy.reply({ _tag: "Done" }, 36_620);
     policy.observe(
       { playing: p1Clip, ready: [p2Clip, iClip], continuable: ["c-p1", "c-p2", "c-i"] },
       "s1",
@@ -3349,7 +3352,7 @@ describe("PlayoutPolicy, groups", () => {
    * new work: the second part's enqueue, if it goes there, and that part Ready at its head, or
    * still being built there.
    */
-  const acrossRenewal = (built = true) => {
+  const acrossRenewal = (built = true, later: ReadonlyArray<string> = []) => {
     const policy = drive({ from: measured });
     policy.tick(0);
     policy.open("s1");
@@ -3364,7 +3367,7 @@ describe("PlayoutPolicy, groups", () => {
         _tag: "SubmitGroup",
         key: key("g"),
         lane: 1,
-        parts: [spec("p1", 1, 1), spec("p2")],
+        parts: [spec("p1", 1, 1), spec("p2"), ...later.map((name) => spec(name))],
         fingerprint: "g",
       },
     ]);
@@ -3378,8 +3381,14 @@ describe("PlayoutPolicy, groups", () => {
     policy.observe({ playing: x, ready: [p1] }, "s1", 2_300);
     const sent = policy.busy("s2");
     policy.reply({ _tag: "Done", clipId: "c-p2" }, undefined, "s2");
-    const p2 = clip("c-p2", item("p2"));
-    policy.observe(built ? { ready: [p2] } : { building: [p2] }, "s2", built ? 4_300 : 2_400);
+    const ready = [clip("c-p2", item("p2"))];
+    policy.observe(built ? { ready } : { building: ready }, "s2", built ? 4_300 : 2_400);
+    // Each later part builds behind it there, 2 s apart.
+    for (const name of later) {
+      policy.reply({ _tag: "Done", clipId: `c-${name}` }, undefined, "s2");
+      ready.push(clip(`c-${name}`, item(name)));
+      policy.observe({ ready: [...ready] }, "s2", policy.now() + 2_000);
+    }
     return { policy, sent };
   };
 
@@ -3405,6 +3414,32 @@ describe("PlayoutPolicy, groups", () => {
       policy.reply({ _tag: "Done" }, undefined, "s2");
       assert.strictEqual(policy.state().items.get(key("p2"))?.phase, "Accepted");
     }
+  });
+
+  // Taken off, p2's clip was no longer its item's, and the plan stopped at it: with its removal's
+  // reply ahead of the read that showed it gone, autoplay came on, and H3 started p3 before p1.
+  it("takes each later part off a replacement taking the air, though a read lists one taken off", () => {
+    const { policy } = acrossRenewal(true, ["p3"]);
+    policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" });
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-p2" });
+    policy.reply({ _tag: "Done" }, undefined, "s2");
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-p3" });
+    policy.reply({ _tag: "Done" }, undefined, "s2");
+    policy.observe({}, "s2");
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Autoplay", enabled: true });
+  });
+
+  // Refused, the removal of a clip taken off was never asked again, and autoplay came on with it at
+  // the head: H3 started p2 before p1.
+  it("asks again for a refused removal of a part taken off before autoplay comes on", () => {
+    const { policy } = acrossRenewal(true, ["p3"]);
+    policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" });
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-p2" });
+    policy.reply(failed("replied"), undefined, "s2");
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-p2" });
+    policy.reply({ _tag: "Done" }, undefined, "s2");
+    policy.observe({ ready: [clip("c-p3", item("p3"))] }, "s2");
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-p3" });
   });
 
   const moved = (actions: ReadonlyArray<Policy.Action>) =>

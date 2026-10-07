@@ -710,8 +710,8 @@ export interface ClipModel<Req extends ClipRequest = Request> {
  *   died, and at once if not. Until its autoplay is as wanted, a session is
  *   sent nothing else but, as it retires, the removal of its filler once its
  *   replacement has an item Ready, and, before autoplay comes on, the removal
- *   of a clip the playout withdrew. A `stop` or `play` ends its cut, and the
- *   cutter airs at the next boundary.
+ *   of a clip the playout withdrew or took off to build again. A `stop` or
+ *   `play` ends its cut, and the cutter airs at the next boundary.
  * - `play` also starts clips outside a cut: while a `follows` item fences a
  *   session's autoplay, the playout starts that session's Ready head itself.
  *   One that fails or dies is asked again once the session's queues change or
