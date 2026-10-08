@@ -22,6 +22,7 @@ import type {
   ClipTag,
   Event,
   FillContext,
+  GroupOutcome,
   NotStarted,
   Placement,
   PlayingClip,
@@ -207,8 +208,16 @@ export type Action<Req extends ClipRequest = Request> =
       readonly cause: "filler";
       readonly index: number;
     }
-  /** Settled keys the history bound dropped: they may be submitted afresh. */
-  | { readonly _tag: "Forget"; readonly keys: ReadonlyArray<ItemKey> };
+  /** Settled keys the history bound dropped, group keys too: they may be submitted afresh. */
+  | { readonly _tag: "Forget"; readonly keys: ReadonlyArray<ItemKey> }
+  /** A group's first place started, or settled without a start. */
+  | {
+      readonly _tag: "GroupStarted";
+      readonly key: ItemKey;
+      readonly started: Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted;
+    }
+  /** Every place of a group has settled. */
+  | { readonly _tag: "GroupSettled"; readonly key: ItemKey; readonly outcome: GroupOutcome };
 
 export interface Config<Req extends ClipRequest = Request> {
   /** The length a request without `seconds` is planned at: its model's default. */
@@ -285,6 +294,12 @@ interface Item<Req extends ClipRequest = Request> {
    * behind that clip until the clip starts.
    */
   readonly follows?: string | undefined;
+  /**
+   * The later member of its group an insert sits right behind, for good: one whose clip a build
+   * of it went out continuing from, the one the item it replaces sits behind, or the one its
+   * anchor sits behind. That clip may be taken back, and its own build too.
+   */
+  readonly behind?: ItemKey | undefined;
   readonly everUnknown: boolean;
   /** Sessions in a row its clip was lost with before it was built. */
   readonly unbuiltLosses: number;
@@ -306,9 +321,12 @@ interface Item<Req extends ClipRequest = Request> {
   /**
    * A clip of its own taken off because it was Ready too early, and its
    * session: never adopted again as queued, nor taken off again for that,
-   * though if it plays anyway, it aired.
+   * though if it plays anyway, it aired. Until a removal of it applies
+   * (`removed`), H3 may still start it.
    */
-  readonly discarded?: { readonly sessionId: string; readonly clipId: string } | undefined;
+  readonly discarded?:
+    | { readonly sessionId: string; readonly clipId: string; readonly removed?: true | undefined }
+    | undefined;
   /** The provider's length for its clip, once it started. */
   readonly airSeconds?: number | undefined;
   /** The clip it `follows` has been on air while it waited. */
@@ -370,12 +388,22 @@ interface Session<Req extends ClipRequest = Request> {
   readonly playing: (PlayingClip & { readonly at: number; readonly wall: number }) | undefined;
   /** What the latest enqueue sent here was for: a moderation verdict names no clip. */
   readonly lastEnqueue: ClipTag | undefined;
-  /** Filler clips whose removal was refused, asked again only once its queues have changed. */
-  readonly refusedFiller: { readonly signature: string; readonly clipIds: ReadonlyArray<string> };
+  /**
+   * Clips no item has as its own, filler or a clip taken back from its item, whose removal was
+   * refused: each is asked again only once its queues have changed.
+   */
+  readonly refusedClips: { readonly signature: string; readonly clipIds: ReadonlyArray<string> };
   /** Its last refused move, by its queues then and the clip: sent again only once they change. */
   readonly blockedMove: string | undefined;
   /** No move goes out before it: one whose command died is asked again a second later. */
   readonly moveRetryAt: number;
+  /**
+   * When its run of removals that did not apply began: the first of those, one after another,
+   * that it refused, or whose command died or ended with its outcome unknown. A removal that
+   * applies, or none being due, ends the run. A removal due holds its autoplay off for at most
+   * `refusalHoldMs` from then.
+   */
+  readonly refusedSince?: number | undefined;
   /** The command in flight on its lane, which carries its commands one at a time. */
   readonly busy: { readonly id: number; readonly command: Command<Req> } | undefined;
   /** When its latest filler enqueue went out and the seconds it asked for, unless refused. */
@@ -408,12 +436,24 @@ interface Batch {
   }>;
 }
 
+/**
+ * A group: its parts and their replacements, and what became of each place, kept as history
+ * forgets the parts.
+ */
+interface Group {
+  readonly fingerprint: string;
+  readonly parts: ReadonlyArray<ItemKey>;
+  /** Each place's outcome, once nothing of it can change. */
+  readonly places: ReadonlyArray<Settled | undefined>;
+  /** Its first place's start, or how that place settled without one, once it went out. */
+  readonly first?: Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted | undefined;
+  /** Its outcome went out. */
+  readonly settled?: true | undefined;
+}
+
 export interface State<Req extends ClipRequest = Request> {
   readonly items: ReadonlyMap<ItemKey, Item<Req>>;
-  readonly groups: ReadonlyMap<
-    ItemKey,
-    { readonly fingerprint: string; readonly parts: ReadonlyArray<ItemKey> }
-  >;
+  readonly groups: ReadonlyMap<ItemKey, Group>;
   readonly settled: ReadonlyArray<ItemKey>;
   readonly nextOrder: number;
   readonly sessions: ReadonlyArray<Session<Req>>;
@@ -565,6 +605,11 @@ const retryDelayMs = 1_000;
 const setupDelayMs = <Req extends ClipRequest>(config: Config<Req>, consecutive: number): number =>
   retryDelayMs * Math.min(consecutive, Math.max(1, config.maxSetupFailures));
 const cutMarginMs = 1_000;
+/**
+ * How long removals refused one after another hold a session's autoplay off: a provider that
+ * kept refusing one would otherwise leave the air dark.
+ */
+const refusalHoldMs = 1_000;
 const exposureMarginMs = 1_500;
 const lookaheadMarginSeconds = 1;
 /**
@@ -806,6 +851,9 @@ const sameClip = (named: ClipTag, tag: ClipTag | undefined): boolean => {
       return tag._tag === "Filler" && tag.index === named.index;
   }
 };
+/** Whether `clip` is `item`'s own: the one it has, or one taken off it and still listed. */
+const ownClip = (item: PlanItem, clip: SourceClip): boolean =>
+  clip.tag?._tag === "Item" && clip.tag.key === item.spec.key;
 /**
  * Whether an item that `follows` a clip must still wait, not airing, for that clip to air. One
  * inserted right after the very item it follows is kept behind it by rank already, while that
@@ -847,36 +895,210 @@ const insertStart = (anchor: PlanItem, side: "before" | "after"): PlanSpec["star
   return start._tag === "At" && side === "after" ? { ...start, late: "nextBoundary" } : start;
 };
 
+/** Whether an item started, or may have: its start was seen, or it settled `Unobserved`, unseen. */
+const startedOrUnseen = (item: PlanItem): boolean =>
+  item.startedAt !== undefined || item.phase === "Started" || item.status?._tag === "Unobserved";
+/** Whether an item may still air as the plan has it: live, with a known outcome, and wanted. */
+const liveAndKnown = (item: PlanItem): boolean =>
+  item.phase !== "Settled" && item.phase !== "Unknown" && item.withdraw === undefined;
 /**
- * Whether an item's clip is queued to air in its turn: it isn't held, waiting on its batch or the
- * clip it follows, or withdrawn. An `At` item's time may still be to come.
+ * The plan's items, and the keys of each group's members among them: a group's rules read its own
+ * members, not every item the history keeps.
  */
-const queuedToAir = (items: ReadonlyMap<ItemKey, PlanItem>, item: PlanItem): boolean =>
+interface Roster {
+  readonly items: ReadonlyMap<ItemKey, PlanItem>;
+  /** The keys of the items of the group `key`: its parts, their replacements and its inserts. */
+  readonly members: (key: ItemKey) => ReadonlyArray<ItemKey>;
+}
+/** A roster of `items`, indexed by group once a rule asks; `join` adds an item admitted since. */
+const rosterOf = (
+  items: ReadonlyMap<ItemKey, PlanItem>,
+): Roster & { readonly join: (item: PlanItem) => void } => {
+  let index: Map<ItemKey, Array<ItemKey>> | undefined;
+  const enter = (into: Map<ItemKey, Array<ItemKey>>, item: PlanItem): void => {
+    if (item.group === undefined) return;
+    const keys = into.get(item.group.key);
+    if (keys === undefined) into.set(item.group.key, [item.spec.key]);
+    else keys.push(item.spec.key);
+  };
+  const indexed = (): Map<ItemKey, Array<ItemKey>> => {
+    if (index !== undefined) return index;
+    const built = new Map<ItemKey, Array<ItemKey>>();
+    for (const item of items.values()) enter(built, item);
+    index = built;
+    return built;
+  };
+  return {
+    items,
+    members: (key) => indexed().get(key) ?? [],
+    join: (item) => {
+      if (index !== undefined) enter(index, item);
+    },
+  };
+};
+/**
+ * The later member of the group of `item`, an insert, whose clip on `sessionId` is `clipId`: a
+ * continued build of it that continues from that clip airs right behind that member, as one that
+ * would be Ready only after the clip before its place ended does.
+ */
+const laterMemberWith = (
+  roster: Roster,
+  item: PlanItem,
+  clipId: string | undefined,
+  sessionId: string,
+): PlanItem | undefined => {
+  const group = item.group;
+  if (!item.inserted || group === undefined || clipId === undefined) return undefined;
+  for (const key of roster.members(group.key)) {
+    const other = roster.items.get(key);
+    if (other?.clipId === clipId && other.sessionId === sessionId && other.order > item.order)
+      return other;
+  }
+  return undefined;
+};
+/**
+ * A member's seat in its group's order: the orders from the member it hangs from, through each it
+ * sits behind, down to its own.
+ */
+type Seat = ReadonlyArray<number>;
+/**
+ * Where a member sits in its group's order: at its own order, or right behind the later member it
+ * sits behind (`behind`), where it airs, ahead of any that member's seat was taken by earlier. A
+ * member sits behind only one of a greater order, so the chain ends.
+ */
+const seatOf = (roster: Roster, item: PlanItem): Seat => {
+  const ahead = item.behind === undefined ? undefined : roster.items.get(item.behind);
+  return ahead === undefined ? [item.order] : [...seatOf(roster, ahead), item.order];
+};
+/** Seats in their group's order: a seat right behind a member comes after it, and before the next. */
+const compareSeat = (a: Seat, b: Seat): number => {
+  for (let index = 0; index < Math.min(a.length, b.length); index++) {
+    const order = (a[index] ?? 0) - (b[index] ?? 0);
+    if (order !== 0) return order;
+  }
+  return a.length - b.length;
+};
+/** Whether a member holds back those seated after it: it may still air, and has not started. */
+const mayHold = (item: PlanItem): boolean =>
+  liveAndKnown(item) && item.phase !== "Started" && item.startedAt === undefined;
+/**
+ * Whether `other` holds `item` back: a member of its group seated before it that may still air,
+ * and has not started.
+ */
+const holds = (roster: Roster, other: PlanItem, item: PlanItem): boolean =>
+  other.group !== undefined &&
+  other.group.key === item.group?.key &&
+  mayHold(other) &&
+  compareSeat(seatOf(roster, other), seatOf(roster, item)) < 0;
+/**
+ * Whether `item` waits for an earlier member of its group: one is live and not on air, and
+ * nothing has given up on it.
+ */
+const behindInGroup = (roster: Roster, item: PlanItem): boolean => {
+  if (item.group === undefined) return false;
+  for (const key of roster.members(item.group.key)) {
+    const other = roster.items.get(key);
+    if (other !== undefined && holds(roster, other, item)) return true;
+  }
+  return false;
+};
+/** Whether an item still waits to air: it is live, has not started, and is not being withdrawn. */
+const waitsToAir = (item: PlanItem): boolean =>
+  item.phase !== "Settled" &&
+  item.phase !== "Started" &&
+  item.startedAt === undefined &&
+  item.withdraw === undefined;
+/**
+ * Whether a member waits for a member of its group seated after it, which waits behind it: the
+ * item it follows is one, or waits for one in turn, by the clip it follows or behind the members
+ * of its own group that hold it, through items of any group or none.
+ */
+const followsLater = (roster: Roster, item: PlanItem): boolean => {
+  const group = item.group;
+  const follows = item.spec.follows;
+  if (group === undefined || follows?._tag !== "Item") return false;
+  const seat = seatOf(roster, item);
+  // Each item it waits for, once: a chain that comes round to one it met ends there.
+  const met = new Set<ItemKey>([item.spec.key]);
+  const waitedOn: Array<PlanItem> = [];
+  const reach = (key: ItemKey): void => {
+    const other = met.has(key) ? undefined : roster.items.get(key);
+    met.add(key);
+    if (other !== undefined && waitsToAir(other)) waitedOn.push(other);
+  };
+  reach(follows.key);
+  for (const other of waitedOn) {
+    if (other.group?.key === group.key && compareSeat(seatOf(roster, other), seat) > 0) return true;
+    const next = other.spec.follows;
+    if (next?._tag === "Item" && other.followsAired !== true) reach(next.key);
+    if (other.group !== undefined)
+      for (const key of roster.members(other.group.key)) {
+        const holder = roster.items.get(key);
+        if (holder !== undefined && holds(roster, holder, other)) reach(key);
+      }
+  }
+  return false;
+};
+/**
+ * Whether a place, its part and the replacements that took its place, can no longer air in order,
+ * so the members after it go: none of its items started, or may have, and none may still air; or
+ * one started and then failed, as one lost with its session on air does.
+ */
+const brokenPlace = (placed: ReadonlyArray<PlanItem>): boolean =>
+  placed.some((item) => item.startedAt !== undefined && item.status?._tag === "Failed") ||
+  (placed.length > 0 && !placed.some(startedOrUnseen) && !placed.some(liveAndKnown));
+
+/**
+ * Whether an item's clip is queued to air at its place: it isn't held, waiting on its batch or the
+ * clip it follows, withdrawn, or settled, as one whose removal applied is though a read may still
+ * list it. An earlier member of its group may still hold it, and an `At` item's time may still be
+ * to come.
+ */
+const queuedAtPlace = (roster: Roster, item: PlanItem): boolean =>
+  item.phase !== "Settled" &&
   item.mode !== "held" &&
   item.batch === undefined &&
   item.withdraw === undefined &&
-  !followHeldOf(items, item);
-/** Whether an item's clip airs when its turn comes: it is queued to air, and its time has come. */
-const airsItem = (items: ReadonlyMap<ItemKey, PlanItem>, item: PlanItem, now: Now): boolean => {
-  const at =
-    item.spec.start._tag === "At" ? now.mono + (item.spec.start.time - now.wall) : undefined;
-  return (at === undefined || at <= now.mono) && queuedToAir(items, item);
-};
+  !followHeldOf(roster, item);
 /**
- * `followHeld` for the plan as it stands: an anchor is ahead while it is Ready and queued to air.
- * An insert takes its anchor's time, so the anchor's does not count.
+ * Whether an item's clip is queued to air in its turn: at its place, with no member of its group
+ * ahead holding it.
  */
-const followHeldOf = (items: ReadonlyMap<ItemKey, PlanItem>, item: PlanItem): boolean =>
+const queuedToAir = (roster: Roster, item: PlanItem): boolean =>
+  queuedAtPlace(roster, item) && !behindInGroup(roster, item);
+/** Whether an item's `At` time, if it has one, has come. */
+const timeCome = (item: PlanItem, now: Now): boolean =>
+  item.spec.start._tag !== "At" || now.mono + (item.spec.start.time - now.wall) <= now.mono;
+/** Whether an item's clip airs when its turn comes: it is queued to air, and its time has come. */
+const airsItem = (roster: Roster, item: PlanItem, now: Now): boolean =>
+  timeCome(item, now) && queuedToAir(roster, item);
+/**
+ * Whether an item's clip airs at its place: as `airsItem`, but a member its group holds counts, as
+ * it airs once the members ahead of it have. The cap check, the runway and projections count it.
+ */
+const airsAtPlace = (roster: Roster, item: PlanItem, now: Now): boolean =>
+  timeCome(item, now) && queuedAtPlace(roster, item);
+/**
+ * `followHeld` for the plan as it stands: an anchor is ahead while it is Ready and queued to air at
+ * its place, since a member its group holds keeps an insert after it behind it. An insert takes its
+ * anchor's time, so the anchor's does not count.
+ */
+const followHeldOf = (roster: Roster, item: PlanItem): boolean =>
   followHeld(
     item,
     followsAiredOf,
-    (anchor) => anchor.phase === "Ready" && queuedToAir(items, anchor),
-    (key) => items.get(key),
+    (anchor) => anchor.phase === "Ready" && queuedAtPlace(roster, anchor),
+    (key) => roster.items.get(key),
   );
 /** Whether a Ready clip airs when its turn comes, as `airsItem`. A clip that is no item's airs. */
-const airsOf = (items: ReadonlyMap<ItemKey, PlanItem>, clip: SourceClip, now: Now): boolean => {
-  const item = clip.tag?._tag === "Item" ? items.get(clip.tag.key) : undefined;
-  return item === undefined || airsItem(items, item, now);
+const airsOf = (roster: Roster, clip: SourceClip, now: Now): boolean => {
+  const item = clip.tag?._tag === "Item" ? roster.items.get(clip.tag.key) : undefined;
+  return item === undefined || airsItem(roster, item, now);
+};
+/** Whether a Ready clip airs at its place, as `airsAtPlace`. A clip that is no item's airs. */
+const airsAtPlaceOf = (roster: Roster, clip: SourceClip, now: Now): boolean => {
+  const item = clip.tag?._tag === "Item" ? roster.items.get(clip.tag.key) : undefined;
+  return item === undefined || airsAtPlace(roster, item, now);
 };
 
 /**
@@ -888,26 +1110,174 @@ const waitingOf = (value: Session<ClipRequest> | undefined): ReadonlyArray<Sourc
   return (value?.source?.ready ?? []).filter((clip) => clip.clipId !== playing);
 };
 
+/** A group's members by seat, in seat order: a place's part and its replacements share one. */
+type Seating = ReadonlyArray<{ readonly seat: Seat; readonly items: ReadonlyArray<PlanItem> }>;
+const seatingOf = (members: ReadonlyArray<PlanItem>, seat: (item: PlanItem) => Seat): Seating => {
+  const seated = members
+    .map((item) => ({ item, seat: seat(item) }))
+    .sort((a, b) => compareSeat(a.seat, b.seat));
+  const places: Array<{ readonly seat: Seat; readonly items: Array<PlanItem> }> = [];
+  for (const { item, seat: at } of seated) {
+    const last = places.at(-1);
+    if (last !== undefined && compareSeat(last.seat, at) === 0) last.items.push(item);
+    else places.push({ seat: at, items: [item] });
+  }
+  return places;
+};
+/** How a walk of clips reads them, in the plan as it stands or in its forward run. */
+interface Walk<C> {
+  readonly queued: (clip: C) => boolean;
+  /** The member of a group a clip is for, if any. */
+  readonly member: (clip: C) => PlanItem | undefined;
+  readonly seat: (item: PlanItem) => Seat;
+  readonly seating: (group: ItemKey) => Seating;
+  /** Whether a member holds back those seated after it, as `mayHold`. */
+  readonly holding: (item: PlanItem) => boolean;
+  /** Whether a member started, or may have. */
+  readonly began: (item: PlanItem) => boolean;
+}
+/**
+ * The clips of each of `segments` that air in turn, each segment's in its own order: those
+ * `queued` keeps, a member its group holds back once each place seated before it that holds it
+ * began or has an item counted before it, in its segment or an earlier one. A place, a part and
+ * its replacements, holds while any of its items may and none began. Each group's members are
+ * walked once, in seat order, the order they air in, so a place counts before those behind it.
+ */
+const inTurnAmong = <C>(
+  segments: ReadonlyArray<ReadonlyArray<C>>,
+  walk: Walk<C>,
+): ReadonlyArray<ReadonlyArray<C>> => {
+  const turns = new Map<
+    ItemKey,
+    { readonly places: ReadonlyArray<{ readonly seat: Seat; open: boolean }>; next: number }
+  >();
+  const turnOf = (group: ItemKey) => {
+    const known = turns.get(group);
+    if (known !== undefined) return known;
+    const places = walk
+      .seating(group)
+      .filter((place) => place.items.some(walk.holding) && !place.items.some(walk.began))
+      .map((place) => ({ seat: place.seat, open: true }));
+    const turn = { places, next: 0 };
+    turns.set(group, turn);
+    return turn;
+  };
+  return segments.map((clips) => {
+    const kept = new Set<C>();
+    const members: Array<{ readonly clip: C; readonly group: ItemKey; readonly seat: Seat }> = [];
+    for (const clip of clips) {
+      if (!walk.queued(clip)) continue;
+      const item = walk.member(clip);
+      if (item?.group === undefined) kept.add(clip);
+      else members.push({ clip, group: item.group.key, seat: walk.seat(item) });
+    }
+    members.sort((a, b) => compareSeat(a.seat, b.seat));
+    for (const { clip, group, seat } of members) {
+      const turn = turnOf(group);
+      while (turn.places[turn.next]?.open === false) turn.next++;
+      const first = turn.places[turn.next];
+      if (first !== undefined && compareSeat(first.seat, seat) < 0) continue;
+      kept.add(clip);
+      // Its own place now has an item counted: it is the first open one, if it holds at all.
+      if (first !== undefined && compareSeat(first.seat, seat) === 0) first.open = false;
+    }
+    return clips.filter((clip) => kept.has(clip));
+  });
+};
+/**
+ * The Ready clips of each of `sessions` but the one it plays that `queued` keeps and that air in
+ * turn, as `inTurnAmong` walks them: a session not on air after the one on air, whose clips air
+ * first.
+ */
+const inTurnOf = (
+  roster: Roster,
+  sessions: ReadonlyArray<Session<ClipRequest> | undefined>,
+  queued: (clip: SourceClip) => boolean,
+  holding: (item: PlanItem) => boolean = mayHold,
+): ReadonlyArray<ReadonlyArray<SourceClip>> => {
+  const seats = new Map<PlanItem, Seat>();
+  const seat = (item: PlanItem): Seat => {
+    const known = seats.get(item);
+    if (known !== undefined) return known;
+    const value = seatOf(roster, item);
+    seats.set(item, value);
+    return value;
+  };
+  return inTurnAmong(sessions.map(waitingOf), {
+    queued,
+    member: (clip) => {
+      const item = clip.tag?._tag === "Item" ? roster.items.get(clip.tag.key) : undefined;
+      return item?.group === undefined ? undefined : item;
+    },
+    seat,
+    seating: (group) =>
+      seatingOf(
+        roster.members(group).flatMap((key) => {
+          const item = roster.items.get(key);
+          return item === undefined ? [] : [item];
+        }),
+        seat,
+      ),
+    holding,
+    began: startedOrUnseen,
+  });
+};
+/** Seconds of `clips`. */
+const secondsOf = (clips: ReadonlyArray<SourceClip>): number =>
+  clips.reduce((total, clip) => total + clip.seconds, 0);
+
 /**
  * Seconds of air secured: the playing clip's rest, then the Ready clips that
- * air from the session on air and from its replacement once that takes over.
+ * air from the session on air and from its replacement once that takes over,
+ * a member its group holds back among them once it airs in turn, as
+ * `inTurnOf` walks them.
  */
 const securedOf = (
-  state: Pick<State<ClipRequest>, "items" | "sessions" | "air">,
+  roster: Roster,
+  state: Pick<State<ClipRequest>, "sessions" | "air">,
   now: Now,
 ): number => {
   const air = state.sessions.find((value) => value.id === state.air);
   const replacement = state.sessions.find((value) => value.id !== state.air && !value.retiring);
-  const ready = (value: Session<ClipRequest> | undefined): number =>
-    waitingOf(value)
-      .filter((clip) => airsOf(state.items, clip, now))
-      .reduce((total, clip) => total + clip.seconds, 0);
-  return playingRestOf(air, now.mono) / 1000 + ready(air) + ready(replacement);
+  const [aired = [], next = []] = inTurnOf(roster, [air, replacement], (clip) =>
+    airsAtPlaceOf(roster, clip, now),
+  );
+  return playingRestOf(air, now.mono) / 1000 + secondsOf(aired) + secondsOf(next);
 };
 
-type Rank = readonly [number, number, number, number];
+/**
+ * Where a clip airs among the others: by lane, standing in the lane, order and generation, and
+ * then, for a member that waits behind others of its group, how far just behind them it sits.
+ */
+type Rank = readonly [number, number, number, number, number];
 const compareRank = (a: Rank, b: Rank): number =>
-  a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3];
+  a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || a[3] - b[3] || a[4] - b[4];
+/** A rank just after `rank`, and before any later one. */
+const justBehind = (rank: Rank): Rank => [rank[0], rank[1], rank[2], rank[3], rank[4] + 1];
+/** The later of two ranks. */
+const laterRank = (a: Rank, b: Rank): Rank => (compareRank(a, b) >= 0 ? a : b);
+/**
+ * The later of `rank` and just behind each place of `holders`, the members a member waits behind,
+ * a place, the items that share a seat, ranking at its earliest item among them: a replacement
+ * held back beside the part it replaces, which airs first, holds back nothing that part does not.
+ */
+const behindPlaces = <I extends PlanItem>(
+  rank: Rank,
+  holders: ReadonlyArray<I>,
+  seat: (item: I) => Seat,
+  rankOf: (item: I) => Rank,
+): Rank => {
+  const earliest = new Map<string, Rank>();
+  for (const holder of holders) {
+    const place = seat(holder).join(",");
+    const own = rankOf(holder);
+    const known = earliest.get(place);
+    if (known === undefined || compareRank(own, known) < 0) earliest.set(place, own);
+  }
+  let latest = rank;
+  for (const place of earliest.values()) latest = laterRank(latest, justBehind(place));
+  return latest;
+};
 
 /**
  * What the projections taken in one look share while the plan holds still: each item's rank, its
@@ -1003,6 +1373,7 @@ const decide = <Req extends ClipRequest>(
   now: Now,
 ): Step<Req> => {
   const items = new Map(previous.items);
+  const roster = rosterOf(items);
   const groups = new Map(previous.groups);
   let state: State<Req> = previous;
   const actions: Array<Action<Req>> = [];
@@ -1077,18 +1448,87 @@ const decide = <Req extends ClipRequest>(
     const outcome = fateOf({ ...item, status });
     for (const wait of item.waiting) answer(wait, outcome);
     state = { ...state, settled: [...state.settled, key] };
-    // A part that fails or is dropped takes the parts after it with it; a replaced one does not,
-    // since its replacement takes its place.
-    if (
-      item.group !== undefined &&
-      !item.inserted &&
-      (status._tag === "Failed" || (status._tag === "Dropped" && status.reason !== "replaced"))
-    )
-      for (const part of groups.get(item.group.key)?.parts ?? []) {
-        const other = items.get(part);
-        if (other?.group !== undefined && other.group.index > item.group.index)
-          withdraw(part, "withdrawn");
-      }
+    if (item.group === undefined || item.inserted) return;
+    breakAfter(item.group.key, item.group.index);
+    recordPlace(item.group.key, item.group.index);
+  };
+  /** The items of a group's place: its part and the replacements that took its place. */
+  const placeOf = (key: ItemKey, index: number): ReadonlyArray<Item<Req>> =>
+    (groups.get(key)?.parts ?? []).flatMap((part) => {
+      const other = items.get(part);
+      return other !== undefined && !other.inserted && other.group?.index === index ? [other] : [];
+    });
+  /**
+   * Withdraws every member of the group `key` seated after its place `index` once that place is
+   * broken: the group can no longer air in order, or a part of it failed on air. Its own items
+   * stay as they are: an `Unknown` one is never sent again, and airs alone if a queue read lists
+   * it.
+   */
+  const breakAfter = (key: ItemKey, index: number): void => {
+    const placed = placeOf(key, index);
+    const first = placed[0];
+    if (first === undefined || !brokenPlace(placed)) return;
+    const seat = seatOf(roster, first);
+    for (const member of [...roster.members(key)]) {
+      const other = items.get(member);
+      if (other !== undefined && live(other) && compareSeat(seatOf(roster, other), seat) > 0)
+        withdraw(other.spec.key, "withdrawn");
+    }
+  };
+  /**
+   * What became of a place once nothing of it can change: what its item that started settled as,
+   * if one did; else, once none is live, what its newest item settled as.
+   */
+  const placeOutcome = (placed: ReadonlyArray<Item<Req>>): Settled | undefined => {
+    const aired = placed.find((item) => item.startedAt !== undefined || item.phase === "Started");
+    if (aired !== undefined)
+      return aired.phase === "Settled" && aired.status !== undefined
+        ? decides(aired.status).outcome
+        : undefined;
+    if (placed.length === 0 || placed.some(live)) return undefined;
+    const newest = placed.reduce((latest, item) =>
+      item.generation >= latest.generation ? item : latest,
+    );
+    return newest.status === undefined ? undefined : decides(newest.status).outcome;
+  };
+  /**
+   * Records what became of a group's place once nothing of it can change, kept as history forgets
+   * its items, and sends the group's start once its first place settled without one, and its
+   * outcome once every place has settled.
+   */
+  const recordPlace = (key: ItemKey, index: number): void => {
+    const group = groups.get(key);
+    const outcome = placeOutcome(placeOf(key, index));
+    if (group === undefined || outcome === undefined || group.places[index] !== undefined) return;
+    const places = group.places.map((place, at) => (at === index ? outcome : place));
+    groups.set(key, { ...group, places });
+    const first = places[0] === undefined ? undefined : decides(places[0]).started;
+    if (first !== undefined) groupStarted(key, first);
+    groupSettled(key);
+  };
+  /** Sends a group's start once: its first place's start, or how that place settled without one. */
+  const groupStarted = (
+    key: ItemKey,
+    started: Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted,
+  ): void => {
+    const group = groups.get(key);
+    if (group === undefined || group.first !== undefined) return;
+    groups.set(key, { ...group, first: started });
+    actions.push({ _tag: "GroupStarted", key, started });
+  };
+  /** Sends a group's outcome, once, when every place has settled. */
+  const groupSettled = (key: ItemKey): void => {
+    const group = groups.get(key);
+    if (group?.first === undefined || group.settled === true) return;
+    const places = group.places.flatMap((place) => (place === undefined ? [] : [place]));
+    const [head, ...rest] = places;
+    if (head === undefined || places.length < group.places.length) return;
+    groups.set(key, { ...group, settled: true });
+    actions.push({
+      _tag: "GroupSettled",
+      key,
+      outcome: groupOutcome(group.first, [head, ...rest]),
+    });
   };
 
   /**
@@ -1125,6 +1565,43 @@ const decide = <Req extends ClipRequest>(
 
   const live = <I extends PlanItem>(item: I | undefined): item is I =>
     item !== undefined && item.phase !== "Settled";
+  /**
+   * Seats the insert `key` right behind `member`, a later member, for good, if that seat is later
+   * than its own, and with it the inserts placed right before or after it that sat where it did:
+   * an insert stays beside its anchor.
+   */
+  const seatBehind = (key: ItemKey, member: PlanItem): void => {
+    const item = items.get(key);
+    if (item === undefined || item.behind === member.spec.key || member.order <= item.order) return;
+    if (compareSeat([...seatOf(roster, member), item.order], seatOf(roster, item)) <= 0) return;
+    const was = item.behind;
+    set(key, { behind: member.spec.key });
+    seatBeside(key, was, member);
+    // One that holds the place of what it replaces already has the inserts placed beside that.
+    const old = replacedOf(item);
+    if (
+      old?.withdraw === "replaced" ||
+      (old?.status?._tag === "Dropped" && old.status.reason === "replaced")
+    )
+      seatBesideReplaced(item, member, old);
+  };
+  /** Seats behind `member` the live inserts placed right before or after `key` that sat at `was`. */
+  const seatBeside = (key: ItemKey, was: ItemKey | undefined, member: PlanItem): void => {
+    for (const other of [...items.values()])
+      if (other.inserted && other.anchor?.key === key && live(other) && other.behind === was)
+        seatBehind(other.spec.key, member);
+  };
+  /**
+   * Seats behind `member` the inserts placed beside what `replacement` replaces, down to `old`,
+   * once it holds their place: each that sat where its anchor did goes where it sits.
+   */
+  const seatBesideReplaced = (replacement: PlanItem, member: PlanItem, old: PlanItem): void => {
+    let at = replacement.replaces === undefined ? undefined : items.get(replacement.replaces);
+    while (at !== undefined) {
+      seatBeside(at.spec.key, at.behind, member);
+      at = at === old || at.replaces === undefined ? undefined : items.get(at.replaces);
+    }
+  };
   const readyOf = (value: Session<Req>): ReadonlyArray<SourceClip> => value.source?.ready ?? [];
   /** Whether a session still holds the air: it takes new work, or has clips of its own to air. */
   const holding = (value: Session<Req> | undefined): boolean =>
@@ -1150,19 +1627,67 @@ const decide = <Req extends ClipRequest>(
       old = items.get(old.replaces);
     return old;
   };
-  const rankItem = (item: Item<Req>): Rank => {
+  /**
+   * Whether an item is held from the air for its own sake: by its start, its time, its batch or
+   * the clip it follows.
+   */
+  const heldBack = (item: Item<Req>): boolean => {
     const at = atMono(item);
-    if (
+    return (
       item.mode === "held" ||
       (at !== undefined && now.mono < at) ||
       item.batch !== undefined ||
-      heldForFollows(item)
-    )
-      return [lanes + 1, 1, item.order, item.generation];
-    return airRank(item);
+      (heldForFollows(item) && !waitsOnAnchor(item))
+    );
   };
-  const heldForFollows = (item: Item<Req>): boolean => followHeldOf(items, item);
+  /**
+   * Whether `item`, placed right after the member it follows, waits for that member as its group's
+   * order keeps it: that member holds it, so it ranks just behind it, held only if that one is.
+   */
+  const waitsOnAnchor = (item: Item<Req>): boolean => {
+    const follows = item.spec.follows;
+    const anchor = item.inserted ? item.anchor : undefined;
+    if (anchor?.side !== "after" || follows?._tag !== "Item" || follows.key !== anchor.key)
+      return false;
+    const other = items.get(anchor.key);
+    return other !== undefined && holds(roster, other, item);
+  };
+  /** Where a held item ranks: behind everything that airs. */
+  const heldRank = (item: PlanItem): Rank => [lanes + 1, 1, item.order, item.generation, 0];
+  /**
+   * Where an item airs: at its own rank, held or not; or, while it waits behind earlier members
+   * of its group, just behind the last of their places to air, if that is later, each place at
+   * its earliest item. A member behind a place held back is held behind it, and one behind places
+   * that air keeps its place. Where its session's queue has it never counts. Every reader that
+   * orders or places clips reads this. `ranks` keeps what one look worked out, while the plan
+   * holds still.
+   */
+  const placeRank = (item: Item<Req>, ranks: Map<PlanItem, Rank> = new Map()): Rank => {
+    const known = ranks.get(item);
+    if (known !== undefined) return known;
+    const own = heldBack(item) ? heldRank(item) : airRank(item, ranks);
+    const holders =
+      item.group === undefined
+        ? []
+        : roster.members(item.group.key).flatMap((key) => {
+            const other = items.get(key);
+            return other !== undefined && holds(roster, other, item) ? [other] : [];
+          });
+    const rank = behindPlaces(
+      own,
+      holders,
+      (other) => seatOf(roster, other),
+      (other) => placeRank(other, ranks),
+    );
+    ranks.set(item, rank);
+    return rank;
+  };
+  const heldForFollows = (item: Item<Req>): boolean => followHeldOf(roster, item);
   const cuts = (item: PlanItem): boolean => config.lanes[item.spec.lane]?.cut === true;
+  /** Whether a lane that skips while busy refuses what is new: it has an item waiting or playing. */
+  const laneBusy = (lane: number): boolean =>
+    config.lanes[lane]?.conflict === "skip" &&
+    [...items.values()].some((item) => item.spec.lane === lane && live(item));
   /** Why a clip `key` would follow could never air before it, or undefined. */
   const followsIssue = (key: ItemKey, follows: ClipTag | undefined): string | undefined => {
     if (follows === undefined) return undefined;
@@ -1176,8 +1701,13 @@ const decide = <Req extends ClipRequest>(
     if (config.filler === undefined) return "there is no filler to follow";
     return undefined;
   };
-  /** `rankItem` once nothing holds the item back. */
-  const airRank = (item: Item<Req>): Rank => {
+  /** The items whose rank is being worked out from the clip each follows. */
+  const following = new Set<ItemKey>();
+  /**
+   * Where an item airs of its own, held by nothing: right behind the clip it follows, at once if
+   * `Asap`, else by lane, standing and order.
+   */
+  const airRank = (item: Item<Req>, ranks: Map<PlanItem, Rank>): Rank => {
     // Its build continues the Ready clip it follows on its session, so it airs right behind that
     // clip until that clip starts. An item accepted again for a rebuild follows nothing yet.
     const followed =
@@ -1185,10 +1715,14 @@ const decide = <Req extends ClipRequest>(
         ? undefined
         : session(item.sessionId)?.source?.ready.find((clip) => clip.clipId === item.follows);
     if (followed !== undefined) {
-      const behind = rankClip(followed);
-      return [behind[0], behind[1], behind[2], behind[3] + 0.5];
+      // Clips that follow one another back to this item never air: it ranks as held.
+      if (following.has(item.spec.key)) return heldRank(item);
+      following.add(item.spec.key);
+      const behind = rankClip(followed, ranks);
+      following.delete(item.spec.key);
+      return [behind[0], behind[1], behind[2], behind[3] + 0.5, behind[4]];
     }
-    if (item.mode === "asap") return [-0.5, 0, item.order, item.generation];
+    if (item.mode === "asap") return [-0.5, 0, item.order, item.generation, 0];
     const displaced = [...items.values()].some(
       (other) =>
         (other.phase === "Ready" || other.phase === "Started") &&
@@ -1200,13 +1734,15 @@ const decide = <Req extends ClipRequest>(
       superseded.has(item.spec.key) ? 2 : begun(item) ? 0 : 1,
       item.order,
       displaced ? Infinity : item.generation,
+      0,
     ];
   };
-  const rankClip = (clip: SourceClip): Rank => {
-    if (clip.tag === undefined) return [-1, 0, 0, 0];
-    if (clip.tag._tag === "Filler") return [lanes, 1, clip.tag.index, 0];
+  /** Where a clip airs: its item's `placeRank`, filler below every lane, and a clip of no item first. */
+  const rankClip = (clip: SourceClip, ranks?: Map<PlanItem, Rank>): Rank => {
+    if (clip.tag === undefined) return [-1, 0, 0, 0, 0];
+    if (clip.tag._tag === "Filler") return [lanes, 1, clip.tag.index, 0, 0];
     const item = items.get(clip.tag.key);
-    return item === undefined ? [-1, 0, 0, 0] : rankItem(item);
+    return item === undefined ? [-1, 0, 0, 0, 0] : placeRank(item, ranks);
   };
   /** Which of two waiting items takes the build slot first. */
   const buildOrder = (a: PlanItem, b: PlanItem): number =>
@@ -1220,7 +1756,24 @@ const decide = <Req extends ClipRequest>(
     a.order - b.order;
   /** A group's part may build only once the part before it was admitted. */
   const previousAdmitted = (item: Item<Req>): boolean => {
-    // An insert waits for whatever airs just before it in its lane to be admitted.
+    // An insert waits for the item just before it in its lane to be admitted. One in a group waits
+    // only for the member of its group seated just before it, if any: the lane's item before it
+    // may be another group's, waiting on this one.
+    if (item.inserted && item.group !== undefined) {
+      const seat = seatOf(roster, item);
+      const before = roster
+        .members(item.group.key)
+        .reduce<{ readonly item: PlanItem; readonly seat: Seat } | undefined>((latest, key) => {
+          const other = items.get(key);
+          if (!live(other) || other === item) return latest;
+          const at = seatOf(roster, other);
+          if (compareSeat(at, seat) >= 0) return latest;
+          return latest === undefined || compareSeat(at, latest.seat) > 0
+            ? { item: other, seat: at }
+            : latest;
+        }, undefined);
+      return before?.item.phase !== "Accepted";
+    }
     if (item.inserted) {
       const before = [...items.values()]
         .filter(
@@ -1262,20 +1815,43 @@ const decide = <Req extends ClipRequest>(
   const medianBuildMs = (subject: number | "filler", seconds: number, continued: boolean): number =>
     config.builtSeconds(seconds) * (buildRate(subject, "median", continued) ?? 0) * 1000;
   const playingRestMs = (value: Session<Req> | undefined): number => playingRestOf(value, now.mono);
-  const airs = (clip: SourceClip): boolean => airsOf(items, clip, now);
+  const airs = (clip: SourceClip): boolean => airsOf(roster, clip, now);
+  /**
+   * `inTurnOf` for `value` in the plan as it stands: a session not on air is walked after the one
+   * that is, whose clips air first.
+   */
+  const inTurn = (
+    value: Session<Req> | undefined,
+    queued: (clip: SourceClip) => boolean,
+    holding?: (item: PlanItem) => boolean,
+  ): ReadonlyArray<SourceClip> => {
+    const air = session(state.air);
+    const sessions = value === undefined || value.id === air?.id ? [value] : [air, value];
+    return inTurnOf(roster, sessions, queued, holding).at(-1) ?? [];
+  };
+  /** `inTurn`'s clips of `value` in the order they air, each at its `placeRank`. */
+  const airOrder = (
+    value: Session<Req> | undefined,
+    queued: (clip: SourceClip) => boolean,
+    ranks: Map<PlanItem, Rank> = new Map(),
+    holding?: (item: PlanItem) => boolean,
+  ): ReadonlyArray<SourceClip> =>
+    inTurn(value, queued, holding)
+      .map((clip) => ({ clip, rank: rankClip(clip, ranks) }))
+      .sort((a, b) => compareRank(a.rank, b.rank))
+      .map(({ clip }) => clip);
   /**
    * The runway as the time passes: at `time` it is `(Math.max(end, time) - time) / 1000 +
    * seconds`. It falls while the clip on air plays, to that clip's end, and holds still with
    * none, or with one whose length or start is unknown, counted as `playingRestOf` counts it.
+   * A member its group holds back counts once it airs in turn, as `inTurnOf` walks it.
    */
   const runwayTerms = (): { readonly end: number; readonly seconds: number } => {
     const target = preferred() ?? session(state.air);
     if (target === undefined) return { end: -Infinity, seconds: 0 };
     const onAir = target.id === state.air;
     const end = onAir ? playingEndOf(target) : undefined;
-    const ready = waitingOf(target)
-      .filter(airs)
-      .reduce((total, clip) => total + clip.seconds, 0);
+    const ready = secondsOf(inTurn(target, (clip) => airsAtPlaceOf(roster, clip, now)));
     return end === undefined
       ? { end: -Infinity, seconds: (onAir ? playingRestMs(target) / 1000 : 0) + ready }
       : { end, seconds: ready };
@@ -1298,22 +1874,23 @@ const decide = <Req extends ClipRequest>(
    * `time` it is `Math.max(from, time + after)`. The end of the clip on air and the builds in
    * flight fix `from`; the air ahead and the builds it waits for add `after` to the time, as
    * they do once that clip is over. The air ahead is every clip the plan keeps queued to air
-   * before it on the session taking new work, built or not, and the first of those not built
-   * yet airs only once it is. `memo` holds what is known already of the items ahead.
+   * before it on the session taking new work, built or not, each where it will air, a member its
+   * group holds back included, and the first of those not built yet airs only once it is. `memo`
+   * holds what is known already of the items ahead.
    */
   const project = (
     item: Item<Req>,
     memo: Memo,
   ): { readonly from: number; readonly after: number } => {
     const target = preferred() ?? session(state.air);
-    const rank = rankOf(item, memo);
+    const rank = placeRank(item, memo.ranks);
     const readyMs = waitingOf(target)
       .filter((clip) => {
         const other = itemOf(clip);
         return (
-          compareRank(other === undefined ? rankClip(clip) : rankOf(other, memo), rank) < 0 &&
+          compareRank(rankClip(clip, memo.ranks), rank) < 0 &&
           other?.withdraw === undefined &&
-          (other === undefined || keeps(other, memo))
+          (other === undefined || (live(other) && keeps(other, memo)))
         );
       })
       .reduce((total, clip) => total + clip.seconds * 1000, 0);
@@ -1322,10 +1899,10 @@ const decide = <Req extends ClipRequest>(
         other.spec.key !== item.spec.key &&
         (other.phase === "Accepted" ||
           (other.phase === "Building" && other.sessionId === target?.id)) &&
-        airsItem(items, other, now) &&
+        airsAtPlace(roster, other, now) &&
         // A replacement and what it replaces take one place, which airs once.
         (other.replaces === undefined || !live(replacedOf(other))) &&
-        compareRank(rankOf(other, memo), rank) < 0 &&
+        compareRank(placeRank(other, memo.ranks), rank) < 0 &&
         keeps(other, memo),
     );
     const unbuiltMs = unbuilt.reduce(
@@ -1417,14 +1994,6 @@ const decide = <Req extends ClipRequest>(
     if (aired !== undefined) return aired.start < startBy;
     const last = run.aired.at(-1);
     return last === undefined || last.start + last.clip.seconds * 1000 < startBy;
-  };
-  /** `item`'s rank, as `memo` holds it. */
-  const rankOf = (item: Item<Req>, memo: Memo): Rank => {
-    const known = memo.ranks.get(item);
-    if (known !== undefined) return known;
-    const rank = rankItem(item);
-    memo.ranks.set(item, rank);
-    return rank;
   };
   /**
    * Whether the plan keeps `item` to air rather than drop it as late: past its firm `startBy`, or
@@ -1563,16 +2132,15 @@ const decide = <Req extends ClipRequest>(
           key: edit.key,
           message: "no waiting item has this key",
         });
-      if (edit._tag === "Submit" && !items.has(edit.spec.key)) {
-        const lane = config.lanes[edit.spec.lane];
-        if (
-          lane?.conflict === "skip" &&
-          [...items.values()].some((item) => item.spec.lane === edit.spec.lane && live(item))
-        )
-          return refuse({ _tag: "LaneBusy", key: edit.spec.key, lane: edit.spec.lane });
-      }
+      // A new item or group is refused by a lane that skips while busy; one admitted already is
+      // answered as it is.
+      if (edit._tag === "Submit" && !items.has(edit.spec.key) && laneBusy(edit.spec.lane))
+        return refuse({ _tag: "LaneBusy", key: edit.spec.key, lane: edit.spec.lane });
+      if (edit._tag === "SubmitGroup" && !groups.has(edit.key) && laneBusy(edit.lane))
+        return refuse({ _tag: "LaneBusy", key: edit.key, lane: edit.lane });
     }
-    // An edit refused below, as an item it adds would miss its deadline, leaves the plan as it was.
+    // An edit refused below, as an item it adds would wait on itself or miss its deadline, leaves
+    // the plan as it was.
     const saved = { items: new Map(items), groups: new Map(groups), nextOrder: state.nextOrder };
     const results: Array<EditReply> = [];
     const adds: Array<ItemKey> = [];
@@ -1583,26 +2151,32 @@ const decide = <Req extends ClipRequest>(
     const notFound: Array<number> = [];
     const put = (item: Item<Req>): void => {
       items.set(item.spec.key, item);
+      roster.join(item);
       adds.push(item.spec.key);
       state = { ...state, nextOrder: state.nextOrder + 1 };
+    };
+    /**
+     * What a new item or group in a lane that replaces does: it takes the place of the items
+     * waiting there, which stay as cover until it is Ready and then go as `replaced`.
+     */
+    const replaceWaiting = (lane: number): void => {
+      if (config.lanes[lane]?.conflict !== "replace") return;
+      batched = true;
+      for (const other of items.values())
+        if (
+          other.spec.lane === lane &&
+          (other.phase === "Accepted" ||
+            other.phase === "Building" ||
+            other.phase === "Ready" ||
+            other.phase === "Unknown")
+        )
+          targets.push({ key: other.spec.key, index: -1, reason: "replaced" });
     };
     for (const [index, edit] of edits.entries()) {
       switch (edit._tag) {
         case "Submit": {
           if (!items.has(edit.spec.key)) {
-            const lane = config.lanes[edit.spec.lane];
-            if (lane?.conflict === "replace") {
-              batched = true;
-              for (const other of items.values())
-                if (
-                  other.spec.lane === edit.spec.lane &&
-                  (other.phase === "Accepted" ||
-                    other.phase === "Building" ||
-                    other.phase === "Ready" ||
-                    other.phase === "Unknown")
-                )
-                  targets.push({ key: other.spec.key, index: -1, reason: "replaced" });
-            }
+            replaceWaiting(edit.spec.lane);
             put(newItem(edit.spec));
           }
           results.push({ _tag: "Added", key: edit.spec.key });
@@ -1610,14 +2184,17 @@ const decide = <Req extends ClipRequest>(
         }
         case "SubmitGroup": {
           if (!groups.has(edit.key)) {
+            replaceWaiting(edit.lane);
             groups.set(edit.key, {
               fingerprint: edit.fingerprint,
               parts: edit.parts.map((part) => part.key),
+              places: edit.parts.map(() => undefined),
             });
+            // The group's time is its first part's: the rest follow it, with none of their own.
             edit.parts.forEach((part, partIndex) => {
-              const { window: _window, ...rest } = part;
+              const { window: _window, follows: _follows, ...rest } = part;
               put(
-                newItem(partIndex === 0 ? part : rest, {
+                newItem(partIndex === 0 ? part : { ...rest, start: { _tag: "Follow" } }, {
                   group: { key: edit.key, index: partIndex },
                 }),
               );
@@ -1641,11 +2218,14 @@ const decide = <Req extends ClipRequest>(
                 ? Math.max(anchor.order - 1, ...sameLane.filter((order) => order < anchor.order))
                 : Math.min(anchor.order + 1, ...sameLane.filter((order) => order > anchor.order));
             const playing = anchor.phase === "Started";
+            const order = (anchor.order + neighbour) / 2;
+            // Beside an insert that sits behind a later member, it sits behind that member too.
+            const behind = anchor.behind === undefined ? undefined : items.get(anchor.behind);
             put(
               newItem(
                 { ...edit.spec, lane: anchor.spec.lane, start: insertStart(anchor, edit.side) },
                 {
-                  order: (anchor.order + neighbour) / 2,
+                  order,
                   group:
                     anchor.group === undefined
                       ? undefined
@@ -1653,6 +2233,7 @@ const decide = <Req extends ClipRequest>(
                   inserted: true,
                   anchor: { key: edit.anchor, side: edit.side },
                   mode: playing ? "follow" : anchor.mode,
+                  behind: behind !== undefined && behind.order > order ? anchor.behind : undefined,
                 },
               ),
             );
@@ -1664,12 +2245,18 @@ const decide = <Req extends ClipRequest>(
         case "Replace": {
           if (!items.has(edit.spec.key)) {
             const old = items.get(edit.key)!;
+            // A part's replacement takes its place's time, the group's: its part's start, window
+            // and the clip it follows, never its own. Any other takes its item's start, and the
+            // clip that item follows if it follows one.
+            const part = old.group !== undefined && !old.inserted;
+            const { window: _window, follows: _follows, ...untimed } = edit.spec;
             put(
               newItem(
                 {
-                  ...edit.spec,
+                  ...(part ? untimed : edit.spec),
                   lane: old.spec.lane,
                   start: old.spec.start,
+                  ...(part && old.spec.window !== undefined ? { window: old.spec.window } : {}),
                   ...(old.spec.follows === undefined ? {} : { follows: old.spec.follows }),
                 },
                 {
@@ -1677,8 +2264,13 @@ const decide = <Req extends ClipRequest>(
                   generation: old.generation + 1,
                   group: old.group,
                   inserted: old.inserted,
+                  // An insert's replacement is placed where the insert is, after or before its
+                  // anchor, and so waits behind it as the insert does, and sits where it sits.
+                  anchor: old.anchor,
+                  behind: old.behind,
                   replaces: old.spec.key,
                   mode: old.mode,
+                  ...(part ? { notBefore: old.notBefore } : {}),
                   startBy: old.startBy,
                 },
               ),
@@ -1718,6 +2310,26 @@ const decide = <Req extends ClipRequest>(
         }
       }
     }
+    /** Leaves the plan as it was before this edit, which is refused. */
+    const restore = (): void => {
+      items.clear();
+      for (const [other, value] of saved.items) items.set(other, value);
+      groups.clear();
+      for (const [group, value] of saved.groups) groups.set(group, value);
+      state = { ...state, nextOrder: saved.nextOrder };
+    };
+    // A member that waits for a member of its group seated after it to air, while that member
+    // waits behind it, would never air, nor would that member.
+    for (const key of adds) {
+      const item = items.get(key);
+      if (item === undefined || !followsLater(roster, item)) continue;
+      restore();
+      return refuse({
+        _tag: "InvalidItem",
+        key,
+        message: "follows waits for a member of its group placed after it",
+      });
+    }
     const deadlines = adds.flatMap((key) => {
       const item = items.get(key)!;
       return item.spec.window?.firm === true && item.startBy !== undefined ? [item.startBy] : [];
@@ -1749,11 +2361,7 @@ const decide = <Req extends ClipRequest>(
         item.startBy !== undefined &&
         (misses(item, item.startBy, memo) || !startsBefore(item, item.startBy, forwardRun))
       ) {
-        items.clear();
-        for (const [other, value] of saved.items) items.set(other, value);
-        groups.clear();
-        for (const [group, value] of saved.groups) groups.set(group, value);
-        state = { ...state, nextOrder: saved.nextOrder };
+        restore();
         return refuse({ _tag: "WouldMissDeadline", key });
       }
     }
@@ -1869,16 +2477,20 @@ const decide = <Req extends ClipRequest>(
       withdraw: undefined,
       airSeconds: clip.seconds,
     });
-    asRun(clip.tag.key, {
+    const status: Extract<AsRunStatus, { readonly _tag: "Started" }> = {
       _tag: "Started",
       at: now.wall,
       sessionId,
       // A clip the provider named without its length is counted at the length its model builds.
       seconds: clip.seconds ?? config.builtSeconds(item.spec.seconds),
       ...(late === undefined ? {} : { lateByMillis: Math.round(late) }),
-    });
+    };
+    asRun(clip.tag.key, status);
     // A withdrawal that waited on it is too late: it answers now, not when the clip ends.
     for (const wait of item.waiting) answer(wait, "already-started");
+    // A group starts with its first place, whichever of its items starts.
+    if (item.group !== undefined && !item.inserted && item.group.index === 0)
+      groupStarted(item.group.key, status);
   };
   const forgetFiller = (sessionId: string, clipId: string): void =>
     updateSession(sessionId, {
@@ -2330,6 +2942,9 @@ const decide = <Req extends ClipRequest>(
               unknownSince: now.mono,
             });
             asRun(item.spec.key, { _tag: "Unknown" });
+            // It may air at any time, or never: what follows it in its group cannot air in order.
+            if (item.group !== undefined && !item.inserted)
+              breakAfter(item.group.key, item.group.index);
           }
         } else if (item.withdraw !== undefined)
           // Refused with no clip made: the withdrawal waiting on it has nothing left to remove.
@@ -2370,16 +2985,28 @@ const decide = <Req extends ClipRequest>(
         // A removal whose outcome is unknown goes again at once: if it applied, the next is
         // refused, and the clip is gone. One refused goes again once the queues change.
         const unknown = result._tag === "Failed" && result.cause.context.outcome === "unknown";
+        updateSession(sessionId, {
+          refusedSince: result._tag === "Done" ? undefined : (lane.refusedSince ?? now.mono),
+        });
         if (owner === undefined) {
-          if (result._tag === "Done") return forgetFiller(sessionId, command.clipId);
+          if (result._tag === "Done") {
+            // A clip taken back from its item is gone, though a read may still list it.
+            const taken = [...items.values()].find(
+              (item) =>
+                item.discarded?.sessionId === sessionId && item.discarded.clipId === command.clipId,
+            );
+            if (taken?.discarded !== undefined)
+              set(taken.spec.key, { discarded: { ...taken.discarded, removed: true } });
+            return forgetFiller(sessionId, command.clipId);
+          }
           if (unknown) return;
           const refused = session(sessionId);
           if (refused === undefined) return;
           const now_ = signature(refused);
           const earlier =
-            refused.refusedFiller.signature === now_ ? refused.refusedFiller.clipIds : [];
+            refused.refusedClips.signature === now_ ? refused.refusedClips.clipIds : [];
           updateSession(sessionId, {
-            refusedFiller: { signature: now_, clipIds: [...earlier, command.clipId] },
+            refusedClips: { signature: now_, clipIds: [...earlier, command.clipId] },
           });
           return;
         }
@@ -2436,15 +3063,27 @@ const decide = <Req extends ClipRequest>(
       applyEdit(input.id, input.edits, input.batch);
       break;
     case "Release": {
-      const item = items.get(input.key);
-      if (!live(item) || item.mode !== "held")
+      // A group key releases its first place: the part and any replacement, which takes its mode.
+      const group = groups.get(input.key);
+      const keys =
+        group === undefined
+          ? [input.key]
+          : group.parts.filter((part) => {
+              const other = items.get(part);
+              return other !== undefined && !other.inserted && other.group?.index === 0;
+            });
+      const held = keys.filter((key) => {
+        const item = items.get(key);
+        return live(item) && item.mode === "held";
+      });
+      if (held.length === 0)
         actions.push({
           _tag: "Refused",
           id: input.id,
           refusal: { _tag: "InvalidItem", key: input.key, message: "no held item has this key" },
         });
       else {
-        set(input.key, { mode: "asap" });
+        for (const key of held) set(key, { mode: "asap" });
         actions.push({ _tag: "Accepted", id: input.id, results: [] });
       }
       break;
@@ -2486,7 +3125,7 @@ const decide = <Req extends ClipRequest>(
             unknownFiller: [],
             playing: undefined,
             lastEnqueue: undefined,
-            refusedFiller: { signature: "", clipIds: [] },
+            refusedClips: { signature: "", clipIds: [] },
             blockedMove: undefined,
             moveRetryAt: 0,
             busy: undefined,
@@ -2619,7 +3258,7 @@ const decide = <Req extends ClipRequest>(
   }
   if (state.closed) {
     if (input._tag === "Place") actions.push({ _tag: "Placed", id: input.id, placement: null });
-    return { state: { ...state, items }, actions, wake: undefined };
+    return { state: { ...state, items, groups }, actions, wake: undefined };
   }
 
   // Sweep every waiting item, not only the heads: expiry must not strand behind a live one. Each
@@ -2663,8 +3302,12 @@ const decide = <Req extends ClipRequest>(
       (item.phase === "Ready" && item.batch === undefined) ||
       item.phase === "Started" ||
       (old.phase === "Accepted" && old.dispatchedAt === undefined)
-    )
+    ) {
       withdraw(old.spec.key, "replaced");
+      // It has the place now: the inserts placed beside what it replaces go where it sits.
+      const member = item.behind === undefined ? undefined : items.get(item.behind);
+      if (member !== undefined) seatBesideReplaced(item, member, old);
+    }
   }
   // A batch takes effect once everything it adds is Ready or has settled.
   for (const batch of state.batches) {
@@ -2844,13 +3487,16 @@ const decide = <Req extends ClipRequest>(
   if (input._tag === "Place")
     actions.push({ _tag: "Placed", id: input.id, placement: place(input.probe) });
 
-  // History: settled keys past the bound are forgotten, oldest first.
+  // History: settled keys past the bound are forgotten, oldest first, and a group with the last of
+  // its parts.
   if (state.settled.length > config.maxHistory) {
     const drop = state.settled.slice(0, state.settled.length - config.maxHistory);
     for (const key of drop) items.delete(key);
-    actions.push({ _tag: "Forget", keys: drop });
-    for (const [group, value] of groups)
-      if (value.parts.every((part) => !items.has(part))) groups.delete(group);
+    const forgotten = [...groups].flatMap(([group, value]) =>
+      value.parts.every((part) => !items.has(part)) ? [group] : [],
+    );
+    for (const group of forgotten) groups.delete(group);
+    actions.push({ _tag: "Forget", keys: [...drop, ...forgotten] });
     state = { ...state, settled: state.settled.slice(drop.length) };
   }
 
@@ -2879,47 +3525,116 @@ const decide = <Req extends ClipRequest>(
       clip.tag?._tag === "Filler" &&
       value.source?.available === true &&
       !(
-        value.refusedFiller.signature === signature(value) &&
-        value.refusedFiller.clipIds.includes(clip.clipId)
+        value.refusedClips.signature === signature(value) &&
+        value.refusedClips.clipIds.includes(clip.clipId)
       )
     );
   }
   /**
-   * Whether H3 starts `item`'s clip next on `value`: it heads the Ready queue, or nothing is Ready
-   * or playing there and it heads the builds. With autoplay on it starts at the next boundary or
-   * as its build ends, and that is the change a refused removal would wait for.
+   * Whether H3 no longer has `clip`, though a read of `value` may still list it: its item settled
+   * with it, as once its removal applied, or a removal of it, taken back from its item, applied.
    */
-  function startsNext(value: Session<Req>, item: Item<Req>): boolean {
-    const source = value.source;
-    if (source === undefined) return false;
-    if (item.phase === "Ready") return waitingOf(value)[0]?.clipId === item.clipId;
+  function removedFrom(value: Session<Req>, clip: SourceClip): boolean {
+    const owner = itemOf(clip);
+    if (owner === undefined) return false;
+    if (owner.clipId === clip.clipId && owner.sessionId === value.id)
+      return owner.phase === "Settled";
+    const taken = owner.discarded;
+    return taken?.sessionId === value.id && taken.clipId === clip.clipId && taken.removed === true;
+  }
+  /**
+   * Whether `clip`, listed on `value`, is a clip the plan took back from its item, whose removal
+   * has not applied: H3 may still start it.
+   */
+  function disowned(value: Session<Req>, clip: SourceClip): boolean {
+    const owner = itemOf(clip);
     return (
-      item.phase === "Building" &&
-      source.playing === undefined &&
-      source.ready.length === 0 &&
-      source.building[0]?.clipId === item.clipId
+      owner !== undefined &&
+      !(owner.clipId === clip.clipId && owner.sessionId === value.id) &&
+      !removedFrom(value, clip)
     );
   }
   /**
-   * The withdrawal to remove next on `value`: one whose removal was not refused as its queues
-   * stand, or whose clip H3 starts next while autoplay is on there or coming on.
+   * The clip H3 starts next on `value`: its Ready head, or with nothing Ready or playing there,
+   * its first build. A clip whose removal applied is gone, though a read may still list it.
+   */
+  function nextOf(value: Session<Req>): SourceClip | undefined {
+    const source = value.source;
+    const stays = (clip: SourceClip) => !removedFrom(value, clip);
+    const ready = waitingOf(value).find(stays);
+    return ready ?? (source?.playing === undefined ? source?.building.find(stays) : undefined);
+  }
+  /**
+   * Whether H3 starts the clip `clipId` next on `value`. With autoplay on it starts at the next
+   * boundary or as its build ends, and that is the change a refused removal would wait for.
+   */
+  function startsNext(value: Session<Req>, clipId: string): boolean {
+    return nextOf(value)?.clipId === clipId;
+  }
+  /**
+   * The removal to make next on `value`: a withdrawal, or a clip taken back from its item and
+   * still listed, whose removal was not refused as its queues stand, or whose clip H3 starts next
+   * while autoplay is on there or coming on; or, with autoplay coming on, a member waiting behind
+   * an earlier member of its group whose clip H3 would start next, Ready as exposure takes it off
+   * or as its build ends, taken off to be built again behind those (`again`).
    */
   function removalDue(
     value: Session<Req>,
     autoplay: boolean,
-  ): { readonly key: ItemKey; readonly clipId: string } | undefined {
-    if (value.source?.available !== true) return undefined;
+  ): { readonly key: ItemKey; readonly clipId: string; readonly again: boolean } | undefined {
+    const source = value.source;
+    if (source?.available !== true) return undefined;
+    const due = (refused: boolean, clipId: string): boolean =>
+      !refused || ((value.autoplay !== false || autoplay) && startsNext(value, clipId));
     for (const item of items.values())
       if (
         item.withdraw !== undefined &&
         item.clipId !== undefined &&
         item.sessionId === value.id &&
         (item.phase === "Building" || item.phase === "Ready") &&
-        (item.blockedRemove !== signature(value) ||
-          ((value.autoplay !== false || autoplay) && startsNext(value, item)))
+        due(item.blockedRemove === signature(value), item.clipId)
       )
-        return { key: item.spec.key, clipId: item.clipId };
-    return undefined;
+        return { key: item.spec.key, clipId: item.clipId, again: false };
+    const refused =
+      value.refusedClips.signature === signature(value) ? value.refusedClips.clipIds : [];
+    for (const clip of [...waitingOf(value), ...source.building]) {
+      const owner = itemOf(clip);
+      if (
+        owner !== undefined &&
+        disowned(value, clip) &&
+        due(refused.includes(clip.clipId), clip.clipId)
+      )
+        return { key: owner.spec.key, clipId: clip.clipId, again: false };
+    }
+    if (!autoplay || value.autoplay === true) return undefined;
+    // What H3 would start first: the Ready head, or with nothing Ready or playing, the first build.
+    const first = nextOf(value);
+    const next = itemOf(first);
+    if (
+      first === undefined ||
+      next === undefined ||
+      next.clipId !== first.clipId ||
+      next.withdraw !== undefined ||
+      !behindInGroup(roster, next)
+    )
+      return undefined;
+    // Ready, it goes as exposure would take it off; building, it would start as its build ends.
+    const index = readyOf(value).findIndex((clip) => clip.clipId === first.clipId);
+    return next.phase === "Building" || exposure(value, next, index)
+      ? { key: next.spec.key, clipId: first.clipId, again: true }
+      : undefined;
+  }
+  /** Takes `key`'s clip `clipId` off `value`: the item goes back to the plan, to be built again. */
+  function takeBack(value: Session<Req>, key: ItemKey, clipId: string): void {
+    set(key, {
+      phase: "Accepted",
+      dispatchedAt: undefined,
+      clipId: undefined,
+      sessionId: undefined,
+      covered: undefined,
+      discarded: { sessionId: value.id, clipId },
+    });
+    queueCommand(value.id, { _tag: "Remove", clipId }, key);
   }
   /** A session's queues as they stand: a clip finishing its build changes them too. */
   function signature(value: Session<Req> | undefined): string {
@@ -2969,7 +3684,14 @@ const decide = <Req extends ClipRequest>(
     const value = session(sessionId);
     if (value === undefined || value.busy !== undefined) return;
     const actual = readyOf(value);
-    const desired = [...actual].sort((a, b) => compareRank(rankClip(a), rankClip(b)));
+    // Each clip where it airs: a member its group holds back keeps its place behind those it waits
+    // behind, and needs no move once they start, which a short one could end before. Each rank is
+    // worked out once: one can read every item the plan holds.
+    const ranks = new Map<PlanItem, Rank>();
+    const desired = actual
+      .map((clip) => ({ clip, rank: rankClip(clip, ranks) }))
+      .sort((a, b) => compareRank(a.rank, b.rank))
+      .map(({ clip }) => clip);
     // Autoplay as its role wants it: off on a replacement until it takes the air, and off on the
     // air while a cut is under way.
     const selected = value.guardItem === undefined ? undefined : items.get(value.guardItem);
@@ -3019,12 +3741,15 @@ const decide = <Req extends ClipRequest>(
     const autoplay =
       value.wantAutoplay && state.cutting?.sessionId !== value.id && !(guarded && fenceable);
     const removal = removalDue(value, autoplay);
-    // A clip the plan withdrew is removed before autoplay comes on: H3 arms its Ready head then.
-    if (
-      value.source?.available === true &&
-      value.autoplay !== autoplay &&
-      !(autoplay && removal !== undefined)
-    ) {
+    if (removal === undefined && value.refusedSince !== undefined)
+      updateSession(value.id, { refusedSince: undefined });
+    // A clip the plan withdrew or took back, or a waiting member H3 would start first, is removed
+    // before autoplay comes on: H3 arms its Ready head then, and starts a clip as its build ends.
+    // Not applied one time after another, refused or with its outcome unknown, it holds autoplay
+    // off a second at most; autoplay then comes on, and the removal is still asked.
+    const holds =
+      removal !== undefined && now.mono < (value.refusedSince ?? Infinity) + refusalHoldMs;
+    if (value.source?.available === true && value.autoplay !== autoplay && !(autoplay && holds)) {
       // Nothing else goes before it, even while a failed one waits to be asked again.
       const retry = value.autoplayRetry;
       if (retry === undefined || retry.enabled !== autoplay || now.mono >= retry.at)
@@ -3066,7 +3791,8 @@ const decide = <Req extends ClipRequest>(
       return decideCommand(sessionId);
     }
     // Withdrawals the plan wants, retried once a refused one's session changes, or at once while
-    // H3 would start its clip next.
+    // H3 would start its clip next; and a waiting member it would start as autoplay comes on.
+    if (removal?.again === true) return takeBack(value, removal.key, removal.clipId);
     if (removal !== undefined)
       return queueCommand(value.id, { _tag: "Remove", clipId: removal.clipId }, removal.key);
     // A drain withdraws filler once nothing accepted still needs it to cover the wait.
@@ -3129,14 +3855,16 @@ const decide = <Req extends ClipRequest>(
         return decideCommand(sessionId);
       }
     }
-    // A held item about to be next, or an At item Ready too early, is removed: rebuilt later, or
-    // dropped if withdrawn.
+    // A held item, or a member waiting behind an earlier member of its group, about to be next, or
+    // an At item Ready too early, is removed: rebuilt later, or dropped if withdrawn.
+    let airing: ReadonlySet<SourceClip> | undefined;
+    const airingHere = () => (airing ??= airingOf(value));
     for (const [index, clip] of actual.entries()) {
       const item = itemOf(clip);
       if (item?.phase !== "Ready") continue;
       // An item waiting for the clip it follows would air before that clip.
       const pair = heldForFollows(item);
-      const exposed = exposure(value, item, readyAheadMs(value, index));
+      const exposed = exposure(value, item, index, airingHere);
       if (exposed && pair && item.withdraw === undefined) {
         withdraw(item.spec.key, "displaced");
         return decideCommand(sessionId);
@@ -3154,15 +3882,7 @@ const decide = <Req extends ClipRequest>(
           return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId }, item.spec.key);
         }
         // It goes back to the plan, to be built again once the air ahead covers its wait.
-        set(item.spec.key, {
-          phase: "Accepted",
-          dispatchedAt: undefined,
-          clipId: undefined,
-          sessionId: undefined,
-          covered: undefined,
-          discarded: { sessionId: value.id, clipId: clip.clipId },
-        });
-        return queueCommand(value.id, { _tag: "Remove", clipId: clip.clipId }, item.spec.key);
+        return takeBack(value, item.spec.key, clip.clipId);
       }
     }
     // A constrained clip cannot be left to autoplay: an early end or unexpectedly slow build
@@ -3251,6 +3971,8 @@ const decide = <Req extends ClipRequest>(
         continued: from.clipId !== undefined,
         follows: from.follows,
       });
+      const member = laterMemberWith(roster, item, from.clipId, target.id);
+      if (member !== undefined) seatBehind(item.spec.key, member);
       return queueCommand(
         target.id,
         {
@@ -3322,7 +4044,7 @@ const decide = <Req extends ClipRequest>(
     // The cover is a filler clip: it builds at filler's rate, per second of what its model builds.
     const rate = buildRate("filler", "long", false);
     if (build === undefined || rate === undefined) return false;
-    const dark = build - securedOf({ ...state, items }, now);
+    const dark = build - securedOf(roster, state, now);
     const short = dark + lookaheadMarginSeconds;
     // A requested second airs as long as asked, or as a provider that cuts clips short leaves it.
     const airs = Math.min(1, estimates().length);
@@ -3429,10 +4151,33 @@ const decide = <Req extends ClipRequest>(
           // Nor one waiting for the clip it follows: with nothing ahead of it, it would air before
           // its removal could land.
           (!heldForFollows(item) || followCovered(item)) &&
+          builtBehind(item, target) &&
           // A held item is built ahead only while filler keeps the runway at its floor.
           (item.mode !== "held" || (floorSeconds > 0 && !below(floorSeconds))),
       )
       .sort(buildOrder);
+  }
+  /**
+   * Whether each earlier member of its group that `item` waits behind is Ready or Building on
+   * `target`, the session taking new work, or on the session on air, whose clips air first: built
+   * before them, it would be Ready at the head of a queue with nothing ahead of it, then removed and
+   * built again.
+   */
+  function builtBehind(item: Item<Req>, target: Session<Req> | undefined): boolean {
+    if (item.group === undefined) return true;
+    for (const key of roster.members(item.group.key)) {
+      const other = items.get(key);
+      if (
+        other !== undefined &&
+        holds(roster, other, item) &&
+        !(
+          (other.phase === "Ready" || other.phase === "Building") &&
+          (other.sessionId === target?.id || other.sessionId === state.air)
+        )
+      )
+        return false;
+    }
+    return true;
   }
   /**
    * Whether the air secured lasts to an `At` item's time, so that its build may go. Once the
@@ -3463,14 +4208,17 @@ const decide = <Req extends ClipRequest>(
       now.mono < (followUncoveredAt(item) ?? Infinity)
     );
   }
-  /** Whether the clip `item` follows is Ready and queued to air where it would air before it. */
+  /**
+   * Whether the clip `item` follows is Ready and queued to air at its place, a member its group
+   * holds back included, where it would air before it.
+   */
   function followedReady(item: Item<Req>): boolean {
     const follows = item.spec.follows;
     if (follows === undefined) return false;
     return [session(state.air), preferred()].some((value) =>
       (value === undefined ? [] : readyOf(value)).some((clip) => {
         const other = itemOf(clip);
-        return sameClip(follows, clip.tag) && (other === undefined || queuedToAir(items, other));
+        return sameClip(follows, clip.tag) && (other === undefined || queuedAtPlace(roster, other));
       }),
     );
   }
@@ -3483,14 +4231,15 @@ const decide = <Req extends ClipRequest>(
     const target = preferred();
     if (target === undefined) return undefined;
     const air = session(state.air);
-    // An `At` clip kept Ready airs at its time, which the air ahead of it reaches.
+    // An `At` clip kept Ready airs at its time, which the air ahead of it reaches, and a member its
+    // group holds back once it airs in turn, as the runway counts it.
     const queuedMs = (value: Session<Req> | undefined): number =>
-      waitingOf(value)
-        .filter((clip) => {
+      secondsOf(
+        inTurn(value, (clip) => {
           const other = itemOf(clip);
-          return other === undefined || queuedToAir(items, other);
-        })
-        .reduce((total, clip) => total + clip.seconds * 1000, 0);
+          return other === undefined || queuedAtPlace(roster, other);
+        }),
+      ) * 1000;
     const aheadMs = queuedMs(air) + (target.id === air?.id ? 0 : queuedMs(target));
     const buildMs = medianBuildMs(item.spec.lane, item.spec.seconds, false);
     return aheadMs - buildMs - exposureMarginMs;
@@ -3508,28 +4257,90 @@ const decide = <Req extends ClipRequest>(
     return at === undefined || covered(item) ? undefined : at - runwayTerms().seconds * 1000;
   }
   /**
-   * Whether `item`, Ready on `value` behind `readyMs` of Ready air, must leave its queue now: held
-   * and about to be next, waiting for the clip it follows and about to air before it, or an `At`
-   * item Ready too early.
+   * Whether `item`, Ready on the session on air, waits behind a member of its group that is not
+   * there, to be built or Ready on the session taking new work: it airs only after that member,
+   * from there.
    */
-  function exposure(value: Session<Req>, item: Item<Req>, readyMs: number): boolean {
+  function heldOffAir(item: Item<Req>): boolean {
+    if (item.group === undefined) return false;
+    return roster.members(item.group.key).some((key) => {
+      const other = items.get(key);
+      return other !== undefined && other.sessionId !== state.air && holds(roster, other, item);
+    });
+  }
+  /**
+   * Whether `item`, Ready on `value` at `index`, has a member it waits behind that airs before it,
+   * held or not: Ready ahead of it there, or, on a session not on air yet, Ready or Building on the
+   * one that is, whose clips air first. It cannot air before that one, and is never taken off
+   * while one is there.
+   */
+  function holderAhead(value: Session<Req>, index: number, item: Item<Req>): boolean {
+    if (item.group === undefined) return false;
+    const ahead = readyOf(value).slice(0, index);
+    for (const key of roster.members(item.group.key)) {
+      const other = items.get(key);
+      if (other === undefined || !holds(roster, other, item)) continue;
+      if (
+        other.phase === "Ready" &&
+        other.sessionId === value.id &&
+        ahead.some((clip) => clip.clipId === other.clipId)
+      )
+        return true;
+      if (
+        value.id !== state.air &&
+        other.sessionId === state.air &&
+        (other.phase === "Ready" || other.phase === "Building")
+      )
+        return true;
+    }
+    return false;
+  }
+  /**
+   * Whether `item`, Ready on `value` at `index`, must leave its queue now: held, or waiting behind
+   * an earlier member of its group with none of those Ready ahead of it, and about to be next;
+   * waiting for the clip it follows and about to air before it; or an `At` item Ready too early.
+   */
+  function exposure(
+    value: Session<Req>,
+    item: Item<Req>,
+    index: number,
+    airing: () => ReadonlySet<SourceClip> = () => airingOf(value),
+  ): boolean {
+    const held = item.mode === "held" || behindInGroup(roster, item);
+    const pair = !held && heldForFollows(item);
+    const at = atMono(item);
+    if (!held && !pair && (at === undefined || at <= now.mono)) return false;
+    const readyMs = readyAheadMs(value, index, airing());
     const aheadMs = playingRestMs(value) + readyMs;
-    if (item.mode === "held")
-      return aheadMs < exposureMarginMs || now.mono >= (exposedAt(value, readyMs) ?? Infinity);
-    if (heldForFollows(item))
+    if (held)
+      return (
+        !holderAhead(value, index, item) &&
+        (aheadMs < exposureMarginMs || now.mono >= (exposedAt(value, readyMs) ?? Infinity))
+      );
+    if (pair)
       return (
         pairAheadMs(value, readyMs) < exposureMarginMs ||
         now.mono >= (pairExposedAt(value, readyMs) ?? Infinity)
       );
-    const at = atMono(item);
-    return at !== undefined && at > now.mono && aheadMs < at - now.mono;
+    return at !== undefined && aheadMs < at - now.mono;
   }
-  /** Milliseconds of Ready air ahead of `value`'s Ready clip at `index`, less what plays. */
-  function readyAheadMs(value: Session<Req>, index: number): number {
-    const waiting = waitingOf(value);
+  /** The Ready clips of `value` but the one it plays that air in turn, as `inTurn` walks them. */
+  function airingOf(value: Session<Req>): ReadonlySet<SourceClip> {
+    return new Set(inTurn(value, (clip) => airsAtPlaceOf(roster, clip, now)));
+  }
+  /**
+   * Milliseconds of Ready air ahead of `value`'s Ready clip at `index`, less what plays: the clips
+   * ahead of it there that air in turn (`airing`). A member its group holds back counts once those
+   * it waits behind have, and not behind one held back, which does not air.
+   */
+  function readyAheadMs(
+    value: Session<Req>,
+    index: number,
+    airing: ReadonlySet<SourceClip> = airingOf(value),
+  ): number {
     return readyOf(value)
       .slice(0, index)
-      .filter((other) => waiting.includes(other) && airs(other))
+      .filter((other) => airing.has(other))
       .reduce((total, other) => total + other.seconds * 1000, 0);
   }
   /**
@@ -3577,10 +4388,9 @@ const decide = <Req extends ClipRequest>(
   }
   /** When all that airs ahead of a clip built on `target` now has aired. */
   function airedAheadAt(target: Session<Req>): number {
+    // A member its group holds back airs once the members ahead of it have, before the cap too.
     const queuedMs = (value: Session<Req>): number =>
-      waitingOf(value)
-        .filter(airs)
-        .reduce((total, clip) => total + clip.seconds * 1000, 0);
+      secondsOf(waitingOf(value).filter((clip) => airsAtPlaceOf(roster, clip, now))) * 1000;
     const onAir = session(state.air);
     const startsAt =
       target.id === state.air || onAir === undefined
@@ -3636,17 +4446,24 @@ const decide = <Req extends ClipRequest>(
         readonly follows?: string | undefined;
       } {
     if (item.spec.follows !== undefined) return followContinuation(item.spec.follows, target, item);
-    const place = rankItem(item);
+    // Each clip and item counts where it will air, a member its group holds back included.
+    const ranks = new Map<PlanItem, Rank>();
+    const place = placeRank(item, ranks);
     const before = (rank: Rank) => compareRank(rank, place) < 0;
-    let best: { readonly rank: Rank; readonly clipId: string | undefined } | undefined;
+    let best:
+      | { readonly rank: Rank; readonly clipId: string | undefined; readonly elsewhere?: true }
+      | undefined;
     for (const clip of readyOf(target)) {
-      const rank = rankClip(clip);
+      const rank = rankClip(clip, ranks);
       const owner = itemOf(clip);
-      // What this item replaces, or a batch is taking off, is no predecessor.
+      // What this item replaces, or a batch is taking off, is no predecessor, nor a clip of its own,
+      // nor one whose item settled, as a read may still list it once its removal applied.
       if (
         before(rank) &&
         owner?.withdraw === undefined &&
-        (owner === undefined || (!superseded.has(owner.spec.key) && replacedOf(item) !== owner)) &&
+        !ownClip(item, clip) &&
+        (owner === undefined ||
+          (live(owner) && !superseded.has(owner.spec.key) && replacedOf(item) !== owner)) &&
         (best === undefined || compareRank(rank, best.rank) > 0)
       )
         best = { rank, clipId: clip.clipId };
@@ -3659,10 +4476,27 @@ const decide = <Req extends ClipRequest>(
         replacedOf(item) !== other &&
         (other.phase === "Accepted" || other.phase === "Building" || other.phase === "Unknown")
       ) {
-        const rank = rankItem(other);
+        const rank = placeRank(other, ranks);
         if (before(rank) && (best === undefined || compareRank(rank, best.rank) > 0))
           best = { rank, clipId: undefined };
       }
+    // The session on air airs all its Ready clips before a replacement takes over, but one waiting
+    // behind a member that airs from here is built again here, and airs between: from a clip there
+    // is nothing to continue across sessions.
+    for (const other of target.id === state.air ? [] : items.values())
+      if (
+        other.phase === "Ready" &&
+        other.sessionId === state.air &&
+        other.withdraw === undefined &&
+        !superseded.has(other.spec.key) &&
+        replacedOf(item) !== other &&
+        heldOffAir(other)
+      ) {
+        const rank = placeRank(other, ranks);
+        if (before(rank) && (best === undefined || compareRank(rank, best.rank) > 0))
+          best = { rank, clipId: undefined, elsewhere: true };
+      }
+    if (best?.elsewhere === true) return { _tag: "from", clipId: undefined };
     if (best !== undefined && best.clipId === undefined) return { _tag: "wait" };
     const predecessor =
       best?.clipId ?? (target.id === state.air ? target.source?.playing?.clipId : undefined);
@@ -3685,9 +4519,8 @@ const decide = <Req extends ClipRequest>(
   ): { readonly _tag: "wait" } | { readonly _tag: "from"; readonly clipId: string | undefined } {
     const onAir = target.id === state.air ? target.source?.playing : undefined;
     const playing = onAir !== undefined && sameClip(follows, onAir.tag);
-    const queued = waitingOf(target)
-      .filter(airs)
-      .sort((a, b) => compareRank(rankClip(a), rankClip(b)));
+    // Each Ready clip counts where it airs, a member its group holds back once it airs in turn.
+    const queued = airOrder(target, (clip) => airsAtPlaceOf(roster, clip, now));
     const index = playing ? -1 : queued.findIndex((clip) => sameClip(follows, clip.tag));
     const predecessor = playing ? onAir.clipId : queued[index]?.clipId;
     if (predecessor === undefined) {
@@ -3752,19 +4585,21 @@ const decide = <Req extends ClipRequest>(
     const playingEnd = playing.at + playing.seconds * 1000;
     if (sameClip(follows, playing.tag)) return playingEnd;
     if (item.followsAired === true) return undefined;
-    const queued = readyOf(air)
-      .filter((clip) => clip.clipId !== playing.clipId && airs(clip))
-      .sort((a, b) => compareRank(rankClip(a), rankClip(b)));
+    // Each Ready clip and item counts where it airs, a member its group holds back once it airs in
+    // turn.
+    const ranks = new Map<PlanItem, Rank>();
+    const queued = airOrder(air, (clip) => airsAtPlaceOf(roster, clip, now), ranks);
     const index = queued.findIndex((clip) => sameClip(follows, clip.tag));
-    if (index < 0) return undefined;
+    const followed = queued[index];
+    if (followed === undefined) return undefined;
     // An item not built yet that ranks ahead of that clip may still air before it.
-    const rank = rankClip(queued[index]!);
+    const rank = rankClip(followed, ranks);
     const unbuilt = [...items.values()].some(
       (other) =>
         other !== item &&
         other.withdraw === undefined &&
         (other.phase === "Accepted" || other.phase === "Building" || other.phase === "Unknown") &&
-        compareRank(rankItem(other), rank) < 0,
+        compareRank(placeRank(other, ranks), rank) < 0,
     );
     if (unbuilt) return undefined;
     return (
@@ -3844,9 +4679,15 @@ const decide = <Req extends ClipRequest>(
     const buildSeconds = rate * config.builtSeconds(item.spec.seconds);
     const readyAt = now.mono + (buildSeconds + lookaheadMarginSeconds) * 1000;
     const onAir = target.id === state.air ? target.source?.playing : undefined;
-    const queued = waitingOf(target)
-      .filter(airs)
-      .sort((a, b) => compareRank(rankClip(a), rankClip(b)));
+    // A member its group holds back airs at its place once it airs in turn, and this item, not
+    // built yet, holds none back: it airs at its place, or, an insert, behind the clip it falls back
+    // to. A clip of its own, taken off and still listed, airs nowhere it could follow.
+    const queued = airOrder(
+      target,
+      (clip) => !ownClip(item, clip) && airsAtPlaceOf(roster, clip, now),
+      new Map(),
+      (other) => other.spec.key !== item.spec.key && mayHold(other),
+    );
     const after =
       onAir?.clipId === predecessor
         ? 0
@@ -3857,7 +4698,12 @@ const decide = <Req extends ClipRequest>(
       (onAir === undefined ? 0 : playingRestMs(target)) +
       queued.slice(0, after).reduce((total, clip) => total + clip.seconds * 1000, 0);
     if (readyAt <= end) return { clipId: predecessor };
-    const behind = queued.slice(after);
+    // A place's later members wait behind it, so none of them airs first: it never follows one of
+    // theirs. An insert may, and then sits right behind that member in its group's order.
+    const behind = queued.slice(after).filter((clip) => {
+      const owner = itemOf(clip);
+      return item.inserted || owner === undefined || !holds(roster, item, owner);
+    });
     for (const [index, clip] of behind.entries()) {
       end += clip.seconds * 1000;
       if (readyAt <= end || index === behind.length - 1)
@@ -3966,11 +4812,7 @@ const decide = <Req extends ClipRequest>(
     const lowest = config.lanes[lanes - 1];
     if (
       anchor === undefined &&
-      (lowest === undefined ||
-        lowest.cut ||
-        lowest.conflict === "replace" ||
-        (lowest.conflict === "skip" &&
-          [...items.values()].some((item) => item.spec.lane === lanes - 1 && live(item))))
+      (lowest === undefined || lowest.cut || lowest.conflict === "replace" || laneBusy(lanes - 1))
     )
       return undefined;
     const spec: PlanSpec = {
@@ -3994,14 +4836,18 @@ const decide = <Req extends ClipRequest>(
         .filter((order) => order > anchor.order),
     );
     const playing = anchor.phase === "Started";
+    const order = (anchor.order + neighbour) / 2;
+    // Beside an insert that sits behind a later member, it sits behind that member too.
+    const behind = anchor.behind === undefined ? undefined : items.get(anchor.behind);
     return {
       item: newItem(spec, {
-        order: (anchor.order + neighbour) / 2,
+        order,
         group: anchor.group,
         inserted: true,
         anchor: { key: anchor.spec.key, side: "after" },
         mode: playing ? "follow" : anchor.mode,
         followsAired: aired,
+        behind: behind !== undefined && behind.order > order ? anchor.behind : undefined,
       }),
       submitAt,
       anchor: anchor.spec.key,
@@ -4066,6 +4912,23 @@ const decide = <Req extends ClipRequest>(
     );
     for (const item of followed)
       if (item.spec.follows !== undefined) followsAired.set(item, item.followsAired === true);
+    /** A group's members in the run: its items, and the clip `place` asks about if it joins. */
+    const membersIn = (group: ItemKey): ReadonlyArray<PlanItem> => {
+      const found = roster.members(group).flatMap((key) => {
+        const other = items.get(key);
+        return other === undefined ? [] : [other];
+      });
+      return hypothesis?.item.group?.key === group ? [...found, hypothesis.item] : found;
+    };
+    // Who holds each member back as the run starts: the members of its group seated before it that
+    // may still air. Each holds until it airs or goes in the run.
+    const holdersOf = new Map<PlanItem, ReadonlyArray<PlanItem>>();
+    for (const item of ordered)
+      if (item.group !== undefined)
+        holdersOf.set(
+          item,
+          membersIn(item.group.key).filter((other) => holds(roster, other, item)),
+        );
 
     // Ready now on the session on air and on the one taking new work; the clip on air is not.
     const sessions = target.id === air.id ? [air] : [air, target];
@@ -4194,6 +5057,31 @@ const decide = <Req extends ClipRequest>(
         item.spec.window?.firm === true && item.startBy !== undefined ? item.startBy : Infinity;
       return Math.min(own, firm);
     };
+    // As `breakAfter`: an item goes, and once its place is broken in the run, none of its items
+    // aired or may still air, every member of its group seated after that place goes with it.
+    const drop = (item: PlanItem): void => {
+      if (gone.has(item)) return;
+      gone.add(item);
+      const group = item.group;
+      if (group === undefined || item.inserted) return;
+      const placed = membersIn(group.key).filter(
+        (other) => other.group?.index === group.index && !other.inserted,
+      );
+      const broken =
+        !placed.some((other) => done.has(other) || startedOrUnseen(other)) &&
+        !placed.some((other) => !gone.has(other) && liveAndKnown(other));
+      if (!broken) return;
+      const seat = seatOf(roster, item);
+      for (const other of membersIn(group.key))
+        if (
+          live(other) &&
+          compareSeat(seatOf(roster, other), seat) > 0 &&
+          !done.has(other) &&
+          other.phase !== "Started" &&
+          other.startedAt === undefined
+        )
+          drop(other);
+    };
     const readyBy = (item: PlanItem, time: number): boolean =>
       item.phase === "Ready" ||
       item.phase === "Started" ||
@@ -4211,7 +5099,11 @@ const decide = <Req extends ClipRequest>(
         }) === true
       );
     };
-    // As `followHeldOf`: an anchor is ahead while it is Ready by `time`, not aired, and queued.
+    // As `behindInGroup`: one that held it as the run started holds until it airs or goes.
+    const behindIn = (item: PlanItem): boolean =>
+      (holdersOf.get(item) ?? []).some((other) => !done.has(other) && !gone.has(other));
+    // As `followHeldOf`: an anchor is ahead while it is Ready by `time`, not aired, and queued at
+    // its place.
     const held = (item: PlanItem, time: number): boolean =>
       followHeld(
         item,
@@ -4219,47 +5111,136 @@ const decide = <Req extends ClipRequest>(
         (anchor) =>
           !done.has(anchor) &&
           pool.some((clip) => clip.item === anchor && clip.readyAt <= time) &&
-          queuedAt(anchor, time),
+          queuedAtPlaceIn(anchor, time),
         (key) => items.get(key),
       );
+    // As `queuedAtPlace`.
+    const queuedAtPlaceIn = (item: PlanItem, time: number): boolean =>
+      !gone.has(item) && item.mode !== "held" && !open(item.batch, time) && !held(item, time);
     // As `queuedToAir`.
     const queuedAt = (item: PlanItem, time: number): boolean =>
-      !gone.has(item) && item.mode !== "held" && !open(item.batch, time) && !held(item, time);
+      queuedAtPlaceIn(item, time) && !behindIn(item);
     const airsAt = (clip: Projected, time: number): boolean => {
       const item = clip.item;
       if (item === undefined) return true;
       const at = atMono(item);
       return (at === undefined || at <= time) && queuedAt(item, time);
     };
-    const rankIn = (clip: Projected): Rank => {
+    // As `airsAtPlace`: what the runway counts.
+    const airsAtPlaceIn = (clip: Projected, time: number): boolean => {
       const item = clip.item;
-      if (item === undefined)
-        return clip.tag?._tag === "Filler" ? [lanes, 1, clip.tag.index, 0] : [-1, 0, 0, 0];
+      if (item === undefined) return true;
+      const at = atMono(item);
+      return (at === undefined || at <= time) && queuedAtPlaceIn(item, time);
+    };
+    // As `airRank`'s: the items whose rank is being worked out from the clip each follows.
+    const followingIn = new Set<PlanItem>();
+    /** As `airRank`, for an item in the run, its clip on `sessionId`. */
+    const airRankIn = (
+      item: PlanItem,
+      sessionId: string | undefined,
+      ranks: Map<PlanItem, Rank>,
+    ): Rank => {
       const behind =
         item.follows === undefined || item.phase === "Accepted"
           ? undefined
-          : pool.find(
-              (other) => other.clipId === item.follows && other.sessionId === clip.sessionId,
-            );
+          : pool.find((other) => other.clipId === item.follows && other.sessionId === sessionId);
       if (behind !== undefined) {
-        const rank = rankIn(behind);
-        return [rank[0], rank[1], rank[2], rank[3] + 0.5];
+        if (followingIn.has(item)) return heldRank(item);
+        followingIn.add(item);
+        const rank = rankIn(behind, ranks);
+        followingIn.delete(item);
+        return [rank[0], rank[1], rank[2], rank[3] + 0.5, rank[4]];
       }
-      if (item.mode === "asap") return [-0.5, 0, item.order, item.generation];
+      if (item.mode === "asap") return [-0.5, 0, item.order, item.generation, 0];
       return [
         item.spec.lane,
         superseded.has(item.spec.key) ? 2 : begun(item) ? 0 : 1,
         item.order,
         item.generation,
+        0,
       ];
     };
-    const byRank = (a: Projected, b: Projected): number => compareRank(rankIn(a), rankIn(b));
+    /**
+     * As `placeRank`: a member just behind the last to air of the places it waits behind in the
+     * run, each at its earliest item.
+     */
+    const placeRankIn = (
+      item: PlanItem,
+      sessionId: string | undefined,
+      ranks: Map<PlanItem, Rank>,
+    ): Rank => {
+      const known = ranks.get(item);
+      if (known !== undefined) return known;
+      const holders = (holdersOf.get(item) ?? []).filter(
+        (other) => !done.has(other) && !gone.has(other),
+      );
+      const rank = behindPlaces(airRankIn(item, sessionId, ranks), holders, seatIn, (other) =>
+        placeRankIn(other, other.sessionId, ranks),
+      );
+      ranks.set(item, rank);
+      return rank;
+    };
+    /** As `rankClip`. */
+    const rankIn = (clip: Projected, ranks: Map<PlanItem, Rank>): Rank => {
+      const item = clip.item;
+      if (item !== undefined) return placeRankIn(item, clip.sessionId, ranks);
+      return clip.tag?._tag === "Filler" ? [lanes, 1, clip.tag.index, 0, 0] : [-1, 0, 0, 0, 0];
+    };
+    /** `clips` in the order they air, each rank worked out once. */
+    const airOrderIn = (clips: ReadonlyArray<Projected>): ReadonlyArray<Projected> => {
+      const ranks = new Map<PlanItem, Rank>();
+      return clips
+        .map((clip) => ({ clip, rank: rankIn(clip, ranks) }))
+        .sort((a, b) => compareRank(a.rank, b.rank))
+        .map(({ clip }) => clip);
+    };
+    // Seats and each group's seating as the run starts: neither changes in it.
+    const seatsIn = new Map<PlanItem, Seat>();
+    const seatIn = (item: PlanItem): Seat => {
+      const known = seatsIn.get(item);
+      if (known !== undefined) return known;
+      const seat = seatOf(roster, item);
+      seatsIn.set(item, seat);
+      return seat;
+    };
+    const seatingsIn = new Map<ItemKey, Seating>();
+    const seatingIn = (group: ItemKey): Seating => {
+      const known = seatingsIn.get(group);
+      if (known !== undefined) return known;
+      const seating = seatingOf(membersIn(group), seatIn);
+      seatingsIn.set(group, seating);
+      return seating;
+    };
+    /**
+     * As `inTurnOf`: the clips Ready by `time` on each of the sessions it walks for the one taking
+     * new work, the one on air first, that `queued` keeps and that air in turn. A place counts once
+     * an item of it aired in the run, and holds no more once its items went.
+     */
+    const inTurnIn = (
+      time: number,
+      queued: (clip: Projected, time: number) => boolean,
+    ): ReadonlyArray<ReadonlyArray<Projected>> =>
+      inTurnAmong(
+        (targetId === onAir ? [onAir] : [onAir, targetId]).map((id) =>
+          pool.filter((clip) => clip.sessionId === id && clip.readyAt <= time),
+        ),
+        {
+          queued: (clip) => queued(clip, time),
+          member: (clip) => (clip.item?.group === undefined ? undefined : clip.item),
+          seat: seatIn,
+          seating: seatingIn,
+          holding: (item) => mayHold(item) && !done.has(item) && !gone.has(item),
+          began: (item) => startedOrUnseen(item) || done.has(item),
+        },
+      );
     /** Seconds of air secured on the session taking new work, as `runway` counts them at `time`. */
     const runwayAt = (time: number): number => {
       const rest = targetId === onAir && current ? Math.max(0, t - time) : 0;
-      const ready = pool
-        .filter((clip) => clip.sessionId === targetId && clip.readyAt <= time && airsAt(clip, time))
-        .reduce((total, clip) => total + clip.seconds * 1000, 0);
+      const ready = (inTurnIn(time, airsAtPlaceIn).at(-1) ?? []).reduce(
+        (total, clip) => total + clip.seconds * 1000,
+        0,
+      );
       return (rest + ready) / 1000;
     };
     /** As `followCovered`, at `time`. */
@@ -4273,7 +5254,7 @@ const decide = <Req extends ClipRequest>(
               (clip.sessionId === onAir || clip.sessionId === targetId) &&
               clip.readyAt <= time &&
               sameClip(follows, clip.tag) &&
-              (clip.item === undefined || queuedAt(clip.item, time)),
+              (clip.item === undefined || queuedAtPlaceIn(clip.item, time)),
           )
         );
       const buildMs = medianBuildMs(item.spec.lane, item.spec.seconds, false);
@@ -4281,17 +5262,13 @@ const decide = <Req extends ClipRequest>(
     };
     /** As `followCovered` counts the air ahead of a clip sent at `time`. */
     const aheadAt = (time: number): number => {
-      const readyOn = (id: string): number =>
-        pool
-          .filter(
-            (clip) =>
-              clip.sessionId === id &&
-              clip.readyAt <= time &&
-              (clip.item === undefined || queuedAt(clip.item, time)),
-          )
-          .reduce((total, clip) => total + clip.seconds * 1000, 0);
+      const queued = (clip: Projected, at: number): boolean =>
+        clip.item === undefined || queuedAtPlaceIn(clip.item, at);
+      const ready = inTurnIn(time, queued)
+        .flat()
+        .reduce((total, clip) => total + clip.seconds * 1000, 0);
       const rest = current ? Math.max(0, t - time) : 0;
-      return rest + readyOn(onAir) + (targetId === onAir ? 0 : readyOn(targetId));
+      return rest + ready;
     };
     const gapAt = (time: number): number =>
       Math.max(
@@ -4307,6 +5284,19 @@ const decide = <Req extends ClipRequest>(
       item.phase === "Accepted" && !dispatched.has(item) && !gone.has(item);
     // As `previousAdmitted`, against what the run has sent.
     const admitted = (item: PlanItem): boolean => {
+      if (item.inserted && item.group !== undefined) {
+        const seat = seatIn(item);
+        const before = membersIn(item.group.key)
+          .filter(
+            (other) =>
+              other !== item &&
+              live(other) &&
+              !gone.has(other) &&
+              compareSeat(seatIn(other), seat) < 0,
+          )
+          .sort((a, b) => compareSeat(seatIn(b), seatIn(a)))[0];
+        return before === undefined || !pendingIn(before);
+      }
       if (item.inserted) {
         const before = ordered
           .filter(
@@ -4347,22 +5337,32 @@ const decide = <Req extends ClipRequest>(
       if (item === hypothesis?.item && time < hypothesis.submitAt) return false;
       if ((item.notBefore ?? -Infinity) > time) return false;
       if (time >= deadline(item)) {
-        gone.add(item);
+        drop(item);
         return false;
       }
       const at = atMono(item);
       if (at !== undefined && at > time && time + runwayAt(time) * 1000 < at) return false;
       if (held(item, time) && !coveredFor(item, time)) return false;
-      return admitted(item) && !followsUnbuilt(item, time);
+      return admitted(item) && !followsUnbuilt(item, time) && builtBehindIn(item);
     };
+    // As `builtBehind`: each earlier member it waits behind has a clip built or building on the
+    // session taking new work, or on the session on air as the run starts.
+    const builtBehindIn = (item: PlanItem): boolean =>
+      (holdersOf.get(item) ?? []).every(
+        (other) =>
+          done.has(other) ||
+          gone.has(other) ||
+          pool.some(
+            (clip) =>
+              clip.item === other && (clip.sessionId === targetId || clip.sessionId === air.id),
+          ),
+      );
     /** When `tag` ends, as `followContinuation` projects it at `time`: on air, or Ready behind what airs first. */
     const endOf = (tag: ClipTag, time: number): number | undefined => {
       const onTarget = targetId === onAir && current;
       const last = aired.at(-1)?.clip;
       if (onTarget && last !== undefined && sameClip(tag, last.tag)) return t;
-      const queued = pool
-        .filter((clip) => clip.sessionId === targetId && clip.readyAt <= time && airsAt(clip, time))
-        .sort(byRank);
+      const queued = airOrderIn(inTurnIn(time, airsAtPlaceIn).at(-1) ?? []);
       const index = queued.findIndex((clip) => sameClip(tag, clip.tag));
       if (index < 0) return undefined;
       return (
@@ -4553,7 +5553,7 @@ const decide = <Req extends ClipRequest>(
             !open(other.item.batch, time),
         );
         if (time >= deadline(item) || (batch !== undefined && !open(batch.id, time)) || replaced)
-          gone.add(item);
+          drop(item);
       }
     };
     /** The next clip at the boundary `t`, or false once nothing more can air. */
@@ -4585,7 +5585,7 @@ const decide = <Req extends ClipRequest>(
         (clip) => !clip.projected || clip.readyAt + readinessMarginMs <= t,
       );
       const head =
-        moved.length > 0 ? moved.sort(byRank)[0] : queued.sort((a, b) => a.readyAt - b.readyAt)[0];
+        moved.length > 0 ? airOrderIn(moved)[0] : queued.sort((a, b) => a.readyAt - b.readyAt)[0];
       if (head === undefined) {
         // The plan takes back a clip waiting for the clip it follows rather than let it air first.
         for (const clip of pool)
@@ -4595,7 +5595,7 @@ const decide = <Req extends ClipRequest>(
             clip.readyAt <= t &&
             held(clip.item, t)
           )
-            gone.add(clip.item);
+            drop(clip.item);
         const upcoming = pool
           .filter(
             (clip) => clip.sessionId === onAir && (clip.item === undefined || !gone.has(clip.item)),
@@ -4625,12 +5625,12 @@ const decide = <Req extends ClipRequest>(
         const follows = other.spec.follows;
         if (follows === undefined || other === item || gone.has(other) || done.has(other)) continue;
         if (sameClip(follows, head.tag)) followsAired.set(other, true);
-        else if (followsAired.get(other) === true) gone.add(other);
+        else if (followsAired.get(other) === true) drop(other);
       }
       // What it replaces, or what replaces it, goes.
       if (item !== undefined)
         for (const other of followed)
-          if (other.replaces === item.spec.key || item.replaces === other.spec.key) gone.add(other);
+          if (other.replaces === item.spec.key || item.replaces === other.spec.key) drop(other);
       t = start + head.seconds * 1000;
       current = true;
       return true;
@@ -4716,12 +5716,16 @@ const decide = <Req extends ClipRequest>(
       later(value.autoplayRetry?.at);
       later(value.playRetry?.at);
       later(value.moveRetryAt);
+      if (value.refusedSince !== undefined && value.autoplay !== true)
+        later(value.refusedSince + refusalHoldMs);
+      let airing: ReadonlySet<SourceClip> | undefined;
       for (const [index, clip] of readyOf(value).entries()) {
         const item = itemOf(clip);
-        if (item?.phase === "Ready" && item.mode === "held")
-          later(exposedAt(value, readyAheadMs(value, index)));
-        else if (item?.phase === "Ready" && heldForFollows(item))
-          later(pairExposedAt(value, readyAheadMs(value, index)));
+        if (item?.phase === "Ready" && (item.mode === "held" || behindInGroup(roster, item))) {
+          if (!holderAhead(value, index, item))
+            later(exposedAt(value, readyAheadMs(value, index, (airing ??= airingOf(value)))));
+        } else if (item?.phase === "Ready" && heldForFollows(item))
+          later(pairExposedAt(value, readyAheadMs(value, index, (airing ??= airingOf(value)))));
       }
     }
     if (!state.openingPaused) later(state.openRetryAt);
@@ -4816,7 +5820,7 @@ export const view: {
     const playing = state.sessions.find((value) => value.id === state.air)?.playing;
     return {
       accepting: state.accepting,
-      runwaySeconds: securedOf(state, now),
+      runwaySeconds: securedOf(rosterOf(state.items), state, now),
       playing:
         playing === undefined
           ? null
@@ -4863,5 +5867,37 @@ export const decides = (
       return status.terminal === true ? { started: indeterminate, outcome: indeterminate } : {};
     default:
       return {};
+  }
+};
+
+/**
+ * How a group settled, by its first place's start, not by how that place settled: one that
+ * started and then failed aired. It played out the places, in order, that ended as finished or
+ * may have aired unseen, up to the first that did not.
+ */
+const groupOutcome = (
+  first: Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted,
+  places: readonly [Settled, ...ReadonlyArray<Settled>],
+): GroupOutcome => {
+  switch (first._tag) {
+    case "Started":
+    case "Unobserved": {
+      const stopped = places.findIndex(
+        (place) =>
+          place._tag !== "Unobserved" &&
+          !(place._tag === "Ended" && place.termination === "finished"),
+      );
+      const outcome = places[stopped];
+      return {
+        _tag: "Aired",
+        played: stopped < 0 ? places.length : stopped,
+        stopped: outcome === undefined ? undefined : { part: stopped, outcome },
+        parts: places,
+      };
+    }
+    case "Dropped":
+    case "Failed":
+    case "Unknown":
+      return { _tag: "NotAired", first };
   }
 };

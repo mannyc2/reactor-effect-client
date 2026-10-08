@@ -196,6 +196,108 @@ layer(hosted)("order", (it) => {
   );
 });
 
+layer(hosted)("group outcomes", (it) => {
+  it.effect("a group's outcome counts the places that played and names where it stopped", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const playout = yield* Playout.make({
+        open: LocalSource.open({
+          build: (local) =>
+            local.request.prompt === "two"
+              ? Effect.fail("the renderer refused")
+              : Effect.as(Effect.sleep("500 millis"), { value: undefined }),
+        }),
+        lanes: [{ name: "speech" }],
+      });
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "speech",
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+          { key: key("p3"), request: clip("three") },
+        ],
+      });
+      const outcome = yield* group.outcome;
+      if (outcome._tag !== "Aired") return yield* Effect.die(`the group settled ${outcome._tag}`);
+      assert.strictEqual(outcome.played, 1);
+      assert.strictEqual(outcome.stopped?.part, 1);
+      assert.strictEqual(outcome.stopped?.outcome._tag, "Failed");
+      assert.deepStrictEqual(outcome.parts[2], { _tag: "Dropped", reason: "withdrawn" });
+    }),
+  );
+
+  it.effect("a group whose first part is dropped never aired", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      // Due now and dropped once late: nothing can be Ready by then.
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        start: { _tag: "At", time: yield* Clock.currentTimeMillis, late: { _tag: "drop" } },
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      });
+      assert.deepStrictEqual(yield* group.outcome, {
+        _tag: "NotAired",
+        first: { _tag: "Dropped", reason: "late" },
+      });
+    }),
+  );
+
+  it.effect("a replacement that loses its race does not end the group", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        parts: [
+          { key: key("a"), request: clip("a") },
+          { key: key("b"), request: clip("b") },
+          { key: key("c"), request: clip("c") },
+        ],
+      });
+      const started = yield* group.parts[0].started;
+      if (started._tag !== "Started") return yield* Effect.die("the first part never started");
+      // b is Ready behind a; replaced a second before a ends, it starts before its replacement is
+      // built, and the replacement goes.
+      const end = started.at + started.seconds * 1000;
+      yield* Effect.sleep(Duration.millis(end - 1000 - (yield* Clock.currentTimeMillis)));
+      const replacement = yield* playout.replace(key("b"), { key: key("b2"), request: clip("b2") });
+      assert.deepStrictEqual(yield* replacement.outcome, { _tag: "Dropped", reason: "withdrawn" });
+      const outcome = yield* group.outcome;
+      assert.strictEqual(outcome._tag === "Aired" ? outcome.played : outcome._tag, 3);
+      assert.deepStrictEqual(yield* starts, ["a", "b", "c"]);
+    }),
+  );
+
+  it.effect("a replaced first part answers for its group", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const long = yield* playout.submit({
+        key: key("long"),
+        lane: "line",
+        request: clip("long", 15),
+      });
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        parts: [
+          { key: key("a"), request: clip("a") },
+          { key: key("b"), request: clip("b") },
+        ],
+      });
+      yield* long.started;
+      const replacement = yield* playout.replace(key("a"), { key: key("a2"), request: clip("a2") });
+      const started = yield* group.started;
+      assert.strictEqual(started._tag, "Started");
+      assert.deepStrictEqual(started, yield* replacement.started);
+    }),
+  );
+});
+
 layer(hosted)("tracing queued items", (it) => {
   it.effect(
     "keeps each admission's trace through waiting, duplicate submission and renewal",
@@ -547,6 +649,32 @@ layer(hosted)("edits", (it) => {
     }),
   );
 
+  it.effect("a group is refused in a skip lane while the lane is busy", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const line = {
+        key: key("line"),
+        lane: "quiet",
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      } as const;
+      const once = yield* playout.submitGroup(line);
+      // Submitted again, it is the group the lane holds, answered as it was.
+      const again = yield* playout.submitGroup(line);
+      assert.strictEqual(again.key, once.key);
+      const busy = yield* Effect.flip(
+        playout.submitGroup({
+          key: key("next"),
+          lane: "quiet",
+          parts: [{ key: key("n1"), request: clip("n1") }],
+        }),
+      );
+      assert.strictEqual(busy._tag, "LaneBusy");
+    }),
+  );
+
   // A caller retrying an insert whose first attempt landed gets that insert, not a refusal.
   it.effect("answers an insert made again once its anchor has aired with its own handle", () =>
     Effect.gen(function* () {
@@ -821,6 +949,63 @@ layer(hosted)("time", (it) => {
       assert.deepStrictEqual(yield* starts, ["a", "held"]);
       const cues = (yield* events).filter((event) => event._tag === "Cue");
       assert.strictEqual(cues.length, 1);
+    }),
+  );
+
+  // Its second part builds once the first is built, long before the group's time, and waits.
+  it.effect("a group with an At start airs its first part at its time and the rest behind it", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start({
+        filler: {
+          runway: { floor: "5 seconds", target: "8 seconds" },
+          clip: ({ index, seconds }) => clip(`idle ${index}`, seconds),
+        },
+      });
+      const measured = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      yield* measured.outcome;
+      const secured = yield* eventually(playout.state, (state) => state.runwaySeconds >= 8);
+      const due = (yield* Clock.currentTimeMillis) + secured.runwaySeconds * 1000 + 6_000;
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        start: { _tag: "At", time: due, late: { _tag: "nextBoundary" } },
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      });
+      const [first, second] = group.parts;
+      const started = yield* first.started;
+      if (started._tag !== "Started") return yield* Effect.die("the first part never started");
+      assert.isAtLeast(started.at, due);
+      // A filler tile may run over by less than one step of H3's grid.
+      assert.isBelow(started.lateByMillis ?? 0, 1_000);
+      const next = yield* (second ?? first).started;
+      if (next._tag !== "Started") return yield* Effect.die("the second part never started");
+      assert.isBelow(next.at - (started.at + started.seconds * 1000), 1_000);
+      assert.deepStrictEqual(yield* starts, ["a", "p1", "p2"]);
+    }),
+  );
+
+  it.effect("a Manual group airs once released by its key", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        start: { _tag: "Manual" },
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      });
+      yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      yield* Effect.sleep("12 seconds");
+      assert.deepStrictEqual(yield* starts, ["a"]);
+      yield* playout.release(key("line"));
+      const [first, second] = group.parts;
+      yield* (second ?? first).outcome;
+      assert.deepStrictEqual(yield* starts, ["a", "p1", "p2"]);
     }),
   );
 

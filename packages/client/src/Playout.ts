@@ -229,8 +229,16 @@ export type GroupPart<Req extends ClipRequest = Request> = ClipSpec<Req>;
 export interface GroupSpec<Req extends ClipRequest = Request> {
   readonly key: ItemKey;
   readonly lane: string;
-  /** Built in order and aired back to back; a higher lane may still go between parts. */
+  /**
+   * Built in order and aired in order, each place once the one before it has started; a higher
+   * lane may still go between.
+   */
   readonly parts: readonly [GroupPart<Req>, ...ReadonlyArray<GroupPart<Req>>];
+  /**
+   * When the first part may air, as an item's `start`; the rest follow it, with no time of their
+   * own. `Follow` by default.
+   */
+  readonly start?: Start | undefined;
   /** It applies to the first part. */
   readonly window?: Window | undefined;
 }
@@ -268,7 +276,10 @@ export interface InsertSpec<Req extends ClipRequest = Request> extends ClipSpec<
    * it behind everything queued, so it is likely refused. It is refused with
    * `InvalidItem` in a cutting lane, naming the item's own key or a group key,
    * or naming filler on a playout without filler or by an index that is not a
-   * whole number.
+   * whole number. Placed in a group, it is refused with `InvalidItem` when it
+   * would wait for a member of that group after it, which waits behind it:
+   * naming that member, or an item that waits for one in turn, by the clip it
+   * follows or behind the members of its own group before it.
    */
   readonly follows?: ClipTag | undefined;
 }
@@ -381,7 +392,44 @@ export interface ItemHandle {
 export interface GroupHandle {
   readonly key: ItemKey;
   readonly parts: readonly [ItemHandle, ...ReadonlyArray<ItemHandle>];
+  /** The first place's start, or how the group settled without one. */
+  readonly started: Effect.Effect<Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted>;
+  /** How the group settled, once every place has. */
+  readonly outcome: Effect.Effect<GroupOutcome>;
 }
+
+/**
+ * How a group settled. A place is a part with the replacements that took its place: its outcome
+ * is that of its item that started, if one did, else that of its newest. Items inserted beside
+ * parts are no places.
+ */
+export type GroupOutcome =
+  /** Its first place never started: dropped, failed, or sent with its outcome never known. */
+  | {
+      readonly _tag: "NotAired";
+      readonly first: Exclude<NotStarted, { readonly _tag: "Unobserved" }>;
+    }
+  /** Its first place started, or may have (`Unobserved`). */
+  | {
+      readonly _tag: "Aired";
+      /**
+       * How many places played out, in order, before the first that did not: `Ended` as
+       * `finished`, or `Unobserved`.
+       */
+      readonly played: number;
+      /**
+       * The first place that did not play out, and how it settled; undefined when every place
+       * played out.
+       */
+      readonly stopped: { readonly part: number; readonly outcome: Settled } | undefined;
+      /** Each place's outcome, in order. */
+      readonly parts: readonly [Settled, ...ReadonlyArray<Settled>];
+    }
+  /**
+   * The playout died and could not settle the group as it closed: what aired is not known. A
+   * playout that closes settles each place it had not, so its groups are `Aired` or `NotAired`.
+   */
+  | { readonly _tag: "Indeterminate" };
 
 export type EditResult =
   | { readonly _tag: "Added"; readonly handle: ItemHandle }
@@ -664,7 +712,10 @@ export interface ClipModel<Req extends ClipRequest = Request> {
  *   died, and at once if not. Until its autoplay is as wanted, a session is
  *   sent nothing else but, as it retires, the removal of its filler once its
  *   replacement has an item Ready, and, before autoplay comes on, the removal
- *   of a clip the playout withdrew. A `stop` or `play` ends its cut, and the
+ *   of a clip the playout withdrew or took off to build again. Removals that
+ *   do not apply one after another, refused or with their outcome unknown,
+ *   hold autoplay off for a second at most: then it comes on as wanted, and
+ *   the removal is still asked. A `stop` or `play` ends its cut, and the
  *   cutter airs at the next boundary.
  * - `play` also starts clips outside a cut: while a `follows` item fences a
  *   session's autoplay, the playout starts that session's Ready head itself.
@@ -834,12 +885,20 @@ export interface Cleanup {
 
 export interface Service<Req extends ClipRequest = Request> {
   readonly submit: (item: ItemSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
+  /**
+   * Parts that air in order, each place, a part and any replacement of it, once the one before it
+   * has started. A place that fails, on air too, is dropped, or is sent with its outcome never
+   * known ends the group: every part and insert after it goes as `withdrawn`. One that may have
+   * aired unseen (`Unobserved`) does not. The handle's `outcome` says how many places played and
+   * where the group stopped.
+   */
   readonly submitGroup: (group: GroupSpec<Req>) => Effect.Effect<GroupHandle, SubmitError>;
   readonly insert: (spec: InsertSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
   /**
-   * Builds `next` for the item's place, lane, group position and the clip it
-   * `follows`. Once `next` is Ready the item goes as `replaced`; if the item
-   * starts first, `next` is dropped as `withdrawn`.
+   * Builds `next` for the item's place, lane, group position, start and the
+   * clip it `follows`, and for a group's part, its window too: a place has one
+   * time. Once `next` is Ready the item goes as `replaced`; if the item starts
+   * first, `next` is dropped as `withdrawn`.
    */
   readonly replace: (
     key: ItemKey,
@@ -851,7 +910,10 @@ export interface Service<Req extends ClipRequest = Request> {
    * until everything it adds is Ready or settled.
    */
   readonly edit: (edits: ReadonlyArray<Edit<Req>>) => Effect.Effect<EditHandle, SubmitError>;
-  /** Releases a held `Manual` item to air at the next boundary. */
+  /**
+   * Releases a held `Manual` item to air at the next boundary. A group key releases the group's
+   * held first part, and any replacement of it; the rest follow it.
+   */
   readonly release: (key: ItemKey) => Effect.Effect<void, InvalidItem>;
   /**
    * Where a clip like `probe` would land: at the first boundary of the
