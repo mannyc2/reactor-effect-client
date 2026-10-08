@@ -13,6 +13,7 @@ import {
   item,
   key,
   measured,
+  renewing,
   source,
   spec,
 } from "./PlayoutPolicy.js";
@@ -2631,6 +2632,75 @@ describe("PlayoutPolicy, wakes", () => {
 describe("PlayoutPolicy, any script", () => {
   for (const script of counterexamples)
     it(`keeps every promise of the plan for ${script.join(", ")}`, () => check(script));
+  // The renewals property's counterexample, shrunk: an insert before a group whose build went out
+  // continuing from the group's first part sits behind that part, so when Close breaks the part's
+  // place it goes with the parts after it, withdrawn, though its own order comes first.
+  it("keeps every promise of the plan across renewals for an insert seated behind a part", () =>
+    check(
+      [
+        "withdraw",
+        "denied",
+        "insert",
+        "unknown",
+        "submit",
+        "withdraw",
+        "replace",
+        "replace",
+        "refused",
+        "start",
+        "batch",
+        "batch",
+        "submit",
+        "insert",
+        "refused",
+        "group",
+        "fail",
+        "open",
+        "withdraw",
+        "start",
+        "insert",
+        "done",
+        "open",
+        "ready",
+        "replace",
+        "refused",
+        "insert",
+        "insert",
+        "replace",
+        "submit",
+        "tick",
+        "wake",
+        "group",
+        "end",
+        "group",
+        "batch",
+        "submit",
+        "tick",
+        "urgent",
+        "urgent",
+        "lost",
+        "replace",
+        "done",
+        "lost",
+        "denied",
+        "insert",
+        "wake",
+        "wake",
+        "lost",
+        "urgent",
+        "unknown",
+        "unknown",
+        "refused",
+        "group",
+        "refused",
+        "fail",
+        "start",
+        "tick",
+        "insert",
+        "denied",
+      ],
+      renewing,
+    ));
 });
 
 // Claims from the critique's delegated pass, each checked here before any fix.
