@@ -1079,9 +1079,9 @@ export interface Service<Req extends ClipRequest = Request> {
    * there is. An item it submits or inserts, or a group's first
    * part, due by a firm `startBy` is checked against the plan as the batch will
    * run and is not held: it airs as soon as it can, and builds ahead of every
-   * other item waiting in its lane except an `Asap` one. An insert may anchor on
-   * an item or group the batch adds, and beside one the batch holds it is held
-   * too, whatever its window: a firm one is then checked as the batch will run,
+   * other item waiting in its lane except an `Asap` one. An insert, or an
+   * inserted group, may anchor on an item or group the batch adds, and beside
+   * one the batch holds it is held too, whatever its window: a firm one is then checked as the batch will run,
    * or as it would be alone if it follows a clip or cuts, and while held is
    * dropped as `late` only at its `startBy`. A batch whose
    * `Withdraw` or `Replace` names an item or group it adds is refused with

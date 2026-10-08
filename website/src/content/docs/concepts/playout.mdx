@@ -106,6 +106,8 @@ export const lanes: ReadonlyArray<Playout.LaneSpec> = [
   { name: "viewer", conflict: "skip" },
   // A new item replaces the one waiting.
   { name: "ticker", conflict: "replace" },
+  // Airs its items in the order of their places, whatever their times.
+  { name: "line", strict: true },
   // Waits behind its lane's items: the default.
   { name: "show" },
 ];
@@ -117,6 +119,12 @@ export const lanes: ReadonlyArray<Playout.LaneSpec> = [
 - **`skip`**: a new item is refused with `LaneBusy` while the lane has one waiting or playing.
 - **`cut: true`**: once its own item is Ready, the lane stops a playing clip of a strictly lower
   lane, or filler, unless that clip ends within a second. A clip is stopped at most once.
+- **`strict: true`**: the lane airs its items in the order of their places, submissions at the end
+  and inserts beside their anchors, whatever their starts: an item waits while one placed before it
+  is live and not on air yet, unless that one was sent with its outcome never seen, or is being
+  withdrawn. A slow item holds up those after it until it airs or its own deadline drops it, so
+  give the lane's items deadlines. `Asap` and `Manual` starts are refused there with
+  `InvalidItem`.
 
 On hosted H3, `stop` names no clip and lands after its reply, so a cut goes a step at a time: the
 playout turns autoplay off, stops the clip if it still plays, waits for H3 to report it ended,
@@ -152,7 +160,8 @@ and the Ready clips that will air after it, on the session on air and then on it
 
 ## Starts and windows
 
-An item's `start` says when it may air. Only `Follow` keeps its lane's order.
+An item's `start` says when it may air. Only `Follow` keeps its lane's order, and any start in a
+strict lane.
 
 | `start`             | Airs                                                                                                                       |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
@@ -162,11 +171,18 @@ An item's `start` says when it may air. Only `Follow` keeps its lane's order.
 | `At { time, late }` | At the first boundary after `time` (epoch milliseconds, wall clock)                                                        |
 
 `late` says what to do when that boundary comes late: `nextBoundary`, `skipIfLaterThan` a
-duration, or `drop`. A `window` adds `notBefore` and `startBy`, measured from submission on the
-monotonic clock. A `firm` item is dropped at `startBy` with reason `late`, and refused up front
-with `WouldMissDeadline` when the plan cannot make it; a soft one may still air, with
-`lateByMillis` on its start. A start already under way at a deadline, a clip H3 holds armed for
-its seam or a `play` of it in flight, may still land, up to a command's round trip past it.
+duration, `drop`, or `readyBy` a duration. `readyBy` judges the item once, that long after its
+time: it is kept if it was Ready by then and nothing but filler airs before it, the clip on air and
+the Ready clips ahead of it, and then airs at the next boundary however late; otherwise it is
+dropped as `late` then. So a clip made in time may wait out an idle clip that cannot be cut short,
+while one not made by then, or waiting behind another item, goes. A firm `startBy` still applies,
+and a replacement of a kept item is kept too.
+
+A `window` adds `notBefore` and `startBy`, measured from submission on the monotonic clock. A `firm`
+item is dropped at `startBy` with reason `late`, and refused up front with `WouldMissDeadline` when
+the plan cannot make it; a soft one may still air, with `lateByMillis` on its start. A start already
+under way at a deadline, a clip H3 holds armed for its seam or a `play` of it in flight, may still
+land, up to a command's round trip past it.
 
 ```ts
 import { Clock, Effect } from "effect";
@@ -265,6 +281,7 @@ replaces it is Ready.
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `submitGroup(group)` | Parts aired in order, each once the one before it started; a higher lane may go between. See [Groups](#groups)                                     |
 | `insert(spec)`       | A clip right `before` or `after` an item, taking its lane, place, group and start                                                                  |
+| `insertGroup(spec)`  | A group right `before` or `after` an item in a strict lane, its first part taking the item's start as an insert does. See [Lines](#lines)          |
 | `replace(key, next)` | A new clip for a queued item's place; if the item starts first, `next` is dropped as `withdrawn`                                                   |
 | `edit(edits)`        | Several of these, checked together and applied as one change                                                                                       |
 | `withdraw(key)`      | Answers `withdrawn`, `already-started` or `not-found`                                                                                              |
@@ -382,6 +399,82 @@ After a session is lost unplanned, the next session takes a part that would air 
 the part ahead of it off before its autoplay comes on; if that removal fails, the part may air
 once out of order, and the as-run shows it. Group order has run only on the simulated Reactor and
 in the policy's property checks, not on hosted H3.
+
+### Lines
+
+A stream of groups that answer moments on air, such as a host's lines, goes in a strict lane, so
+that the lines air first in, first out: one written late for an older moment never overtakes the
+line before it. Each line is a group whose `At` start is its moment, judged by `readyBy`: made in
+time, it may wait out the idle clip playing then; not made, it goes, and the lines after it move
+up. An acknowledgement of something on air is a group inserted beside a line, sent with the
+replacement it calls for in one `edit`.
+
+```ts
+import { Clock, Effect } from "effect";
+import { Playout } from "reactor-effect-client";
+
+export const say = Effect.fn("say")(function* (
+  playout: Playout.Playout["Service"],
+  moment: number,
+) {
+  // The line airs at its moment, or behind the line before it, if made within 4 s of it.
+  yield* playout.submitGroup({
+    key: Playout.ItemKey.make(`line-${moment}`),
+    lane: "line",
+    start: { _tag: "At", time: moment, late: { _tag: "readyBy", by: "4 seconds" } },
+    parts: [
+      {
+        key: Playout.ItemKey.make(`line-${moment}-a`),
+        request: { prompt: "The host looks up from the desk", seconds: 5 },
+      },
+      {
+        key: Playout.ItemKey.make(`line-${moment}-b`),
+        request: { prompt: "The host answers, smiling", seconds: 5 },
+      },
+    ],
+  });
+});
+
+export const acknowledge = Effect.fn("acknowledge")(function* (
+  playout: Playout.Playout["Service"],
+  moment: number,
+) {
+  const now = yield* Clock.currentTimeMillis;
+  // A nod right after the line's first beat, and its second beat rewritten to follow it.
+  const batch = yield* playout.edit([
+    {
+      _tag: "InsertGroup",
+      insert: {
+        key: Playout.ItemKey.make(`nod-${now}`),
+        after: Playout.ItemKey.make(`line-${moment}-a`),
+        parts: [
+          {
+            key: Playout.ItemKey.make(`nod-${now}-a`),
+            request: { prompt: "The host nods at the caller", seconds: 5 },
+          },
+        ],
+      },
+    },
+    {
+      _tag: "Replace",
+      key: Playout.ItemKey.make(`line-${moment}-b`),
+      next: {
+        key: Playout.ItemKey.make(`line-${moment}-b2`),
+        request: { prompt: "The host answers the caller", seconds: 5 },
+      },
+    },
+  ]);
+  yield* batch.committed;
+});
+```
+
+An inserted group takes the anchor's lane and a place right beside it, its first part the
+anchor's start as an insert does (after an `At` anchor, without its lateness), and its `window`;
+the rest follow it. It is refused with `InvalidItem` in a lane that is not strict, where what is
+placed after it need not wait for it, and its anchor and side are part of it, as an insert's are.
+In a batch it follows the batch's rules: a first part due by a firm `startBy` is not held, and it
+may anchor on what the batch adds. Strict lanes, `readyBy` and inserted groups have run only on
+the simulated Reactor and in the policy's property checks, not on hosted H3.
 
 ## Placement
 
