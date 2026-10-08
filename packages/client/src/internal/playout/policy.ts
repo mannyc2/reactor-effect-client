@@ -1713,8 +1713,9 @@ const decide = <Req extends ClipRequest>(
   /**
    * Why a forward run cannot place `item`, airing or dropping it, or undefined: one settled,
    * started or being withdrawn is placed already. A member waits behind those of its group that
-   * hold it, `holders`, and a follower behind the item whose clip it follows until that clip airs.
-   * `memo` keeps what one reading worked out.
+   * hold it, `holders`; a follower behind the item whose clip it follows until that clip airs; and
+   * an add of a pending batch behind the batch's other adds not Ready yet, since the batch holds
+   * them all until each is. `memo` keeps what one reading worked out.
    */
   const unplaceable = (
     item: PlanItem,
@@ -1745,10 +1746,27 @@ const decide = <Req extends ClipRequest>(
     const follows = item.spec.follows;
     const followed =
       follows?._tag === "Item" && item.followsAired !== true ? items.get(follows.key) : undefined;
-    const behind = followed === undefined ? holders(item) : [...holders(item), followed];
+    const behind = [
+      ...holders(item),
+      ...(followed === undefined ? [] : [followed]),
+      ...batchedWith(item),
+    ];
     return behind.some((other) => unplaceable(other, holders, memo) !== undefined)
       ? "blocked"
       : undefined;
+  };
+  /** The other adds of the pending batch that holds `item` that are not Ready, started or settled. */
+  const batchedWith = (item: PlanItem): ReadonlyArray<PlanItem> => {
+    const batch =
+      item.batch === undefined ? undefined : state.batches.find((value) => value.id === item.batch);
+    return (batch?.adds ?? []).flatMap((key) => {
+      const other = items.get(key);
+      return other !== undefined &&
+        other !== item &&
+        (other.phase === "Accepted" || other.phase === "Building" || other.phase === "Unknown")
+        ? [other]
+        : [];
+    });
   };
   /** Whether a lane that skips while busy refuses what is new: it has an item waiting or playing. */
   const laneBusy = (lane: number): boolean =>
@@ -5225,6 +5243,10 @@ const decide = <Req extends ClipRequest>(
     const drop = (item: PlanItem, reason: DropReason, at: number): void => {
       if (gone.has(item)) return;
       gone.set(item, { reason, at });
+      // As `followsGone`, in a run until placed: a follower still waiting for the item's clip goes
+      // with it as `displaced`, and its own followers with it in turn.
+      if (until._tag === "Placed")
+        for (const other of followed) if (waitsFor(other, item)) drop(other, "displaced", at);
       const group = item.group;
       if (group === undefined || item.inserted) return;
       const placed = membersIn(group.key).filter(
@@ -5244,6 +5266,16 @@ const decide = <Req extends ClipRequest>(
           other.startedAt === undefined
         )
           drop(other, "withdrawn", at);
+    };
+    /** Whether `follower` follows `item`'s clip and has neither aired nor seen that clip air. */
+    const waitsFor = (follower: PlanItem, item: PlanItem): boolean => {
+      const follows = follower.spec.follows;
+      return (
+        follows?._tag === "Item" &&
+        follows.key === item.spec.key &&
+        !done.has(follower) &&
+        followsAired.get(follower) !== true
+      );
     };
     const readyBy = (item: PlanItem, time: number): boolean =>
       item.phase === "Ready" ||
@@ -5499,8 +5531,9 @@ const decide = <Req extends ClipRequest>(
       if (!pendingIn(item)) return false;
       if (item === hypothesis?.item && time < hypothesis.submitAt) return false;
       if ((item.notBefore ?? -Infinity) > time) return false;
+      // It went late at its deadline, though the run looks only as the next build could go.
       if (time >= deadline(item)) {
-        drop(item, "late", time);
+        drop(item, "late", Math.min(time, deadline(item)));
         return false;
       }
       const at = atMono(item);
@@ -5719,7 +5752,7 @@ const decide = <Req extends ClipRequest>(
             other.readyAt <= time &&
             !open(other.item.batch, time),
         );
-        if (time >= deadline(item)) drop(item, "late", time);
+        if (time >= deadline(item)) drop(item, "late", Math.min(time, deadline(item)));
         else if (replaced) drop(item, "replaced", time);
         else if (batch !== undefined && target !== undefined && !open(batch.id, time))
           drop(item, target.reason, time);
