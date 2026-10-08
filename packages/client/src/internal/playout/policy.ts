@@ -278,7 +278,11 @@ interface Item<Req extends ClipRequest = Request> {
   /** Where an insert was placed, which a resubmission under its key must repeat. */
   readonly anchor?: { readonly key: ItemKey; readonly side: "before" | "after" } | undefined;
   readonly replaces?: ItemKey | undefined;
-  /** The pending batch that added it: it builds, but does not air until the batch commits. */
+  /**
+   * The pending batch that added it and holds it: it builds, but does not air until the batch
+   * commits. An add due by a firm deadline has none, unless it replaces an item or is inserted
+   * beside one the batch holds.
+   */
   readonly batch?: number | undefined;
   readonly mode: "follow" | "asap" | "held";
   readonly phase: Phase;
@@ -1732,8 +1736,8 @@ const decide = <Req extends ClipRequest>(
    * Why a forward run cannot place `item`, airing or dropping it, or undefined: one settled,
    * started or being withdrawn is placed already. A member waits behind those of its group that
    * hold it, `holders`; a follower behind the item whose clip it follows until that clip airs; and
-   * an add of a pending batch behind the batch's other adds not Ready yet, since the batch holds
-   * them all until each is. `memo` keeps what one reading worked out.
+   * an add a pending batch holds behind the batch's other adds not Ready yet, since the batch holds
+   * it until each is, or one starts. `memo` keeps what one reading worked out.
    */
   const unplaceable = (
     item: PlanItem,

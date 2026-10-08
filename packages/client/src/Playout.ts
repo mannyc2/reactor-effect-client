@@ -559,8 +559,10 @@ export type EditResult =
 export interface EditHandle {
   readonly results: ReadonlyArray<EditResult>;
   /**
-   * The batch took effect together: every clip it adds is Ready or settled,
-   * and what it withdraws or replaces went at once.
+   * The batch took effect together: every clip it adds is Ready or settled, or
+   * one of them started, and what it withdraws went at once. An item it
+   * replaces stays as cover until its replacement is Ready, and airs instead if
+   * it starts first.
    */
   readonly committed: Effect.Effect<void, PlayoutClosed>;
 }
@@ -1015,10 +1017,15 @@ export interface Service<Req extends ClipRequest = Request> {
   readonly submitGroup: (group: GroupSpec<Req>) => Effect.Effect<GroupHandle, SubmitError>;
   readonly insert: (spec: InsertSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
   /**
-   * Builds `next` for the item's place, lane, group position, start and the
-   * clip it `follows`, and for a group's part, its window too: a place has one
-   * time. Once `next` is Ready the item goes as `replaced`; if the item starts
-   * first, `next` is dropped as `withdrawn`.
+   * Builds `next` for the item's place, lane, group position, start, window and
+   * the clip it `follows`, the window's `notBefore` and `startBy` measured from
+   * the item's own submission: a place has one time. A firm item's replacement
+   * is not checked against that `startBy` when admitted, nor dropped for a
+   * projected miss of it, since the item airs as cover; it is dropped as `late`
+   * at the deadline it took over. Once `next` is Ready the item goes as
+   * `replaced`; if the item starts first, `next` is dropped as `withdrawn`.
+   * `next` builds ahead of every other item waiting in its lane except an
+   * `Asap` one and the adds a pending batch does not hold.
    */
   readonly replace: (
     key: ItemKey,
@@ -1026,8 +1033,18 @@ export interface Service<Req extends ClipRequest = Request> {
   ) => Effect.Effect<ItemHandle, SubmitError>;
   /**
    * Several edits as one make-before-break change: all are checked before any
-   * takes effect, and what the batch withdraws or replaces stays as cover
-   * until everything it adds is Ready or settled.
+   * takes effect. The batch holds what it adds from the air until all of it is
+   * Ready or settled, or until any of it starts, and what it withdraws or
+   * replaces stays as cover until then; an item it replaces stays on until its
+   * replacement is Ready. An item it submits or inserts, or a group's first
+   * part, due by a firm `startBy` is checked against the plan as the batch will
+   * run and is not held: it airs as soon as it can, and builds ahead of every
+   * other item waiting in its lane except an `Asap` one. An insert may anchor on
+   * an item or group the batch adds, and beside one the batch holds it is held
+   * too, whatever its window. A batch that withdraws or replaces what it adds
+   * is refused with `InvalidItem`. An insert before an add the batch does not
+   * hold, with no firm window of its own, is held, so it may air after that
+   * add: give it a firm window too, or send it as its own edit.
    */
   readonly edit: (edits: ReadonlyArray<Edit<Req>>) => Effect.Effect<EditHandle, SubmitError>;
   /**
