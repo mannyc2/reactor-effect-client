@@ -1168,6 +1168,59 @@ layer(seamed)("admission", (it) => {
       ]);
     }),
   );
+
+  // An acknowledgement of what is on air: an insert due in the slot right after it, and in the
+  // same edit a replacement of the clip after that, whose words follow the insert. The clip on air
+  // outlasts the insert's build, but not both builds.
+  it.effect("a firm insert batched with a replacement builds first and airs in its slot", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      // Three builds measured, so the plan projects each item's build from the median.
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const handle of measured) yield* handle.outcome;
+      const x = yield* playout.submit({ key: key("x"), lane: "line", request: clip("x", 15) });
+      const y = yield* playout.submit({ key: key("y"), lane: "line", request: clip("y") });
+      const started = yield* x.started;
+      if (started._tag !== "Started") return yield* Effect.die(`x ${started._tag}`);
+      const end = started.at + started.seconds * 1000;
+      yield* Effect.sleep(Duration.millis(end - 5_000 - (yield* Clock.currentTimeMillis)));
+      // The plan counts a build per second of the length H3 builds, and each build measured asked
+      // for 5 s.
+      const median = (yield* playout.state).estimates.build?.median ?? 0;
+      const perBuilt = (median * 5) / H3Source.model.builtSeconds(5);
+      const buildMs = (seconds: number) => H3Source.model.builtSeconds(seconds) * perBuilt * 1_000;
+      const rest = end - (yield* Clock.currentTimeMillis);
+      assert.isTrue(
+        buildMs(5) < rest && rest < buildMs(5) + buildMs(15),
+        `${rest.toFixed(0)} ms of x left, builds of ${buildMs(5).toFixed(0)} and ${buildMs(15).toFixed(0)} ms`,
+      );
+      const { results } = yield* playout.edit([
+        {
+          _tag: "Insert",
+          insert: {
+            key: key("u"),
+            after: key("x"),
+            request: clip("u"),
+            window: { startBy: Duration.millis(rest + 1_500), firm: true },
+          },
+        },
+        { _tag: "Replace", key: key("y"), next: { key: key("y2"), request: clip("y2", 15) } },
+      ]);
+      const [u, next] = results;
+      if (u?._tag !== "Added" || next?._tag !== "Added") return yield* Effect.die("not added");
+      const aired = yield* u.handle.started;
+      assert.deepStrictEqual(aired._tag === "Started" ? aired.lateByMillis : aired, undefined);
+      const order = yield* starts;
+      assert.deepStrictEqual(order.slice(order.indexOf("x"), order.indexOf("x") + 2), ["x", "u"]);
+      // The replacement took y's place once Ready, or y aired first and the replacement went.
+      const fates = [yield* y.outcome, yield* next.handle.outcome].map((outcome) =>
+        outcome._tag === "Dropped" ? `Dropped ${outcome.reason}` : outcome._tag,
+      );
+      assert.oneOf(fates.join(", "), ["Dropped replaced, Ended", "Ended, Dropped withdrawn"]);
+    }),
+  );
 });
 
 layer(seamed)("follows", (it) => {
