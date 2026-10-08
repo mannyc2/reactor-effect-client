@@ -2828,6 +2828,27 @@ describe("PlayoutPolicy, edit claims", () => {
     boundary(policy, "s1", held, policy.now() + 5_000);
     assert.deepStrictEqual(startOrder(policy.actions), ["a", "b"]);
   });
+
+  it("a firm item's replacement is dropped at the deadline it took over", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    policy.submit({ ...spec("y"), window: { startByMs: 4_000, firm: true } }, 10);
+    policy.reply({ _tag: "Done", clipId: "c-y" });
+    policy.observe({ building: [clip("c-y", item("y"))] });
+    // y builds on, so its replacement is never built: y's deadline at 4,010 is the place's. It goes
+    // then and not before, though projected to miss it, since y would air as cover.
+    policy.edit([{ _tag: "Replace", key: key("y"), spec: spec("y2") }]);
+    policy.tick(4_009);
+    assert.deepStrictEqual(statuses(policy.actions, "y2"), ["Accepted"]);
+    const { actions } = policy.tick(4_010);
+    const due = actions.flatMap((action) =>
+      action._tag === "Emit" && action.event._tag === "AsRun" && action.event.event.key === "y2"
+        ? [action.event.event.status]
+        : [],
+    );
+    assert.deepStrictEqual(due, [{ _tag: "Dropped", reason: "late" }]);
+  });
 });
 
 describe("PlayoutPolicy, groups", () => {
@@ -4387,7 +4408,7 @@ describe("PlayoutPolicy, groups", () => {
     );
   });
 
-  // k went in before i, an insert held unbuilt by its window, and i was replaced by ir: as nothing
+  // k went in before i, an insert its session refused unsent, and i was replaced by ir: as nothing
   // was built for i, ir took its place at once, before ir's build fell back to p2's clip and sat
   // behind p2. k, placed beside the item ir replaced, stayed at its own order.
   it("moves an insert beside a replaced item that was never built with the replacement's seat", () => {
@@ -4405,15 +4426,12 @@ describe("PlayoutPolicy, groups", () => {
     shown(policy, "s1", held, 13_001);
     policy.edit([group(1, ["p1", "p2"])], false, 13_100);
     provide(policy, "s1", 6, held, log);
-    const later = { notBeforeMs: 120_000, firm: false } as const;
-    policy.edit([
-      {
-        _tag: "Insert",
-        spec: { ...spec("i", 1, 3), window: later },
-        anchor: key("p1"),
-        side: "after",
-      },
-    ]);
+    policy.edit([{ _tag: "Insert", spec: spec("i", 1, 3), anchor: key("p1"), side: "after" }]);
+    // Refused unsent, i goes to its session again only once that session's availability changes,
+    // which a replacement of it does not wait for, as it would for i's window.
+    const sent = policy.busy();
+    assert.deepStrictEqual(sent?._tag === "Enqueue" ? sent.tag : sent, item("i"));
+    policy.reply(failed("not-submitted"));
     policy.edit([{ _tag: "Insert", spec: spec("k", 1, 3), anchor: key("i"), side: "before" }]);
     provide(policy, "s1", 4, held, log);
     readyIn(held, "k");
