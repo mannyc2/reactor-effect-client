@@ -1322,6 +1322,8 @@ interface Projected {
   readonly readyAt: number;
   /** A build still to finish when the run starts. */
   readonly projected: boolean;
+  /** A build in flight as the run starts, not one the run sends. */
+  readonly flight: boolean;
   readonly continued: boolean;
 }
 
@@ -1355,9 +1357,18 @@ interface Run {
         readonly index: number | undefined;
       }
     | undefined;
-  /** Items the run dropped or displaced. */
-  readonly gone: ReadonlySet<PlanItem>;
+  /** Items the run dropped or displaced, why, and when on the monotonic clock. */
+  readonly gone: ReadonlyMap<PlanItem, { readonly reason: DropReason; readonly at: number }>;
 }
+
+/** Where a forward run stops: once `limit` clips aired, or once it placed every item it can. */
+type Until = { readonly _tag: "Clips"; readonly limit: number } | { readonly _tag: "Placed" };
+
+/**
+ * Why a forward run cannot place an item: held until released, sent with its outcome never seen,
+ * waiting to cut a lower lane, which the run does not project, or waiting behind one of these.
+ */
+type Unplaceable = "held" | "unknown" | "cut" | "blocked";
 
 /** `unmeasured` before three builds are measured; else whether what it rests on is projected. */
 const basisOf = (unmeasured: boolean, projected: boolean): Placement["basis"] => {
@@ -1684,6 +1695,46 @@ const decide = <Req extends ClipRequest>(
   };
   const heldForFollows = (item: Item<Req>): boolean => followHeldOf(roster, item);
   const cuts = (item: PlanItem): boolean => config.lanes[item.spec.lane]?.cut === true;
+  /**
+   * Why a forward run cannot place `item`, airing or dropping it, or undefined: one settled,
+   * started or being withdrawn is placed already. A member waits behind those of its group that
+   * hold it, `holders`, and a follower behind the item whose clip it follows until that clip airs.
+   * `memo` keeps what one reading worked out.
+   */
+  const unplaceable = (
+    item: PlanItem,
+    holders: (item: PlanItem) => ReadonlyArray<PlanItem>,
+    memo: Map<PlanItem, Unplaceable | undefined>,
+  ): Unplaceable | undefined => {
+    if (memo.has(item)) return memo.get(item);
+    // Items that wait on one another round to one met already end there.
+    memo.set(item, undefined);
+    const why = whyUnplaceable(item, holders, memo);
+    memo.set(item, why);
+    return why;
+  };
+  const placedAlready = (item: PlanItem): boolean =>
+    !live(item) ||
+    item.withdraw !== undefined ||
+    item.phase === "Started" ||
+    item.startedAt !== undefined;
+  const whyUnplaceable = (
+    item: PlanItem,
+    holders: (item: PlanItem) => ReadonlyArray<PlanItem>,
+    memo: Map<PlanItem, Unplaceable | undefined>,
+  ): Unplaceable | undefined => {
+    if (placedAlready(item)) return undefined;
+    if (item.mode === "held") return "held";
+    if (item.phase === "Unknown") return "unknown";
+    if (cuts(item)) return "cut";
+    const follows = item.spec.follows;
+    const followed =
+      follows?._tag === "Item" && item.followsAired !== true ? items.get(follows.key) : undefined;
+    const behind = followed === undefined ? holders(item) : [...holders(item), followed];
+    return behind.some((other) => unplaceable(other, holders, memo) !== undefined)
+      ? "blocked"
+      : undefined;
+  };
   /** Whether a lane that skips while busy refuses what is new: it has an item waiting or playing. */
   const laneBusy = (lane: number): boolean =>
     config.lanes[lane]?.conflict === "skip" &&
@@ -2340,12 +2391,13 @@ const decide = <Req extends ClipRequest>(
     // for the first item the projection does not refuse.
     let run: Run | undefined;
     const forwardRun = (): Run =>
-      (run ??= forward(
-        undefined,
-        [...items.values()].filter(live).length +
+      (run ??= forward(undefined, {
+        _tag: "Clips",
+        limit:
+          [...items.values()].filter(live).length +
           Math.ceil((Math.max(...deadlines) - now.mono) / 1000) +
           1,
-      ));
+      }));
     const memo = emptyMemo();
     for (const key of adds) {
       const item = items.get(key)!;
@@ -4734,7 +4786,7 @@ const decide = <Req extends ClipRequest>(
           item.phase === "Unknown" && (item.sessionId === air.id || item.sessionId === target.id),
       );
     const last = state.lastOnAir;
-    const base = forward(undefined, 40);
+    const base = forward(undefined, { _tag: "Clips", limit: 40 });
     // With nothing on air, the clip that aired last may still be followed, across the gap.
     const lastClip: Projected | undefined =
       air.playing !== undefined || last === undefined
@@ -4747,6 +4799,7 @@ const decide = <Req extends ClipRequest>(
             seconds: 0,
             readyAt: -Infinity,
             projected: false,
+            flight: false,
             continued: false,
           };
     const candidates = [
@@ -4764,10 +4817,10 @@ const decide = <Req extends ClipRequest>(
       if (item !== undefined && cuts(item) && item.phase !== "Started") continue;
       const hypothesis = hypothesize(candidate.clip, tag, candidate.aired, probe);
       if (hypothesis === undefined) continue;
-      const run = forward(hypothesis, 0);
+      const run = forward(hypothesis, { _tag: "Clips", limit: 0 });
       const index = run.probe?.index;
       if (run.probe === undefined || index === undefined) continue;
-      if ([...run.gone].some((other) => other !== hypothesis.item && airedBase.has(other)))
+      if ([...run.gone.keys()].some((other) => other !== hypothesis.item && airedBase.has(other)))
         continue;
       const before = index === 0 ? undefined : run.aired[index - 1];
       const previous = before === undefined ? lastClip?.tag : before.clip.tag;
@@ -4862,13 +4915,14 @@ const decide = <Req extends ClipRequest>(
    * to the replacement once one is open, or from the lead before the cap, when the plan opens one;
    * until then what cannot air before the cap waits for it, and the air moves to it once the
    * session on air has nothing left. With `hypothesis`, the run ends once it aired and a clip after
-   * it did, or once it is gone; without, after `limit` clips.
+   * it did, or once it is gone; without, as `until` says: after `limit` clips, or once each item it
+   * can place aired or went.
    */
-  function forward(hypothesis: Hypothesis | undefined, limit: number): Run {
+  function forward(hypothesis: Hypothesis | undefined, until: Until): Run {
     const air = session(state.air);
     const target = preferred() ?? air;
     if (air === undefined || target === undefined)
-      return { aired: [], probe: undefined, gone: new Set() };
+      return { aired: [], probe: undefined, gone: new Map() };
     // New work goes to the replacement from `opensAt` on: one opening now, or the one the plan
     // opens its lead before the cap of the session on air, taken to open at once.
     const replacement = state.sessions.find((value) => value.id !== air.id && !value.retiring);
@@ -4887,7 +4941,7 @@ const decide = <Req extends ClipRequest>(
     const horizon = now.mono + 600_000;
 
     const pool: Array<Projected> = [];
-    const gone = new Set<PlanItem>();
+    const gone = new Map<PlanItem, { readonly reason: DropReason; readonly at: number }>();
     const done = new Set<PlanItem>();
     const dispatched = new Set<PlanItem>();
     const followsAired = new Map<PlanItem, boolean>();
@@ -4898,9 +4952,16 @@ const decide = <Req extends ClipRequest>(
     let refilling = state.filler.refilling;
     let probeReady: number | undefined;
     let probeContinued = false;
+    // A run until placed leaves a cutting lane's items out of its air, since it projects no cut;
+    // `place` and admission skip them themselves.
+    const leftOut = (item: PlanItem): boolean => until._tag === "Placed" && cuts(item);
 
     const pending: Array<PlanItem> = [...items.values()].filter(
-      (item) => item.phase === "Accepted" && item.withdraw === undefined && item.mode !== "held",
+      (item) =>
+        item.phase === "Accepted" &&
+        item.withdraw === undefined &&
+        item.mode !== "held" &&
+        !leftOut(item),
     );
     if (hypothesis !== undefined) pending.push(hypothesis.item);
     const ordered = [
@@ -4929,6 +4990,16 @@ const decide = <Req extends ClipRequest>(
           item,
           membersIn(item.group.key).filter((other) => holds(roster, other, item)),
         );
+    // What a run until placed airs or drops before it stops: each live item it can place.
+    const unplaced = new Map<PlanItem, Unplaceable | undefined>();
+    const toPlace =
+      until._tag === "Placed"
+        ? [...items.values()].filter(
+            (item) =>
+              !placedAlready(item) &&
+              unplaceable(item, (other) => holdersOf.get(other) ?? [], unplaced) === undefined,
+          )
+        : [];
 
     // Ready now on the session on air and on the one taking new work; the clip on air is not.
     const sessions = target.id === air.id ? [air] : [air, target];
@@ -4938,7 +5009,10 @@ const decide = <Req extends ClipRequest>(
         if (clip.clipId === value.playing?.clipId) continue;
         if (
           item !== undefined &&
-          (!live(item) || item.startedAt !== undefined || item.withdraw !== undefined)
+          (!live(item) ||
+            item.startedAt !== undefined ||
+            item.withdraw !== undefined ||
+            leftOut(item))
         )
           continue;
         pool.push({
@@ -4949,6 +5023,7 @@ const decide = <Req extends ClipRequest>(
           seconds: clip.seconds,
           readyAt: now.mono,
           projected: false,
+          flight: false,
           continued: false,
         });
       }
@@ -5011,6 +5086,8 @@ const decide = <Req extends ClipRequest>(
           Math.max(readyAt, flight.at) +
             medianBuildMs(flight.subject, flight.seconds, flight.continued),
         );
+        // Left out of the air, its build still holds the build slot.
+        if (flight.item !== undefined && leftOut(flight.item)) continue;
         pool.push({
           tag: flight.tag,
           item: flight.item,
@@ -5019,6 +5096,7 @@ const decide = <Req extends ClipRequest>(
           seconds: lengthOf(flight.seconds),
           readyAt,
           projected: true,
+          flight: true,
           continued: flight.continued,
         });
         if (flight.item !== undefined) dispatched.add(flight.item);
@@ -5044,6 +5122,7 @@ const decide = <Req extends ClipRequest>(
           seconds: playing.seconds ?? 0,
           readyAt: -Infinity,
           projected: false,
+          flight: false,
           continued: false,
         },
         start: playing.at,
@@ -5058,10 +5137,11 @@ const decide = <Req extends ClipRequest>(
       return Math.min(own, firm);
     };
     // As `breakAfter`: an item goes, and once its place is broken in the run, none of its items
-    // aired or may still air, every member of its group seated after that place goes with it.
-    const drop = (item: PlanItem): void => {
+    // aired or may still air, every member of its group seated after that place goes with it, as
+    // `withdrawn`. Each goes for the first reason it meets.
+    const drop = (item: PlanItem, reason: DropReason, at: number): void => {
       if (gone.has(item)) return;
-      gone.add(item);
+      gone.set(item, { reason, at });
       const group = item.group;
       if (group === undefined || item.inserted) return;
       const placed = membersIn(group.key).filter(
@@ -5080,7 +5160,7 @@ const decide = <Req extends ClipRequest>(
           other.phase !== "Started" &&
           other.startedAt === undefined
         )
-          drop(other);
+          drop(other, "withdrawn", at);
     };
     const readyBy = (item: PlanItem, time: number): boolean =>
       item.phase === "Ready" ||
@@ -5337,7 +5417,7 @@ const decide = <Req extends ClipRequest>(
       if (item === hypothesis?.item && time < hypothesis.submitAt) return false;
       if ((item.notBefore ?? -Infinity) > time) return false;
       if (time >= deadline(item)) {
-        drop(item);
+        drop(item, "late", time);
         return false;
       }
       const at = atMono(item);
@@ -5407,6 +5487,7 @@ const decide = <Req extends ClipRequest>(
           clipId: undefined,
           seconds: lengthOf(item.spec.seconds),
           projected: true,
+          flight: false,
           continued: decision,
         },
         item.spec.lane,
@@ -5472,6 +5553,7 @@ const decide = <Req extends ClipRequest>(
           clipId: undefined,
           seconds: lengthOf(seconds),
           projected: true,
+          flight: false,
           continued: false,
         },
         "filler",
@@ -5536,7 +5618,8 @@ const decide = <Req extends ClipRequest>(
       const index = pool.indexOf(clip);
       if (index >= 0) pool.splice(index, 1);
     };
-    // What a deadline drops, a batch commit withdraws, or a Ready replacement displaces.
+    // What a deadline drops, a Ready replacement displaces, or a batch commit withdraws, in the
+    // order the plan sweeps them, each for its own reason.
     const purge = (time: number): void => {
       for (const clip of pool) {
         const item = clip.item;
@@ -5544,6 +5627,7 @@ const decide = <Req extends ClipRequest>(
         const batch = state.batches.find((value) =>
           value.targets.some((entry) => entry.key === item.spec.key),
         );
+        const target = batch?.targets.find((entry) => entry.key === item.spec.key);
         const replaced = pool.some(
           (other) =>
             other.item !== undefined &&
@@ -5552,8 +5636,10 @@ const decide = <Req extends ClipRequest>(
             other.readyAt <= time &&
             !open(other.item.batch, time),
         );
-        if (time >= deadline(item) || (batch !== undefined && !open(batch.id, time)) || replaced)
-          drop(item);
+        if (time >= deadline(item)) drop(item, "late", time);
+        else if (replaced) drop(item, "replaced", time);
+        else if (batch !== undefined && target !== undefined && !open(batch.id, time))
+          drop(item, target.reason, time);
       }
     };
     /** The next clip at the boundary `t`, or false once nothing more can air. */
@@ -5595,7 +5681,7 @@ const decide = <Req extends ClipRequest>(
             clip.readyAt <= t &&
             held(clip.item, t)
           )
-            drop(clip.item);
+            drop(clip.item, "displaced", t);
         const upcoming = pool
           .filter(
             (clip) => clip.sessionId === onAir && (clip.item === undefined || !gone.has(clip.item)),
@@ -5625,18 +5711,23 @@ const decide = <Req extends ClipRequest>(
         const follows = other.spec.follows;
         if (follows === undefined || other === item || gone.has(other) || done.has(other)) continue;
         if (sameClip(follows, head.tag)) followsAired.set(other, true);
-        else if (followsAired.get(other) === true) drop(other);
+        else if (followsAired.get(other) === true) drop(other, "displaced", start);
       }
-      // What it replaces, or what replaces it, goes.
+      // What it replaces goes as `replaced`; what replaces it, as `withdrawn`, as `replace` drops a
+      // replacement whose item started first.
       if (item !== undefined)
         for (const other of followed)
-          if (other.replaces === item.spec.key || item.replaces === other.spec.key) drop(other);
+          if (other.replaces === item.spec.key) drop(other, "withdrawn", start);
+          else if (item.replaces === other.spec.key) drop(other, "replaced", start);
       t = start + head.seconds * 1000;
       current = true;
       return true;
     };
     const finished = (): boolean => {
-      if (hypothesis === undefined) return aired.length >= limit;
+      if (hypothesis === undefined)
+        return until._tag === "Clips"
+          ? aired.length >= until.limit
+          : toPlace.every((item) => done.has(item) || gone.has(item));
       if (gone.has(hypothesis.item)) return true;
       const index = aired.findIndex((entry) => entry.clip.item === hypothesis.item);
       return index >= 0 && aired.length > index + 1;
