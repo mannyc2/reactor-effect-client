@@ -1847,19 +1847,27 @@ const decide = <Req extends ClipRequest>(
     return item === undefined ? [-1, 0, 0, 0, 0] : placeRank(item, ranks);
   };
   /**
-   * Which of two waiting items takes the build slot first. What a pending batch holds builds after
-   * what it does not, such as a firm add due in its slot.
+   * Which of two waiting items takes the build slot first, `unheld` naming each add a pending batch
+   * does not hold, such as a firm add due in its slot: such an add builds ahead of the rest of its
+   * lane but an `Asap` item, a replacement included.
    */
-  const buildOrder = (a: PlanItem, b: PlanItem): number =>
-    Number(b.mode === "asap") - Number(a.mode === "asap") ||
-    Number(a.mode === "held") - Number(b.mode === "held") ||
-    a.spec.lane - b.spec.lane ||
-    Number(a.batch !== undefined) - Number(b.batch !== undefined) ||
-    Number(b.replaces !== undefined) - Number(a.replaces !== undefined) ||
-    Number(b.group !== undefined && b.group.index > 0) -
-      Number(a.group !== undefined && a.group.index > 0) ||
-    (a.startBy ?? Infinity) - (b.startBy ?? Infinity) ||
-    a.order - b.order;
+  const buildOrderBy =
+    (unheld: (item: PlanItem) => boolean) =>
+    (a: PlanItem, b: PlanItem): number =>
+      Number(b.mode === "asap") - Number(a.mode === "asap") ||
+      Number(a.mode === "held") - Number(b.mode === "held") ||
+      a.spec.lane - b.spec.lane ||
+      Number(unheld(b)) - Number(unheld(a)) ||
+      Number(b.replaces !== undefined) - Number(a.replaces !== undefined) ||
+      Number(b.group !== undefined && b.group.index > 0) -
+        Number(a.group !== undefined && a.group.index > 0) ||
+      (a.startBy ?? Infinity) - (b.startBy ?? Infinity) ||
+      a.order - b.order;
+  /** `buildOrderBy` for the plan as it stands: an add of a pending batch with no hold is unheld. */
+  const buildOrder = buildOrderBy(
+    (item) =>
+      item.batch === undefined && state.batches.some((batch) => batch.adds.includes(item.spec.key)),
+  );
   /** A group's part may build only once the part before it was admitted. */
   const previousAdmitted = (item: Item<Req>): boolean => {
     // An insert waits for the item just before it in its lane to be admitted. One in a group waits
@@ -5851,7 +5859,16 @@ const decide = <Req extends ClipRequest>(
             (clip.item === undefined || !gone.has(clip.item)),
         ).length;
         if (inFlight >= config.maxBuildsInFlight) return;
-        const next = pending.filter((item) => eligibleAt(item, time)).sort(buildOrder)[0];
+        // As `buildOrder`, each batch as the run has it: once it commits there, its adds build as
+        // any other does.
+        const order = buildOrderBy(
+          (item) =>
+            item.batch === undefined &&
+            state.batches.some(
+              (batch) => batch.adds.includes(item.spec.key) && open(batch.id, time),
+            ),
+        );
+        const next = pending.filter((item) => eligibleAt(item, time)).sort(order)[0];
         // What cannot air before the cap of the session on air waits for the replacement.
         if (next !== undefined && fitsAt(next.spec.seconds, time)) launch(next, time);
         else if (!refill(time)) return;

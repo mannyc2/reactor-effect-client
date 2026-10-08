@@ -2829,6 +2829,20 @@ describe("PlayoutPolicy, edit claims", () => {
     assert.deepStrictEqual(startOrder(policy.actions), ["a", "b"]);
   });
 
+  it("a batch's replacement still builds ahead of a plain item waiting in its lane", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("y"));
+    policy.reply({ _tag: "Done", clipId: "c-y" });
+    policy.observe({ building: [clip("c-y", item("y"))] });
+    // z waits for the build slot y holds, and an edit of its own replaces y with y2.
+    policy.submit(spec("z"));
+    policy.edit([{ _tag: "Replace", key: key("y"), spec: spec("y2") }], true);
+    policy.observe({ ready: [clip("c-y", item("y"))] });
+    assert.deepStrictEqual(enqueued(policy.actions), ["y", "y2"]);
+  });
+
   it("a firm item's replacement is dropped at the deadline it took over", () => {
     const policy = drive({ from: measured });
     policy.tick(0);
