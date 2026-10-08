@@ -4220,4 +4220,71 @@ describe("PlayoutPolicy, groups", () => {
     }
     assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2", "ir", "k"]);
   });
+
+  /** x airs from 13 s to 43 s; p1 and p2 (5 s), then i (3 s), placed after p1, are Ready. */
+  const besideInsert = () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    const log: Array<string> = [];
+    const held = queues();
+    policy.submit(spec("x", 1, 30), 10);
+    provide(policy, "s1", 1, held, log);
+    const x = readyIn(held, "x");
+    held.ready = [];
+    held.playing = x;
+    policy.event({ _tag: "Started", clip: x }, "s1", 13_000);
+    shown(policy, "s1", held, 13_001);
+    policy.edit([group(1, ["p1", "p2"])], false, 13_100);
+    provide(policy, "s1", 6, held, log);
+    policy.edit([{ _tag: "Insert", spec: spec("i", 1, 3), anchor: key("p1"), side: "after" }]);
+    provide(policy, "s1", 4, held, log);
+    return { policy, held, log };
+  };
+  /** With 5 s of x left, i is replaced by ir, whose continued build of 18 s falls back to p2. */
+  const replaceBehind = (policy: ReturnType<typeof drive>) =>
+    policy.edit(
+      [{ _tag: "Replace", key: key("i"), spec: { ...spec("ir", 1, 18), continuity: true } }],
+      false,
+      38_000,
+    );
+
+  // k, after i, went behind p2 with ir as soon as ir's build went out. i then started first and
+  // ir went as withdrawn, but k stayed behind p2, apart from the insert it was placed after.
+  it("keeps an insert beside the item it was placed after when that item's replacement loses", () => {
+    const { policy, held, log } = besideInsert();
+    policy.edit([{ _tag: "Insert", spec: spec("k", 1, 3), anchor: key("i"), side: "after" }]);
+    provide(policy, "s1", 4, held, log);
+    held.slow.add("ir");
+    replaceBehind(policy);
+    provide(policy, "s1", 6, held, log);
+    for (const time of [43_000, 48_100, 51_200, 54_300]) {
+      boundary(policy, "s1", held, time);
+      provide(policy, "s1", 6, held, log);
+    }
+    assert.deepStrictEqual(statuses(policy.actions, "ir").at(-1), "Dropped");
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "i", "k", "p2"]);
+  });
+
+  // k went in after i while ir, its replacement, was building behind p2. It took i's seat, its
+  // own order, and stayed there once ir took i's place: it aired before p2 and ir.
+  it("moves an insert placed beside a replaced item with its replacement once that takes the place", () => {
+    const { policy, held, log } = besideInsert();
+    held.slow.add("ir");
+    replaceBehind(policy);
+    provide(policy, "s1", 4, held, log);
+    policy.edit([{ _tag: "Insert", spec: spec("k", 1, 3), anchor: key("i"), side: "after" }]);
+    provide(policy, "s1", 4, held, log);
+    // ir's build ends while x plays, and ir takes i's place.
+    held.ready = [...held.ready, ...held.building];
+    held.building = [];
+    held.slow.clear();
+    shown(policy, "s1", held);
+    provide(policy, "s1", 6, held, log);
+    for (const time of [43_000, 48_100, 53_200, 71_300]) {
+      boundary(policy, "s1", held, time);
+      provide(policy, "s1", 6, held, log);
+    }
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2", "ir", "k"]);
+  });
 });

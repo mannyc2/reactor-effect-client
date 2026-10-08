@@ -1567,31 +1567,21 @@ const decide = <Req extends ClipRequest>(
     item !== undefined && item.phase !== "Settled";
   /**
    * Seats the insert `key` right behind `member`, a later member, for good, if that seat is later
-   * than its own, and with it the inserts placed right before or after it, or after the items it
-   * replaces, that sat where it did: an insert stays beside its anchor.
+   * than its own, and with it the inserts placed right before or after it that sat where it did:
+   * an insert stays beside its anchor.
    */
   const seatBehind = (key: ItemKey, member: PlanItem): void => {
     const item = items.get(key);
     if (item === undefined || item.behind === member.spec.key || member.order <= item.order) return;
-    const seat = [...seatOf(roster, member), item.order];
-    if (compareSeat(seat, seatOf(roster, item)) <= 0) return;
+    if (compareSeat([...seatOf(roster, member), item.order], seatOf(roster, item)) <= 0) return;
     const was = item.behind;
     set(key, { behind: member.spec.key });
-    // The insert and the items it replaces, beside which those inserts were placed.
-    const place = new Set<ItemKey>();
-    let at: PlanItem | undefined = item;
-    while (at !== undefined && !place.has(at.spec.key)) {
-      place.add(at.spec.key);
-      at = at.replaces === undefined ? undefined : items.get(at.replaces);
-    }
+    seatBeside(key, was, member);
+  };
+  /** Seats behind `member` the live inserts placed right before or after `key` that sat at `was`. */
+  const seatBeside = (key: ItemKey, was: ItemKey | undefined, member: PlanItem): void => {
     for (const other of [...items.values()])
-      if (
-        other.inserted &&
-        other.anchor !== undefined &&
-        place.has(other.anchor.key) &&
-        live(other) &&
-        other.behind === was
-      )
+      if (other.inserted && other.anchor?.key === key && live(other) && other.behind === was)
         seatBehind(other.spec.key, member);
   };
   const readyOf = (value: Session<Req>): ReadonlyArray<SourceClip> => value.source?.ready ?? [];
@@ -3294,8 +3284,16 @@ const decide = <Req extends ClipRequest>(
       (item.phase === "Ready" && item.batch === undefined) ||
       item.phase === "Started" ||
       (old.phase === "Accepted" && old.dispatchedAt === undefined)
-    )
+    ) {
       withdraw(old.spec.key, "replaced");
+      // It has the place now: the inserts placed beside what it replaces go where it sits.
+      const member = item.behind === undefined ? undefined : items.get(item.behind);
+      let at = items.get(item.replaces);
+      while (member !== undefined && at !== undefined) {
+        seatBeside(at.spec.key, at.behind, member);
+        at = at === old || at.replaces === undefined ? undefined : items.get(at.replaces);
+      }
+    }
   }
   // A batch takes effect once everything it adds is Ready or has settled.
   for (const batch of state.batches) {
