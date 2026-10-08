@@ -1748,7 +1748,24 @@ const decide = <Req extends ClipRequest>(
     a.order - b.order;
   /** A group's part may build only once the part before it was admitted. */
   const previousAdmitted = (item: Item<Req>): boolean => {
-    // An insert waits for whatever airs just before it in its lane to be admitted.
+    // An insert waits for whatever airs just before it in its lane to be admitted; in a group, for
+    // the member seated just before it, as the rest of the lane may be another group's waiting on
+    // this one.
+    if (item.inserted && item.group !== undefined) {
+      const seat = seatOf(roster, item);
+      const before = roster
+        .members(item.group.key)
+        .reduce<{ readonly item: PlanItem; readonly seat: Seat } | undefined>((latest, key) => {
+          const other = items.get(key);
+          if (!live(other) || other === item) return latest;
+          const at = seatOf(roster, other);
+          if (compareSeat(at, seat) >= 0) return latest;
+          return latest === undefined || compareSeat(at, latest.seat) > 0
+            ? { item: other, seat: at }
+            : latest;
+        }, undefined);
+      return before?.item.phase !== "Accepted";
+    }
     if (item.inserted) {
       const before = [...items.values()]
         .filter(
@@ -5236,6 +5253,19 @@ const decide = <Req extends ClipRequest>(
       item.phase === "Accepted" && !dispatched.has(item) && !gone.has(item);
     // As `previousAdmitted`, against what the run has sent.
     const admitted = (item: PlanItem): boolean => {
+      if (item.inserted && item.group !== undefined) {
+        const seat = seatIn(item);
+        const before = membersIn(item.group.key)
+          .filter(
+            (other) =>
+              other !== item &&
+              live(other) &&
+              !gone.has(other) &&
+              compareSeat(seatIn(other), seat) < 0,
+          )
+          .sort((a, b) => compareSeat(seatIn(b), seatIn(a)))[0];
+        return before === undefined || !pendingIn(before);
+      }
       if (item.inserted) {
         const before = ordered
           .filter(

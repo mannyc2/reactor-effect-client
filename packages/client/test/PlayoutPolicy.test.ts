@@ -4095,6 +4095,44 @@ describe("PlayoutPolicy, groups", () => {
     assert.deepStrictEqual(refusalOf(insert("i", "a1", "b2")), waitsOnItself("i"));
   });
 
+  // n goes in before b1 with no follows, and w, after a1 in another group, follows b2. n was sent
+  // only once w, the item before it in the lane, was; w waited for b2's clip; and b2 waited behind
+  // n: with builds unmeasured, neither group aired past a1.
+  it("sends a group's insert once the member of its group before it is sent", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    for (const [name, parts] of [
+      ["g", ["a1"]],
+      ["h", ["b1", "b2"]],
+    ] as const)
+      policy.edit([
+        {
+          _tag: "SubmitGroup",
+          key: key(name),
+          lane: 1,
+          parts: parts.map((part) => spec(part)),
+          fingerprint: name,
+        },
+      ]);
+    policy.edit([
+      {
+        _tag: "Insert",
+        spec: { ...spec("w"), follows: item("b2") },
+        anchor: key("a1"),
+        side: "after",
+      },
+    ]);
+    policy.edit([{ _tag: "Insert", spec: spec("n"), anchor: key("b1"), side: "before" }]);
+    const log: Array<string> = [];
+    const held = queues();
+    for (let round = 0; round < 8; round++) {
+      provide(policy, "s1", 10, held, log);
+      boundary(policy, "s1", held, policy.now() + 6_000);
+    }
+    assert.deepStrictEqual(startOrder(policy.actions), ["a1", "n", "b1", "b2", "w"]);
+  });
+
   // A replacement s2 takes new work while i sits behind p2 on s1. m goes in before p2 and is built
   // on s2, and i is replaced by ir, continued: the only clip ranked before ir there was m's, so ir
   // continued from it and was seated behind m, ahead of p2, whose clip airs in between.
