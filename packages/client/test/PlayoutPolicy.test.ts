@@ -4030,4 +4030,35 @@ describe("PlayoutPolicy, groups", () => {
       assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2", "i", "k"], how);
     }
   });
+
+  // An insert that follows the insert placed right before it ranked held while that one built, and
+  // the part behind it ranked held too: a lower lane's clip was moved ahead of the part.
+  it("keeps a part in place behind the follower of an insert still building", () => {
+    const { policy, held, log } = lowBehind([spec("p1", 1, 4), spec("p2")]);
+    policy.submit(spec("y", 2));
+    provide(policy, "s1", 10, held, log);
+    held.slow.add("i");
+    policy.edit([{ _tag: "Insert", spec: spec("i", 1, 2), anchor: key("p1"), side: "after" }]);
+    provide(policy, "s1", 4, held, log);
+    const from = held.orders.length;
+    policy.edit([
+      {
+        _tag: "Insert",
+        spec: { ...spec("k", 1, 2), follows: item("i") },
+        anchor: key("i"),
+        side: "after",
+      },
+    ]);
+    provide(policy, "s1", 6, held, log);
+    assert.isTrue(yBehindP2(held, from), held.orders.slice(from).join(" | "));
+    // i's build ends, and k's follows.
+    held.ready = [...held.ready, ...held.building];
+    held.building = [];
+    held.slow.clear();
+    shown(policy, "s1", held);
+    provide(policy, "s1", 10, held, log);
+    assert.isTrue(yBehindP2(held, from), held.orders.slice(from).join(" | "));
+    for (const time of [23_000, 27_100, 29_200, 31_300]) boundary(policy, "s1", held, time);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "i", "k", "p2"]);
+  });
 });

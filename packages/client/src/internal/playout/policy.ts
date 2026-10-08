@@ -1588,8 +1588,20 @@ const decide = <Req extends ClipRequest>(
       item.mode === "held" ||
       (at !== undefined && now.mono < at) ||
       item.batch !== undefined ||
-      heldForFollows(item)
+      (heldForFollows(item) && !waitsOnAnchor(item))
     );
+  };
+  /**
+   * Whether `item`, placed right after the member it follows, waits for that member as its group's
+   * order keeps it: that member holds it, so it ranks just behind it, held only if that one is.
+   */
+  const waitsOnAnchor = (item: Item<Req>): boolean => {
+    const follows = item.spec.follows;
+    const anchor = item.inserted ? item.anchor : undefined;
+    if (anchor?.side !== "after" || follows?._tag !== "Item" || follows.key !== anchor.key)
+      return false;
+    const other = items.get(anchor.key);
+    return other !== undefined && holds(roster, other, item);
   };
   /** Where a held item ranks: behind everything that airs. */
   const heldRank = (item: PlanItem): Rank => [lanes + 1, 1, item.order, item.generation, 0];
