@@ -1849,6 +1849,48 @@ layer(seamed, { timeout: "10 minutes" })("forecast", (it) => {
       assert.isAtMost(Math.abs(errorMs), 100, `ended ${errorMs.toFixed(0)} ms off`);
     }),
   );
+
+  it.effect("forecastGroup gives a group's places that air, and a part it drops", () =>
+    Effect.gen(function* () {
+      const { playout, statuses } = yield* start({
+        lanes: [{ name: "line" }],
+        filler: gridFiller("8 seconds", "16 seconds"),
+      });
+      yield* eventually(playout.state, (state) => state.estimates.build !== undefined);
+      yield* nextFiller(playout);
+      const group = yield* playout.submitGroup({
+        key: key("beats"),
+        lane: "line",
+        parts: [
+          { key: key("p1"), request: clip("p1") },
+          { key: key("p2"), request: clip("p2") },
+          { key: key("p3"), request: clip("p3") },
+        ],
+      });
+      yield* eventually(statuses("p2"), (all) => all.includes("Building"));
+      // Its replacement is Ready long before p2's turn, and takes its place.
+      yield* playout.replace(key("p2"), { key: key("r2"), request: clip("r2") });
+      const projected = yield* playout.forecast;
+      const places = Playout.forecastGroup(projected, key("beats"));
+      const named = (tag: Playout.ClipTag | null) => (tag?._tag === "Item" ? tag.key : null);
+      assert.deepStrictEqual(
+        places?.parts.map((part) => [named(part.clip), part.group?.part]),
+        [
+          [key("p1"), 0],
+          [key("r2"), 1],
+          [key("p3"), 2],
+        ],
+      );
+      assert.deepStrictEqual(
+        places?.drops.map((drop) => [drop.key, drop.reason]),
+        [[key("p2"), "replaced"]],
+      );
+      assert.strictEqual(places?.startsAt, places?.parts[0]?.startsAt);
+      assert.strictEqual(places?.endsAt, projected.drainsAt);
+      const [, second] = group.parts;
+      assert.deepStrictEqual(yield* second!.outcome, { _tag: "Dropped", reason: "replaced" });
+    }),
+  );
 });
 
 layer(hosted)("uncertainty", (it) => {
