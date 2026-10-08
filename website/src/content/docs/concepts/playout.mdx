@@ -124,7 +124,9 @@ export const lanes: ReadonlyArray<Playout.LaneSpec> = [
   is live and not on air yet, unless that one was sent with its outcome never seen, or is being
   withdrawn. A slow item holds up those after it until it airs or its own deadline drops it, so
   give the lane's items deadlines. `Asap` and `Manual` starts are refused there with
-  `InvalidItem`.
+  `InvalidItem`. Keeping the order costs more per waiting item: on one machine, admitting 200
+  items into one strict lane took 2.4 s in all, against 0.4 s in a lane that is not strict, and
+  600 items took about 190 s. Keep a strict lane to tens of items waiting.
 
 On hosted H3, `stop` names no clip and lands after its reply, so a cut goes a step at a time: the
 playout turns autoplay off, stops the clip if it still plays, waits for H3 to report it ended,

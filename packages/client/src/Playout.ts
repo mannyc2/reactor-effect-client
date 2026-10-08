@@ -65,7 +65,8 @@ export interface LaneSpec {
    * their anchors: an item waits while one placed before it is live and not on air yet, unless
    * that one was sent with its outcome never seen, or is being withdrawn. Later items wait behind
    * a slow one, so give its items deadlines. `Asap` and `Manual` starts are refused here, since
-   * they would break the order.
+   * they would break the order. Keeping the order costs more per item waiting than in a lane that
+   * is not strict: keep the lane to tens of items waiting, not hundreds.
    */
   readonly strict?: boolean | undefined;
 }
