@@ -1828,11 +1828,15 @@ const decide = <Req extends ClipRequest>(
     const item = items.get(clip.tag.key);
     return item === undefined ? [-1, 0, 0, 0, 0] : placeRank(item, ranks);
   };
-  /** Which of two waiting items takes the build slot first. */
+  /**
+   * Which of two waiting items takes the build slot first. What a pending batch holds builds after
+   * what it does not, such as a firm add due in its slot.
+   */
   const buildOrder = (a: PlanItem, b: PlanItem): number =>
     Number(b.mode === "asap") - Number(a.mode === "asap") ||
     Number(a.mode === "held") - Number(b.mode === "held") ||
     a.spec.lane - b.spec.lane ||
+    Number(a.batch !== undefined) - Number(b.batch !== undefined) ||
     Number(b.replaces !== undefined) - Number(a.replaces !== undefined) ||
     Number(b.group !== undefined && b.group.index > 0) -
       Number(a.group !== undefined && a.group.index > 0) ||
@@ -2458,9 +2462,19 @@ const decide = <Req extends ClipRequest>(
         joins.set(`${String(id)}:${String(join.index)}`, { left: join.parts, outcomes: [] });
       state = { ...state, joins };
     }
+    /**
+     * Whether an add goes to air on its own rather than wait for its batch: one due by a firm
+     * deadline, a group by its first part. A replacement takes a place that had a time already.
+     */
+    const firmAdd = (item: Item<Req>): boolean =>
+      item.replaces === undefined &&
+      (item.group === undefined || item.inserted || item.group.index === 0) &&
+      item.spec.window?.firm === true &&
+      item.startBy !== undefined;
     const pending = batched && (adds.length > 0 || targets.length > 0);
     for (const key of adds) {
-      set(key, { batch: pending && batched ? id : undefined });
+      const item = items.get(key);
+      set(key, { batch: pending && item !== undefined && !firmAdd(item) ? id : undefined });
       // A clip it follows that was the last on air has aired; one that aired before that is gone,
       // and the sweep drops the item at once.
       const follows = items.get(key)?.spec.follows;
