@@ -902,6 +902,18 @@ const insertStart = (anchor: PlanItem, side: "before" | "after"): PlanSpec["star
   const start = anchor.spec.start;
   return start._tag === "At" && side === "after" ? { ...start, late: "nextBoundary" } : start;
 };
+/** How an item with `start` airs: at once, held until released, or in its turn. */
+const modeOf = (start: PlanSpec["start"]): PlanItem["mode"] => {
+  switch (start._tag) {
+    case "Asap":
+      return "asap";
+    case "Manual":
+      return "held";
+    case "Follow":
+    case "At":
+      return "follow";
+  }
+};
 
 /** Whether an item started, or may have: its start was seen, or it settled `Unobserved`, unseen. */
 const startedOrUnseen = (item: PlanItem): boolean =>
@@ -2125,7 +2137,7 @@ const decide = <Req extends ClipRequest>(
     order: state.nextOrder,
     generation: 0,
     inserted: false,
-    mode: spec.start._tag === "Asap" ? "asap" : spec.start._tag === "Manual" ? "held" : "follow",
+    mode: modeOf(spec.start),
     phase: "Accepted",
     notBefore:
       spec.window?.notBeforeMs === undefined ? undefined : now.mono + spec.window.notBeforeMs,
@@ -2147,6 +2159,53 @@ const decide = <Req extends ClipRequest>(
       actions.push({ _tag: "Refused", id, refusal });
     };
     const seen = new Set<string>();
+    /** What the batch adds: each item or group it puts that the plan does not hold yet. */
+    const added = new Set(
+      edits.flatMap((edit): ReadonlyArray<ItemKey> => {
+        switch (edit._tag) {
+          case "Withdraw":
+            return [];
+          case "SubmitGroup":
+            return groups.has(edit.key) ? [] : [edit.key, ...edit.parts.map((part) => part.key)];
+          case "Submit":
+          case "Insert":
+          case "Replace":
+            return items.has(edit.spec.key) ? [] : [edit.spec.key];
+        }
+      }),
+    );
+    /**
+     * What the batch adds ahead of the edit being checked, as an insert beside it finds it: each
+     * item's lane and how it airs, and each group's parts in order.
+     */
+    const earlier = new Map<ItemKey, { readonly lane: number; readonly mode: Item<Req>["mode"] }>();
+    const earlierGroups = new Map<ItemKey, ReadonlyArray<ItemKey>>();
+    /** The anchor an insert beside `key` takes: an item waiting in the plan, or one added ahead. */
+    const anchorOf = (
+      key: ItemKey,
+      side: "before" | "after",
+    ):
+      | {
+          readonly waiting: boolean;
+          readonly playing: boolean;
+          readonly lane: number;
+          readonly mode: Item<Req>["mode"];
+        }
+      | undefined => {
+      const item = items.get(key) ?? firstOrLastPart(key, side);
+      if (item !== undefined)
+        return {
+          // After the playing item is the next boundary; before it is already past.
+          waiting: live(item) && !(item.phase === "Started" && side === "before"),
+          playing: item.phase === "Started",
+          lane: item.spec.lane,
+          mode: item.mode,
+        };
+      const parts = earlierGroups.get(key);
+      const part = side === "before" ? parts?.[0] : parts?.at(-1);
+      const ahead = earlier.get(part ?? key);
+      return ahead === undefined ? undefined : { waiting: true, playing: false, ...ahead };
+    };
     // Check every edit before any takes effect.
     for (const edit of edits) {
       const keys =
@@ -2185,9 +2244,8 @@ const decide = <Req extends ClipRequest>(
       }
       // An insert already admitted under this key, spec and anchor is answered as it is.
       if (edit._tag === "Insert" && !items.has(edit.spec.key)) {
-        const anchor = items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side);
-        // After the playing item is the next boundary; before it is already past.
-        if (!live(anchor) || (anchor.phase === "Started" && edit.side === "before"))
+        const anchor = anchorOf(edit.anchor, edit.side);
+        if (anchor?.waiting !== true)
           return refuse({
             _tag: "InvalidItem",
             key: edit.spec.key,
@@ -2206,9 +2264,7 @@ const decide = <Req extends ClipRequest>(
           return refuse({ _tag: "InvalidItem", key: edit.spec.key, message: issue });
         // A cut airs when its clip is Ready, not at a boundary, so it can't follow a clip.
         const lane =
-          edit._tag === "Submit"
-            ? edit.spec.lane
-            : (items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side))?.spec.lane;
+          edit._tag === "Submit" ? edit.spec.lane : anchorOf(edit.anchor, edit.side)?.lane;
         if (
           edit.spec.follows !== undefined &&
           lane !== undefined &&
@@ -2220,6 +2276,12 @@ const decide = <Req extends ClipRequest>(
             message: "an item in a cutting lane cannot follow a clip",
           });
       }
+      if ((edit._tag === "Withdraw" || edit._tag === "Replace") && added.has(edit.key))
+        return refuse({
+          _tag: "InvalidItem",
+          key: edit.key,
+          message: "a batch cannot withdraw or replace what it adds",
+        });
       if (edit._tag === "Replace" && !live(items.get(edit.key)) && !items.has(edit.spec.key))
         return refuse({
           _tag: "InvalidItem",
@@ -2232,6 +2294,44 @@ const decide = <Req extends ClipRequest>(
         return refuse({ _tag: "LaneBusy", key: edit.spec.key, lane: edit.spec.lane });
       if (edit._tag === "SubmitGroup" && !groups.has(edit.key) && laneBusy(edit.lane))
         return refuse({ _tag: "LaneBusy", key: edit.key, lane: edit.lane });
+      // What it adds, for an insert beside it later in the batch.
+      switch (edit._tag) {
+        case "Submit":
+          if (!items.has(edit.spec.key))
+            earlier.set(edit.spec.key, { lane: edit.spec.lane, mode: modeOf(edit.spec.start) });
+          break;
+        case "SubmitGroup":
+          if (groups.has(edit.key)) break;
+          earlierGroups.set(
+            edit.key,
+            edit.parts.map((part) => part.key),
+          );
+          // The group's start is its first part's: the rest follow it.
+          edit.parts.forEach((part, index) =>
+            earlier.set(part.key, {
+              lane: part.lane,
+              mode: index === 0 ? modeOf(part.start) : "follow",
+            }),
+          );
+          break;
+        case "Insert": {
+          const anchor = anchorOf(edit.anchor, edit.side);
+          if (!items.has(edit.spec.key) && anchor !== undefined)
+            earlier.set(edit.spec.key, {
+              lane: anchor.lane,
+              mode: anchor.playing ? "follow" : anchor.mode,
+            });
+          break;
+        }
+        case "Replace": {
+          const old = items.get(edit.key);
+          if (!items.has(edit.spec.key) && old !== undefined)
+            earlier.set(edit.spec.key, { lane: old.spec.lane, mode: old.mode });
+          break;
+        }
+        case "Withdraw":
+          break;
+      }
     }
     // An edit refused below, as an item it adds would wait on itself or miss its deadline, leaves
     // the plan as it was.
@@ -2448,7 +2548,13 @@ const decide = <Req extends ClipRequest>(
     if (registers) {
       for (const key of adds) {
         const item = items.get(key);
-        if (pending && item !== undefined && !firmAdd(item)) set(key, { batch: id });
+        if (!pending || item === undefined) continue;
+        // An insert beside what its batch holds is held with it, or it would air before its anchor.
+        const anchor =
+          item.inserted && item.anchor !== undefined
+            ? (items.get(item.anchor.key) ?? firstOrLastPart(item.anchor.key, item.anchor.side))
+            : undefined;
+        if (!firmAdd(item) || anchor?.batch === id) set(key, { batch: id });
       }
       for (const target of targets)
         if (!later.includes(target)) set(target.key, { withdraw: target.reason });

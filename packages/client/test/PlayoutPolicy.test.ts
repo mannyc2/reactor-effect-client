@@ -2809,6 +2809,25 @@ describe("PlayoutPolicy, edit claims", () => {
     policy.observe({ playing: v, building: [clip("c-v2", item("v2"))] });
     assert.deepStrictEqual(statuses(policy.actions, "w"), ["Accepted", "Building", "Dropped"]);
   });
+
+  it("an insert may anchor on an item the same batch adds", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    const sent = policy.edit(
+      [
+        { _tag: "Submit", spec: spec("a") },
+        { _tag: "Insert", spec: spec("b"), anchor: key("a"), side: "after" },
+      ],
+      true,
+    );
+    assert.isTrue(sent.actions.some((action) => action._tag === "Accepted"));
+    const held = queues();
+    provide(policy, "s1", 8, held, []);
+    boundary(policy, "s1", held, policy.now() + 1);
+    boundary(policy, "s1", held, policy.now() + 5_000);
+    assert.deepStrictEqual(startOrder(policy.actions), ["a", "b"]);
+  });
 });
 
 describe("PlayoutPolicy, groups", () => {
