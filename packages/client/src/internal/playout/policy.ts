@@ -956,20 +956,28 @@ const laterMemberWith = (
   }
   return undefined;
 };
-/** A member's seat in its group's order: an order, then how far behind it, then its own order. */
-type Seat = readonly [number, number, number];
+/**
+ * A member's seat in its group's order: the orders from the member it hangs from, through each it
+ * sits behind, down to its own.
+ */
+type Seat = ReadonlyArray<number>;
 /**
  * Where a member sits in its group's order: at its own order, or right behind the later member it
- * sits behind (`behind`), where it airs. A member sits behind only one of a greater order, so the
- * chain ends.
+ * sits behind (`behind`), where it airs, ahead of any that member's seat was taken by earlier. A
+ * member sits behind only one of a greater order, so the chain ends.
  */
 const seatOf = (roster: Roster, item: PlanItem): Seat => {
   const ahead = item.behind === undefined ? undefined : roster.items.get(item.behind);
-  if (ahead === undefined) return [item.order, 0, item.order];
-  const seat = seatOf(roster, ahead);
-  return [seat[0], seat[1] + 1, item.order];
+  return ahead === undefined ? [item.order] : [...seatOf(roster, ahead), item.order];
 };
-const compareSeat = (a: Seat, b: Seat): number => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+/** Seats in their group's order: a seat right behind a member comes after it, and before the next. */
+const compareSeat = (a: Seat, b: Seat): number => {
+  for (let index = 0; index < Math.min(a.length, b.length); index++) {
+    const order = (a[index] ?? 0) - (b[index] ?? 0);
+    if (order !== 0) return order;
+  }
+  return a.length - b.length;
+};
 /** Whether a member holds back those seated after it: it may still air, and has not started. */
 const mayHold = (item: PlanItem): boolean =>
   liveAndKnown(item) && item.phase !== "Started" && item.startedAt === undefined;

@@ -3935,8 +3935,8 @@ describe("PlayoutPolicy, groups", () => {
    * continued build would be Ready only after p1 ends: it continues from p2's clip, and sits
    * behind p2. Measured builds take 0.4 s a second; i's takes 1 s.
    */
-  const seatedInsert = (settings: Policy.Config = config) => {
-    const policy = drive({ config: settings, from: measured });
+  const seatedInsert = (settings: Policy.Config = config, from: Policy.State = measured) => {
+    const policy = drive({ config: settings, from });
     policy.tick(0);
     policy.open();
     const log: Array<string> = [];
@@ -4093,5 +4093,35 @@ describe("PlayoutPolicy, groups", () => {
       ]).actions;
     assert.isUndefined(refusalOf(insert("j", "b1", "a2")));
     assert.deepStrictEqual(refusalOf(insert("i", "a1", "b2")), waitsOnItself("i"));
+  });
+
+  // k sits behind p2 beside i, placed after it, and q's continued build falls back to i's clip, so
+  // q sits behind i. Every seat one deep behind p2 sorted ahead of every seat two deep: k aired
+  // between i and q, whose clip continues from i's.
+  it("seats an insert continued from a seated insert's clip right behind that one", () => {
+    // Continued builds measured at 1 s a second, so q's would end only as i airs.
+    const continued = { lane: 1, perBuilt: 1, perRequested: 1 };
+    const slow = {
+      ...measured,
+      samples: { ...measured.samples, continued: [continued, continued, continued] },
+    };
+    const { policy, held, log } = seatedInsert(config, slow);
+    policy.edit([{ _tag: "Insert", spec: spec("k", 1, 3), anchor: key("i"), side: "after" }]);
+    provide(policy, "s1", 4, held, log);
+    policy.edit([
+      {
+        _tag: "Insert",
+        spec: { ...spec("q", 1, 20), continuity: true },
+        anchor: key("p1"),
+        side: "after",
+      },
+    ]);
+    provide(policy, "s1", 4, held, log);
+    assert.strictEqual(policy.state().items.get(key("q"))?.behind, key("i"));
+    for (const time of [43_000, 48_100, 53_200, 65_300, 85_400]) {
+      boundary(policy, "s1", held, time);
+      provide(policy, "s1", 6, held, log);
+    }
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2", "i", "q", "k"]);
   });
 });
