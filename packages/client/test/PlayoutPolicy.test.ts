@@ -2971,6 +2971,38 @@ describe("PlayoutPolicy, edit claims", () => {
     assert.deepStrictEqual(statuses(policy.actions, "r"), ["Accepted", "Dropped"]);
     assert.notInclude(enqueued(policy.actions), "r");
   });
+
+  // A batch that withdraws an item waiting in a lane that replaces, and adds to that lane, names
+  // the item twice. Since 5830107 the forward run read only the first, the cover waiting for the
+  // add, so the forecast aired the item the plan withdraws once the firm insert starts.
+  it("forecasts nothing of an item its batch withdraws from a lane it also replaces", () => {
+    const settings = withLane("ticker", "replace");
+    const policy = drive({ config: settings, from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    const end = onAir(policy, held, log, 1, 15);
+    policy.submit(spec("c", 2, 5));
+    provide(policy, "s1", 2, held, log);
+    held.slow.add("a");
+    const window = { startByMs: end + 3_000 - policy.now(), firm: true };
+    policy.edit(
+      [
+        { _tag: "Submit", spec: spec("a", 2, 60) },
+        { _tag: "Withdraw", key: key("c") },
+        { _tag: "Insert", spec: { ...spec("u", 1, 5), window }, anchor: key("x"), side: "after" },
+      ],
+      true,
+    );
+    provide(policy, "s1", 4, held, log);
+    const forecast = Policy.forecast(settings, policy.state(), {
+      mono: policy.now(),
+      wall: policy.now(),
+    });
+    const names = forecast.clips.map((entry) =>
+      entry.clip?._tag === "Item" ? String(entry.clip.key) : "other",
+    );
+    assert.notInclude(names, "c");
+  });
 });
 
 describe("PlayoutPolicy, groups", () => {

@@ -5513,10 +5513,19 @@ const decide = <Req extends ClipRequest>(
     const pendingBatchOf = new Map<ItemKey, Batch>();
     for (const batch of state.batches)
       if (batch.committed !== true) for (const key of batch.adds) pendingBatchOf.set(key, batch);
+    const batchOf = new Map(state.batches.map((batch) => [batch.id, batch]));
+    /** Each batch's targets naming an item, batch by batch, in the order the plan commits them. */
+    const targetsOf = new Map<
+      ItemKey,
+      Array<{ readonly batch: Batch; readonly target: Batch["targets"][number] }>
+    >();
+    for (const batch of state.batches)
+      for (const target of batch.targets)
+        targetsOf.set(target.key, [...(targetsOf.get(target.key) ?? []), { batch, target }]);
     // As the plan commits a batch: it holds what it adds until all of it is Ready, or until any of
     // it starts, before the run or in it.
     const open = (id: number | undefined, time: number): boolean => {
-      const batch = id === undefined ? undefined : state.batches.find((value) => value.id === id);
+      const batch = id === undefined ? undefined : batchOf.get(id);
       if (batch?.committed === true) return false;
       const added = (batch?.adds ?? []).flatMap((key) => {
         const add = items.get(key);
@@ -5996,10 +6005,6 @@ const decide = <Req extends ClipRequest>(
       for (const clip of pool) {
         const item = clip.item;
         if (item === undefined || gone.has(item)) continue;
-        const batch = state.batches.find((value) =>
-          value.targets.some((entry) => entry.key === item.spec.key),
-        );
-        const target = batch?.targets.find((entry) => entry.key === item.spec.key);
         const replaced = pool.some(
           (other) =>
             other.item !== undefined &&
@@ -6009,17 +6014,23 @@ const decide = <Req extends ClipRequest>(
             !open(other.item.batch, time),
         );
         // What an add takes over in a lane that replaces goes once that add is Ready.
-        const by = target?.by === undefined ? undefined : items.get(target.by);
-        const takenOver =
-          by === undefined ||
-          !live(by) ||
-          by.phase === "Ready" ||
-          startedOrUnseen(by) ||
-          readyBy(by, time);
+        const takenOver = (key: ItemKey | undefined): boolean => {
+          const by = key === undefined ? undefined : items.get(key);
+          return (
+            by === undefined ||
+            !live(by) ||
+            by.phase === "Ready" ||
+            startedOrUnseen(by) ||
+            readyBy(by, time)
+          );
+        };
+        // The first committed batch whose target no longer waits takes the item off, for its reason.
+        const taken = (targetsOf.get(item.spec.key) ?? []).find(
+          ({ batch, target }) => !open(batch.id, time) && takenOver(target.by),
+        );
         if (time >= deadline(item)) drop(item, "late", Math.min(time, deadline(item)));
         else if (replaced) drop(item, "replaced", time);
-        else if (batch !== undefined && target !== undefined && !open(batch.id, time) && takenOver)
-          drop(item, target.reason, time);
+        else if (taken !== undefined) drop(item, taken.target.reason, time);
       }
     };
     /** The next clip at the boundary `t`, or false once nothing more can air. */
