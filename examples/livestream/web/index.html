@@ -792,7 +792,7 @@
         const playing = status.playing;
         const tag = $("now-tag");
         if (playing === null) {
-          const next = status.upNext[0];
+          const next = status.upNext.find((clip) => clip.startsAt !== null);
           tag.textContent = "Between clips";
           tag.dataset.state = "between";
           $("now-origin").hidden = true;
@@ -823,16 +823,19 @@
           : `Started ${clock(playing.startedAt)} as the session reported · no picture has reached the broadcast since`;
       };
 
+      // Each clip at its projected start, and the items projected not to air.
       const renderNext = () => {
         const list = $("next");
-        const rows = status.upNext.map((clip, index) => {
+        const rows = status.upNext.map((clip) => {
           const row = make("li");
-          row.append(make("span", "when", String(index + 1)));
+          row.append(make("span", "when", clip.startsAt === null ? "" : clock(clip.startsAt)));
           const [text, quiet] = words(clip);
           row.append(make("span", quiet ? "what quiet" : "what", text));
           const tags = make("span", "tags");
           const [label, kind] = origin(clip);
-          tags.append(chip(clip.phase, clip.phase), chip(label, kind));
+          if (clip.startsAt === null) tags.append(chip("not airing", "dropped"));
+          else tags.append(chip(clip.phase, clip.phase));
+          tags.append(chip(label, kind));
           if (clip.afterSwitch) tags.append(chip("after the switch", "other"));
           row.append(tags);
           return row;
@@ -942,7 +945,12 @@
           return setNote(`Your prompt: ${result}.`, kind);
         }
         const lined = status.upNext.find((clip) => clip.key === last);
-        if (lined) setNote(`Your prompt is lined up (${lined.phase}).`, "ok");
+        if (lined?.startsAt === null) setNote("Your prompt is projected not to air.", "error");
+        else if (lined)
+          setNote(
+            `Your prompt is lined up (${lined.phase}), projected to start ${clock(lined.startsAt)}.`,
+            "ok",
+          );
       };
 
       const setNote = (text, kind) => {

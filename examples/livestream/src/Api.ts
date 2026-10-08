@@ -139,16 +139,19 @@ export class ChannelStatus extends Schema.Class<ChannelStatus>("ChannelStatus")(
     }),
   ),
   /**
-   * What the playout has lined up: the Ready clips of the session on air in the
-   * order they will play, those of its replacement, then items still to be
-   * built. A house clip is listed once Ready, without its prompt.
+   * What the playout projects to air after the clip on air, in the order it
+   * airs, house clips included, then the viewers' items it projects to go
+   * without airing. A projection from its forecast, not a promise: it changes
+   * as builds are measured and prompts arrive.
    */
   upNext: Schema.Array(
     Schema.Struct({
       ...Clip,
       phase: Schema.Literals(["Accepted", "Building", "Ready"]),
-      /** Ready on the replacement, which takes the air at the switch. */
+      /** On the replacement, which takes the air at the switch. */
       afterSwitch: Schema.Boolean,
+      /** When it is projected to start; null for an item projected not to air. */
+      startsAt: Schema.NullOr(Schema.Finite),
     }),
   ),
   /** The latest clips aired or settled, newest first. */
