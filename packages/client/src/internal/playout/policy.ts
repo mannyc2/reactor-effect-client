@@ -2478,13 +2478,8 @@ const decide = <Req extends ClipRequest>(
       // A replacement takes a place that had a time already: refusing it would refuse the edit,
       // though the item it replaces would air as cover.
       if (item.replaces !== undefined) continue;
-      if (
-        item.spec.window?.firm === true &&
-        item.startBy !== undefined &&
-        item.group?.index !== undefined &&
-        item.group.index > 0
-      )
-        continue;
+      // A group's later part has the group's time, none of its own; an insert beside it has its own.
+      if (item.group !== undefined && item.group.index > 0 && !item.inserted) continue;
       if (
         item.spec.window?.firm === true &&
         item.startBy !== undefined &&
