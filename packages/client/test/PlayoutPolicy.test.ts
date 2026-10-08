@@ -4061,4 +4061,37 @@ describe("PlayoutPolicy, groups", () => {
     for (const time of [23_000, 27_100, 29_200, 31_300]) boundary(policy, "s1", held, time);
     assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "i", "k", "p2"]);
   });
+
+  // Two inserts that each follow a later part of the other's group, each placed before a part the
+  // other's chain waits on: the walk read follows links alone and admitted the second, and neither
+  // group aired past its first part.
+  it("refuses an insert whose follows chain reaches a later part through another group's order", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    for (const [name, parts] of [
+      ["g", ["a1", "a2"]],
+      ["h", ["b1", "b2"]],
+    ] as const)
+      policy.edit([
+        {
+          _tag: "SubmitGroup",
+          key: key(name),
+          lane: 1,
+          parts: parts.map((part) => spec(part)),
+          fingerprint: name,
+        },
+      ]);
+    const insert = (name: string, anchor: string, follows: string) =>
+      policy.edit([
+        {
+          _tag: "Insert",
+          spec: { ...spec(name), follows: item(follows) },
+          anchor: key(anchor),
+          side: "after",
+        },
+      ]).actions;
+    assert.isUndefined(refusalOf(insert("j", "b1", "a2")));
+    assert.deepStrictEqual(refusalOf(insert("i", "a1", "b2")), waitsOnItself("i"));
+  });
 });

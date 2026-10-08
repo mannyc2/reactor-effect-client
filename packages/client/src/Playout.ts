@@ -276,9 +276,10 @@ export interface InsertSpec<Req extends ClipRequest = Request> extends ClipSpec<
    * it behind everything queued, so it is likely refused. It is refused with
    * `InvalidItem` in a cutting lane, naming the item's own key or a group key,
    * or naming filler on a playout without filler or by an index that is not a
-   * whole number. Placed in a group, it is refused with `InvalidItem` naming a
-   * member of that group after it, or an item that leads to one through the
-   * items followed in turn, since that member waits behind it.
+   * whole number. Placed in a group, it is refused with `InvalidItem` when it
+   * would wait for a member of that group after it, which waits behind it:
+   * naming that member, or an item that waits for one in turn, by the clip it
+   * follows or behind the members of its own group before it.
    */
   readonly follows?: ClipTag | undefined;
 }

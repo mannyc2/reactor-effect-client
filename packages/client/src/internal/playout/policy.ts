@@ -994,23 +994,40 @@ const behindInGroup = (roster: Roster, item: PlanItem): boolean => {
   }
   return false;
 };
+/** Whether an item still waits to air: it is live, has not started, and is not being withdrawn. */
+const waitsToAir = (item: PlanItem): boolean =>
+  item.phase !== "Settled" &&
+  item.phase !== "Started" &&
+  item.startedAt === undefined &&
+  item.withdraw === undefined;
 /**
- * Whether a member waits for a member of its group seated after it to air: the item it follows is
- * one, or the items followed in turn from there lead to one, through items of any group or none.
+ * Whether a member waits for a member of its group seated after it, which waits behind it: the
+ * item it follows is one, or waits for one in turn, by the clip it follows or behind the members
+ * of its own group that hold it, through items of any group or none.
  */
 const followsLater = (roster: Roster, item: PlanItem): boolean => {
   const group = item.group;
-  if (group === undefined) return false;
+  const follows = item.spec.follows;
+  if (group === undefined || follows?._tag !== "Item") return false;
   const seat = seatOf(roster, item);
-  // A chain that comes round to an item it met ends there.
+  // Each item it waits for, once: a chain that comes round to one it met ends there.
   const met = new Set<ItemKey>([item.spec.key]);
-  let follows = item.spec.follows;
-  while (follows?._tag === "Item" && !met.has(follows.key)) {
-    met.add(follows.key);
-    const followed = roster.items.get(follows.key);
-    if (followed?.group?.key === group.key && compareSeat(seatOf(roster, followed), seat) > 0)
-      return true;
-    follows = followed?.spec.follows;
+  const waitedOn: Array<PlanItem> = [];
+  const reach = (key: ItemKey): void => {
+    const other = met.has(key) ? undefined : roster.items.get(key);
+    met.add(key);
+    if (other !== undefined && waitsToAir(other)) waitedOn.push(other);
+  };
+  reach(follows.key);
+  for (const other of waitedOn) {
+    if (other.group?.key === group.key && compareSeat(seatOf(roster, other), seat) > 0) return true;
+    const next = other.spec.follows;
+    if (next?._tag === "Item" && other.followsAired !== true) reach(next.key);
+    if (other.group !== undefined)
+      for (const key of roster.members(other.group.key)) {
+        const holder = roster.items.get(key);
+        if (holder !== undefined && holds(roster, holder, other)) reach(key);
+      }
   }
   return false;
 };
