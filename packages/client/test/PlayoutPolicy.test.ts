@@ -4912,4 +4912,46 @@ describe("PlayoutPolicy, strict lanes and readiness", () => {
     provide(policy, "s1", 2, held, log);
     assert.deepStrictEqual(dropped(policy.actions, "r"), [{ _tag: "Dropped", reason: "late" }]);
   });
+
+  // An insert before an `At` anchor took the anchor's start whole, so one placed before a kept
+  // readyBy item took a bound already past and was dropped late at the next look.
+  it("an insert, or a group inserted, before a kept readyBy item airs before it", () => {
+    const starts = (edit: Policy.EditInput) => {
+      const policy = drive({ config: strictLine, from: measured });
+      const held = queues();
+      const log: Array<string> = [];
+      policy.tick(0);
+      policy.open();
+      idleOnAir(policy, held, 10);
+      policy.submit(readyBy("r", 2_000, 3_000), 3);
+      provide(policy, "s1", 2, held, log);
+      policy.tick(5_000);
+      assert.isTrue(policy.state().items.get(key("r"))?.keptLate);
+      assert.deepStrictEqual(
+        policy.edit([edit], false, 6_000).actions.filter((action) => action._tag === "Refused"),
+        [],
+      );
+      provide(policy, "s1", 3, held, log);
+      for (const time of [10_001, 16_000, 22_000]) {
+        boundary(policy, "s1", held, time);
+        provide(policy, "s1", 3, held, log);
+      }
+      return startOrder(policy.actions);
+    };
+    assert.deepStrictEqual(
+      starts({ _tag: "Insert", spec: spec("i"), anchor: key("r"), side: "before" }),
+      ["i", "r"],
+    );
+    assert.deepStrictEqual(
+      starts({
+        _tag: "InsertGroup",
+        key: key("n"),
+        parts: [spec("n1"), spec("n2")],
+        fingerprint: "n",
+        anchor: key("r"),
+        side: "before",
+      }),
+      ["n1", "n2", "r"],
+    );
+  });
 });

@@ -938,12 +938,16 @@ const unjudged = (item: PlanItem): boolean => {
 /**
  * The start an insert takes from its anchor. A playing anchor's is spent, so the insert follows it
  * at the next boundary. An `At` anchor's lateness belongs to the anchor's content: past its time
- * an insert after it airs at the next boundary. One before it keeps it, since it airs no later.
+ * an insert after it airs at the next boundary. One before it keeps it, since it airs no later,
+ * unless its readiness has been judged and kept it: that bound has passed, and the anchor airs at
+ * the next boundary however late, so the insert does too.
  */
 const insertStart = (anchor: PlanItem, side: "before" | "after"): PlanSpec["start"] => {
   if (anchor.phase === "Started") return { _tag: "Follow" };
   const start = anchor.spec.start;
-  return start._tag === "At" && side === "after" ? { ...start, late: "nextBoundary" } : start;
+  return start._tag === "At" && (side === "after" || anchor.keptLate === true)
+    ? { ...start, late: "nextBoundary" }
+    : start;
 };
 /** How an item with `start` airs: at once, held until released, or in its turn. */
 const modeOf = (start: PlanSpec["start"]): PlanItem["mode"] => {

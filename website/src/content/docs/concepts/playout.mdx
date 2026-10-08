@@ -469,7 +469,8 @@ export const acknowledge = Effect.fn("acknowledge")(function* (
 ```
 
 An inserted group takes the anchor's lane and a place right beside it, its first part the
-anchor's start as an insert does (after an `At` anchor, without its lateness), and its `window`;
+anchor's start as an insert does (after an `At` anchor without its lateness, and before one kept
+by `readyBy` at the next boundary), and its `window`;
 the rest follow it. It is refused with `InvalidItem` in a lane that is not strict, where what is
 placed after it need not wait for it, and its anchor and side are part of it, as an insert's are.
 In a batch it follows the batch's rules: a first part due by a firm `startBy` is not held, and it

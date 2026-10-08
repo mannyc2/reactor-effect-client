@@ -384,7 +384,8 @@ export interface GroupSpec<Req extends ClipRequest = Request> {
  * `after` an item already playing airs at the next boundary; `before` one refuses.
  * It takes the anchor's lane, place, group and start. After an `At` anchor it
  * does not take the anchor's `late`: past the anchor's time it airs at the next
- * boundary.
+ * boundary. Before one, it does, unless the anchor was judged by `readyBy` and
+ * kept already: then it airs at the next boundary too.
  */
 export interface InsertSpec<Req extends ClipRequest = Request> extends ClipSpec<Req> {
   readonly before?: ItemKey | undefined;
