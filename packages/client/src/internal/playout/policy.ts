@@ -3430,12 +3430,19 @@ const decide = <Req extends ClipRequest>(
       if (member !== undefined) seatBesideReplaced(item, member, old);
     }
   }
-  // A batch takes effect once everything it adds is Ready or has settled.
+  // A batch takes effect once everything it adds is Ready or has settled, or as soon as any of it
+  // starts, or may have: what it takes off must not air after what it adds.
   for (const batch of state.batches) {
-    const done = batch.adds.every((key) => {
-      const phase = items.get(key)?.phase;
-      return phase === undefined || phase === "Ready" || phase === "Started" || phase === "Settled";
-    });
+    const added = batch.adds.map((key) => items.get(key));
+    const done =
+      added.some((item) => item !== undefined && startedOrUnseen(item)) ||
+      added.every(
+        (item) =>
+          item === undefined ||
+          item.phase === "Ready" ||
+          item.phase === "Started" ||
+          item.phase === "Settled",
+      );
     if (!done) continue;
     state = { ...state, batches: state.batches.filter((value) => value.id !== batch.id) };
     for (const key of batch.adds) if (items.has(key)) set(key, { batch: undefined });
@@ -5318,14 +5325,17 @@ const decide = <Req extends ClipRequest>(
       done.has(item) ||
       gone.has(item) ||
       pool.some((clip) => clip.item === item && clip.readyAt <= time);
-    // A pending batch holds what it adds until all of it is Ready.
+    // As the plan commits a batch: it holds what it adds until all of it is Ready, or until any of
+    // it starts, before the run or in it.
     const open = (id: number | undefined, time: number): boolean => {
       const batch = id === undefined ? undefined : state.batches.find((value) => value.id === id);
+      const added = (batch?.adds ?? []).flatMap((key) => {
+        const add = items.get(key);
+        return add === undefined ? [] : [add];
+      });
       return (
-        batch?.adds.some((key) => {
-          const add = items.get(key);
-          return add !== undefined && !readyBy(add, time);
-        }) === true
+        !added.some((add) => done.has(add) || startedOrUnseen(add)) &&
+        added.some((add) => !readyBy(add, time))
       );
     };
     // As `behindInGroup`: one that held it as the run started holds until it airs or goes.

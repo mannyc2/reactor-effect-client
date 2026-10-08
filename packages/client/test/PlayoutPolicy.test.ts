@@ -2776,6 +2776,39 @@ describe("PlayoutPolicy, edit claims", () => {
     const moves = commands(policy.actions).filter((action) => action.command._tag === "Move");
     assert.deepStrictEqual(moves.at(-1)?.command, { _tag: "Move", clipId: "c-b", position: 0 });
   });
+
+  // With nothing else Ready, the provider may start what a pending batch holds: what the batch
+  // withdraws must not air after it.
+  it("a batch commits when one of its adds starts before the rest are Ready", () => {
+    const policy = drive({ config: { ...config, maxBuildsInFlight: 3 } });
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("w"));
+    policy.reply({ _tag: "Done", clipId: "c-w" });
+    policy.observe({ building: [clip("c-w", item("w"))] });
+    policy.edit(
+      [
+        { _tag: "Withdraw", key: key("w") },
+        { _tag: "Submit", spec: spec("v") },
+        { _tag: "Submit", spec: spec("v2") },
+      ],
+      true,
+    );
+    assert.deepStrictEqual(enqueued(policy.actions), ["w", "v"]);
+    policy.reply({ _tag: "Done", clipId: "c-v" });
+    assert.deepStrictEqual(enqueued(policy.actions), ["w", "v", "v2"]);
+    policy.reply({ _tag: "Done", clipId: "c-v2" });
+    const v = clip("c-v", item("v"));
+    const building = [clip("c-w", item("w")), clip("c-v2", item("v2"))];
+    policy.observe({ ready: [v], building });
+    const started = policy.event({ _tag: "Started", clip: v });
+    assert.isTrue(started.actions.some((action) => action._tag === "Committed"));
+    policy.observe({ playing: v, building });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-w" });
+    policy.reply({ _tag: "Done" });
+    policy.observe({ playing: v, building: [clip("c-v2", item("v2"))] });
+    assert.deepStrictEqual(statuses(policy.actions, "w"), ["Accepted", "Building", "Dropped"]);
+  });
 });
 
 describe("PlayoutPolicy, groups", () => {
