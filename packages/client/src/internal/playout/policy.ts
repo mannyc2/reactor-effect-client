@@ -1566,16 +1566,32 @@ const decide = <Req extends ClipRequest>(
   const live = <I extends PlanItem>(item: I | undefined): item is I =>
     item !== undefined && item.phase !== "Settled";
   /**
-   * Seats the insert `key` right behind `member`, a later member, for good, and the inserts placed
-   * right before or after it that sat where it did: an insert stays beside its anchor.
+   * Seats the insert `key` right behind `member`, a later member, for good, if that seat is later
+   * than its own, and with it the inserts placed right before or after it, or after the items it
+   * replaces, that sat where it did: an insert stays beside its anchor.
    */
   const seatBehind = (key: ItemKey, member: PlanItem): void => {
     const item = items.get(key);
     if (item === undefined || item.behind === member.spec.key || member.order <= item.order) return;
+    const seat = [...seatOf(roster, member), item.order];
+    if (compareSeat(seat, seatOf(roster, item)) <= 0) return;
     const was = item.behind;
     set(key, { behind: member.spec.key });
+    // The insert and the items it replaces, beside which those inserts were placed.
+    const place = new Set<ItemKey>();
+    let at: PlanItem | undefined = item;
+    while (at !== undefined && !place.has(at.spec.key)) {
+      place.add(at.spec.key);
+      at = at.replaces === undefined ? undefined : items.get(at.replaces);
+    }
     for (const other of [...items.values()])
-      if (other.inserted && other.anchor?.key === key && live(other) && other.behind === was)
+      if (
+        other.inserted &&
+        other.anchor !== undefined &&
+        place.has(other.anchor.key) &&
+        live(other) &&
+        other.behind === was
+      )
         seatBehind(other.spec.key, member);
   };
   const readyOf = (value: Session<Req>): ReadonlyArray<SourceClip> => value.source?.ready ?? [];
@@ -4393,7 +4409,9 @@ const decide = <Req extends ClipRequest>(
     const ranks = new Map<PlanItem, Rank>();
     const place = placeRank(item, ranks);
     const before = (rank: Rank) => compareRank(rank, place) < 0;
-    let best: { readonly rank: Rank; readonly clipId: string | undefined } | undefined;
+    let best:
+      | { readonly rank: Rank; readonly clipId: string | undefined; readonly elsewhere?: true }
+      | undefined;
     for (const clip of readyOf(target)) {
       const rank = rankClip(clip, ranks);
       const owner = itemOf(clip);
@@ -4421,6 +4439,20 @@ const decide = <Req extends ClipRequest>(
         if (before(rank) && (best === undefined || compareRank(rank, best.rank) > 0))
           best = { rank, clipId: undefined };
       }
+    // A clip Ready just before it on another session airs between: there is nothing to continue.
+    for (const other of items.values())
+      if (
+        other.phase === "Ready" &&
+        other.sessionId !== target.id &&
+        other.withdraw === undefined &&
+        !superseded.has(other.spec.key) &&
+        replacedOf(item) !== other
+      ) {
+        const rank = placeRank(other, ranks);
+        if (before(rank) && (best === undefined || compareRank(rank, best.rank) > 0))
+          best = { rank, clipId: undefined, elsewhere: true };
+      }
+    if (best?.elsewhere === true) return { _tag: "from", clipId: undefined };
     if (best !== undefined && best.clipId === undefined) return { _tag: "wait" };
     const predecessor =
       best?.clipId ?? (target.id === state.air ? target.source?.playing?.clipId : undefined);
