@@ -988,6 +988,26 @@ const behindInGroup = (roster: Roster, item: PlanItem): boolean => {
   return false;
 };
 /**
+ * Whether a member waits for a member of its group seated after it to air: the item it follows is
+ * one, or the items followed in turn from there lead to one, through items of any group or none.
+ */
+const followsLater = (roster: Roster, item: PlanItem): boolean => {
+  const group = item.group;
+  if (group === undefined) return false;
+  const seat = seatOf(roster, item);
+  // A chain that comes round to an item it met ends there.
+  const met = new Set<ItemKey>([item.spec.key]);
+  let follows = item.spec.follows;
+  while (follows?._tag === "Item" && !met.has(follows.key)) {
+    met.add(follows.key);
+    const followed = roster.items.get(follows.key);
+    if (followed?.group?.key === group.key && compareSeat(seatOf(roster, followed), seat) > 0)
+      return true;
+    follows = followed?.spec.follows;
+  }
+  return false;
+};
+/**
  * Whether a place, its part and the replacements that took its place, can no longer air in order,
  * so the members after it go: none of its items started, or may have, and none may still air; or
  * one started and then failed, as one lost with its session on air does.
@@ -2162,24 +2182,17 @@ const decide = <Req extends ClipRequest>(
       for (const [group, value] of saved.groups) groups.set(group, value);
       state = { ...state, nextOrder: saved.nextOrder };
     };
-    // A member that follows a member of its group seated after it would wait for that member to
-    // air, while that member waits behind it: neither would.
+    // A member that waits for a member of its group seated after it to air, while that member
+    // waits behind it, would never air, nor would that member.
     for (const key of adds) {
       const item = items.get(key);
-      const follows = item?.spec.follows;
-      const followed = follows?._tag === "Item" ? items.get(follows.key) : undefined;
-      if (
-        item?.group !== undefined &&
-        followed?.group?.key === item.group.key &&
-        compareSeat(seatOf(roster, followed), seatOf(roster, item)) > 0
-      ) {
-        restore();
-        return refuse({
-          _tag: "InvalidItem",
-          key,
-          message: "follows names a member of its group placed after it",
-        });
-      }
+      if (item === undefined || !followsLater(roster, item)) continue;
+      restore();
+      return refuse({
+        _tag: "InvalidItem",
+        key,
+        message: "follows waits for a member of its group placed after it",
+      });
     }
     const deadlines = adds.flatMap((key) => {
       const item = items.get(key)!;

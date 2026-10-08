@@ -277,7 +277,8 @@ export interface InsertSpec<Req extends ClipRequest = Request> extends ClipSpec<
    * `InvalidItem` in a cutting lane, naming the item's own key or a group key,
    * or naming filler on a playout without filler or by an index that is not a
    * whole number. Placed in a group, it is refused with `InvalidItem` naming a
-   * member of that group after it, since that member waits behind it.
+   * member of that group after it, or an item that leads to one through the
+   * items followed in turn, since that member waits behind it.
    */
   readonly follows?: ClipTag | undefined;
 }

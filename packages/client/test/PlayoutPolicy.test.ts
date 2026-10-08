@@ -3038,7 +3038,7 @@ describe("PlayoutPolicy, groups", () => {
   const waitsOnItself = (name: string): Policy.Refusal => ({
     _tag: "InvalidItem",
     key: key(name),
-    message: "follows names a member of its group placed after it",
+    message: "follows waits for a member of its group placed after it",
   });
   const refusalOf = (actions: ReadonlyArray<Policy.Action>) =>
     actions.find((action) => action._tag === "Refused")?.refusal;
@@ -3116,6 +3116,34 @@ describe("PlayoutPolicy, groups", () => {
     ]);
     assert.deepStrictEqual(refusalOf(actions), waitsOnItself("z"));
     assert.isFalse(policy.state().items.has(key("z")));
+  });
+
+  // An insert that follows an item of no group, which follows a later member of the insert's group,
+  // waits for that member to air, while that member waits behind the insert. The check read the
+  // insert's own `follows` alone: it was admitted, and the group stalled.
+  it("refuses an insert whose follows chain reaches a member of its group placed after it", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.edit([group(1, ["a1", "a2"])]);
+    policy.submit({ ...spec("w"), follows: item("a2") });
+    // u and v follow each other: a chain into them ends there.
+    policy.edit([
+      { _tag: "Submit", spec: { ...spec("u"), follows: item("v") } },
+      { _tag: "Submit", spec: { ...spec("v"), follows: item("u") } },
+    ]);
+    const insert = (follows: string) =>
+      policy.edit([
+        {
+          _tag: "Insert",
+          spec: { ...spec(`i-${follows}`), follows: item(follows) },
+          anchor: key("a1"),
+          side: "after",
+        },
+      ]).actions;
+    assert.deepStrictEqual(refusalOf(insert("w")), waitsOnItself("i-w"));
+    assert.isFalse(policy.state().items.has(key("i-w")));
+    assert.isUndefined(refusalOf(insert("u")));
   });
 
   // An insert whose continued build continues from a later part's clip airs right behind that
