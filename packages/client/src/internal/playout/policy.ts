@@ -1738,9 +1738,9 @@ const decide = <Req extends ClipRequest>(
     a.order - b.order;
   /** A group's part may build only once the part before it was admitted. */
   const previousAdmitted = (item: Item<Req>): boolean => {
-    // An insert waits for whatever airs just before it in its lane to be admitted; in a group, for
-    // the member seated just before it, as the rest of the lane may be another group's waiting on
-    // this one.
+    // An insert waits for the item just before it in its lane to be admitted. One in a group waits
+    // only for the member of its group seated just before it, if any: the lane's item before it
+    // may be another group's, waiting on this one.
     if (item.inserted && item.group !== undefined) {
       const seat = seatOf(roster, item);
       const before = roster
@@ -4822,14 +4822,18 @@ const decide = <Req extends ClipRequest>(
         .filter((order) => order > anchor.order),
     );
     const playing = anchor.phase === "Started";
+    const order = (anchor.order + neighbour) / 2;
+    // Beside an insert that sits behind a later member, it sits behind that member too.
+    const behind = anchor.behind === undefined ? undefined : items.get(anchor.behind);
     return {
       item: newItem(spec, {
-        order: (anchor.order + neighbour) / 2,
+        order,
         group: anchor.group,
         inserted: true,
         anchor: { key: anchor.spec.key, side: "after" },
         mode: playing ? "follow" : anchor.mode,
         followsAired: aired,
+        behind: behind !== undefined && behind.order > order ? anchor.behind : undefined,
       }),
       submitAt,
       anchor: anchor.spec.key,

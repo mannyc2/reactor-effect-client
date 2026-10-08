@@ -4318,4 +4318,20 @@ describe("PlayoutPolicy, groups", () => {
     provide(policy, "s2", 4, replacement, log);
     assert.include(log, `enqueue c from ${readyIn(replacement, "b").clipId}`);
   });
+
+  // A clip placed right after an insert that sits behind a later part was projected at its own
+  // order, ahead of that part, and so never right after the insert.
+  it("places a clip right after an insert that sits behind a later part", () => {
+    const { policy } = seatedInsert();
+    const { actions } = policy.send({
+      _tag: "Place",
+      id: 1,
+      probe: { seconds: 20, continuity: false, submitInMs: 0 },
+    });
+    const placement = actions.find((action) => action._tag === "Placed");
+    assert.deepStrictEqual(
+      placement?._tag === "Placed" ? placement.placement?.after : placement,
+      item("i"),
+    );
+  });
 });
