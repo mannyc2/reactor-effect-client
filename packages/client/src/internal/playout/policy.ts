@@ -295,8 +295,9 @@ interface Item<Req extends ClipRequest = Request> {
    */
   readonly follows?: string | undefined;
   /**
-   * For an insert whose latest build went out continuing from a later member's clip, that member:
-   * it sits right behind it while that build is out, though that clip is taken back.
+   * The later member of its group an insert sits right behind, for good: one whose clip a build
+   * of it went out continuing from, the one the item it replaces sits behind, or the one its
+   * anchor sits behind. That clip may be taken back, and its own build too.
    */
   readonly behind?: ItemKey | undefined;
   readonly everUnknown: boolean;
@@ -937,8 +938,8 @@ const rosterOf = (
 };
 /**
  * The later member of the group of `item`, an insert, whose clip on `sessionId` is `clipId`: a
- * continued build that would be Ready only after the clip before its place ended continues from
- * it instead, and airs right behind it.
+ * continued build of it that continues from that clip airs right behind that member, as one that
+ * would be Ready only after the clip before its place ended does.
  */
 const laterMemberWith = (
   roster: Roster,
@@ -955,28 +956,18 @@ const laterMemberWith = (
   }
   return undefined;
 };
-/** Whether an item's build has not finished: it is not sent, or sent and not Ready yet. */
-const unbuilt = (item: PlanItem): boolean =>
-  item.phase === "Accepted" || item.phase === "Building" || item.phase === "Unknown";
 /** A member's seat in its group's order: an order, then how far behind it, then its own order. */
 type Seat = readonly [number, number, number];
 /**
- * Where a member sits in its group's order: at its own order; for an insert whose build went out
- * continuing from the clip of a later member, right behind that member, where it airs; and for a
- * replacement not built yet, where what it replaces sits, since a seat belongs to its place.
+ * Where a member sits in its group's order: at its own order, or right behind the later member it
+ * sits behind (`behind`), where it airs. A member sits behind only one of a greater order, so the
+ * chain ends.
  */
 const seatOf = (roster: Roster, item: PlanItem): Seat => {
-  const ahead =
-    item.inserted && item.phase !== "Accepted" && item.behind !== undefined
-      ? roster.items.get(item.behind)
-      : undefined;
-  if (ahead !== undefined) {
-    const seat = seatOf(roster, ahead);
-    return [seat[0], seat[1] + 1, item.order];
-  }
-  const replaced =
-    item.replaces !== undefined && unbuilt(item) ? roster.items.get(item.replaces) : undefined;
-  return replaced === undefined ? [item.order, 0, item.order] : seatOf(roster, replaced);
+  const ahead = item.behind === undefined ? undefined : roster.items.get(item.behind);
+  if (ahead === undefined) return [item.order, 0, item.order];
+  const seat = seatOf(roster, ahead);
+  return [seat[0], seat[1] + 1, item.order];
 };
 const compareSeat = (a: Seat, b: Seat): number => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 /** Whether a member holds back those seated after it: it may still air, and has not started. */
@@ -1549,6 +1540,19 @@ const decide = <Req extends ClipRequest>(
 
   const live = <I extends PlanItem>(item: I | undefined): item is I =>
     item !== undefined && item.phase !== "Settled";
+  /**
+   * Seats the insert `key` right behind `member`, a later member, for good, and the inserts placed
+   * right before or after it that sat where it did: an insert stays beside its anchor.
+   */
+  const seatBehind = (key: ItemKey, member: PlanItem): void => {
+    const item = items.get(key);
+    if (item === undefined || item.behind === member.spec.key || member.order <= item.order) return;
+    const was = item.behind;
+    set(key, { behind: member.spec.key });
+    for (const other of [...items.values()])
+      if (other.inserted && other.anchor?.key === key && live(other) && other.behind === was)
+        seatBehind(other.spec.key, member);
+  };
   const readyOf = (value: Session<Req>): ReadonlyArray<SourceClip> => value.source?.ready ?? [];
   /** Whether a session still holds the air: it takes new work, or has clips of its own to air. */
   const holding = (value: Session<Req> | undefined): boolean =>
@@ -2136,11 +2140,14 @@ const decide = <Req extends ClipRequest>(
                 ? Math.max(anchor.order - 1, ...sameLane.filter((order) => order < anchor.order))
                 : Math.min(anchor.order + 1, ...sameLane.filter((order) => order > anchor.order));
             const playing = anchor.phase === "Started";
+            const order = (anchor.order + neighbour) / 2;
+            // Beside an insert that sits behind a later member, it sits behind that member too.
+            const behind = anchor.behind === undefined ? undefined : items.get(anchor.behind);
             put(
               newItem(
                 { ...edit.spec, lane: anchor.spec.lane, start: insertStart(anchor, edit.side) },
                 {
-                  order: (anchor.order + neighbour) / 2,
+                  order,
                   group:
                     anchor.group === undefined
                       ? undefined
@@ -2148,6 +2155,7 @@ const decide = <Req extends ClipRequest>(
                   inserted: true,
                   anchor: { key: edit.anchor, side: edit.side },
                   mode: playing ? "follow" : anchor.mode,
+                  behind: behind !== undefined && behind.order > order ? anchor.behind : undefined,
                 },
               ),
             );
@@ -2179,8 +2187,9 @@ const decide = <Req extends ClipRequest>(
                   group: old.group,
                   inserted: old.inserted,
                   // An insert's replacement is placed where the insert is, after or before its
-                  // anchor, and so waits behind it as the insert does.
+                  // anchor, and so waits behind it as the insert does, and sits where it sits.
                   anchor: old.anchor,
+                  behind: old.behind,
                   replaces: old.spec.key,
                   mode: old.mode,
                   ...(part ? { notBefore: old.notBefore } : {}),
@@ -3879,8 +3888,9 @@ const decide = <Req extends ClipRequest>(
         retryAt: undefined,
         continued: from.clipId !== undefined,
         follows: from.follows,
-        behind: laterMemberWith(roster, item, from.follows, target.id)?.spec.key,
       });
+      const member = laterMemberWith(roster, item, from.clipId, target.id);
+      if (member !== undefined) seatBehind(item.spec.key, member);
       return queueCommand(
         target.id,
         {

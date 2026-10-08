@@ -3929,4 +3929,105 @@ describe("PlayoutPolicy, groups", () => {
     for (const time of [23_000, 27_100, 29_200]) boundary(policy, "s1", held, time);
     assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "ir", "p2"]);
   });
+
+  /**
+   * x airs from 13 s to 43 s on s1, with p1 and p2 Ready behind it. With 5 s of x left, i's
+   * continued build would be Ready only after p1 ends: it continues from p2's clip, and sits
+   * behind p2. Measured builds take 0.4 s a second; i's takes 1 s.
+   */
+  const seatedInsert = (settings: Policy.Config = config) => {
+    const policy = drive({ config: settings, from: measured });
+    policy.tick(0);
+    policy.open();
+    const log: Array<string> = [];
+    const held = queues();
+    policy.submit(spec("x", 1, 30), 10);
+    provide(policy, "s1", 1, held, log);
+    const x = readyIn(held, "x");
+    held.ready = [];
+    held.playing = x;
+    policy.event({ _tag: "Started", clip: x }, "s1", 13_000);
+    shown(policy, "s1", held, 13_001);
+    policy.edit([group(1, ["p1", "p2"])], false, 13_100);
+    provide(policy, "s1", 6, held, log);
+    policy.edit(
+      [
+        {
+          _tag: "Insert",
+          spec: { ...spec("i", 1, 12), continuity: true },
+          anchor: key("p1"),
+          side: "after",
+        },
+      ],
+      false,
+      38_000,
+    );
+    provide(policy, "s1", 4, held, log, 1_000);
+    assert.strictEqual(policy.state().items.get(key("i"))?.follows, readyIn(held, "p2").clipId);
+    return { policy, held, log };
+  };
+  /** x ends, then p1, then p2 (5 s each), then i (12 s), as H3 with autoplay on takes them. */
+  const playOut = (policy: ReturnType<typeof drive>, held: Queues, log: Array<string>) => {
+    for (const time of [43_000, 48_100, 53_200, 65_300]) {
+      boundary(policy, "s1", held, time);
+      provide(policy, "s1", 6, held, log);
+    }
+  };
+
+  // The insert's replacement sat behind p2 only until it was built. One continued from p2's clip,
+  // as the clip before its seat, then aired ahead of p2; one that follows p2 waited for p2 ahead
+  // of it, and was dropped as displaced, with the insert already gone as replaced.
+  it("keeps an insert's replacement behind the part the insert sits behind, built or not", () => {
+    for (const next of [
+      { ...spec("ir", 1, 6), continuity: true },
+      { ...spec("ir", 1, 3), follows: item("p2") },
+    ]) {
+      const { policy, held, log } = seatedInsert();
+      policy.edit([{ _tag: "Replace", key: key("i"), spec: next }]);
+      provide(policy, "s1", 8, held, log);
+      playOut(policy, held, log);
+      const how = next.continuity ? "continued" : "following p2";
+      assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2", "ir"], how);
+    }
+  });
+
+  // A replacement its batch holds back, Ready, left the insert's seat for its own order, before p2,
+  // while the insert stayed as cover: p2 waited behind the held replacement, and y, a lower lane's
+  // clip, was moved ahead of p2 and aired between the parts.
+  it("keeps a part in place behind an insert whose Ready replacement its batch holds back", () => {
+    const { policy, held, log } = seatedInsert(low);
+    policy.submit(spec("y", 2));
+    provide(policy, "s1", 4, held, log);
+    const from = held.orders.length;
+    // z never builds, so the batch stays open, and i airs as cover.
+    policy.edit(
+      [
+        { _tag: "Replace", key: key("i"), spec: spec("ir", 1, 6) },
+        { _tag: "Submit", spec: { ...spec("z"), start: { _tag: "Manual" } } },
+      ],
+      true,
+    );
+    provide(policy, "s1", 8, held, log);
+    assert.strictEqual(policy.state().items.get(key("ir"))?.phase, "Ready");
+    assert.isTrue(yBehindP2(held, from), held.orders.slice(from).join(" | "));
+    playOut(policy, held, log);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2", "i", "y"]);
+  });
+
+  // An insert placed right after the insert that sits behind p2 sat at its own order, before p2:
+  // it aired before its anchor, and one that follows its anchor was refused as waiting for a
+  // member placed after it.
+  it("seats an insert placed after one that sits behind a later part right after it", () => {
+    for (const k of [spec("k", 1, 3), { ...spec("k", 1, 3), follows: item("i") }]) {
+      const { policy, held, log } = seatedInsert();
+      const { actions } = policy.edit([
+        { _tag: "Insert", spec: k, anchor: key("i"), side: "after" },
+      ]);
+      assert.isUndefined(refusalOf(actions));
+      provide(policy, "s1", 6, held, log);
+      playOut(policy, held, log);
+      const how = k.follows === undefined ? "after i" : "following i";
+      assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2", "i", "k"], how);
+    }
+  });
 });
