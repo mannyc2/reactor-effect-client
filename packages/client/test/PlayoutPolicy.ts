@@ -222,6 +222,68 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     readonly follows: ClipTag | undefined;
     readonly removalAsked: boolean;
   }> = [];
+  /** Firm items whose first step at or after their startBy has been taken, by key and order. */
+  const due = new Set<string>();
+  /**
+   * The first step at or after a firm item's startBy withdraws it as late, unless it started, or
+   * may have, or a start of it is under way: a play of its clip in flight, or one that succeeded
+   * whose start is still to be seen. A withdrawal that came first keeps its reason, as can one the
+   * step's own input makes, an edit or a drain, or a break of the item's group, or one of an item
+   * that follows a clip. An item whose enqueue outcome is unknown may hold a clip the plan cannot
+   * name, so it is checked at the first step it is known again, as a read adopts it, unless it
+   * settles as unknown: it may have aired unseen. The scripted provider starts clips when the
+   * script says, so only the plan's decision is checked, not start times.
+   */
+  const decideLate = (before: Policy.State, input: Policy.Input) => {
+    if (state.closed) return;
+    for (const item of state.items.values()) {
+      if (item.spec.window?.firm !== true || item.startBy === undefined || clock < item.startBy)
+        continue;
+      if (item.phase === "Unknown") continue;
+      const id = `${item.spec.key}@${String(item.order)}`;
+      if (due.has(id)) continue;
+      due.add(id);
+      if (item.phase === "Started" || item.startedAt !== undefined) continue;
+      const settled = item.phase === "Settled" ? item.status?._tag : undefined;
+      if (settled === "Unobserved" || settled === "Unknown") continue;
+      const lane = state.sessions.find((value) => value.id === item.sessionId);
+      const command = lane?.busy?.command;
+      if (
+        item.clipId !== undefined &&
+        ((command?._tag === "Play" && command.clipId === item.clipId) ||
+          lane?.played?.clipId === item.clipId)
+      )
+        continue;
+      // Why it went or is going: the reason it was dropped or is withdrawn, or how it settled.
+      const status = item.status;
+      let reason: string | undefined = item.withdraw;
+      if (item.phase === "Settled")
+        reason = status?._tag === "Dropped" ? status.reason : status?._tag;
+      if (reason === undefined) {
+        problems.push(
+          `${item.spec.key}, firm and due by ${String(item.startBy)}, was kept at ${String(clock)}, ${item.phase}`,
+        );
+        continue;
+      }
+      const was = before.items.get(item.spec.key);
+      const fresh =
+        was !== undefined &&
+        was.order === item.order &&
+        was.phase !== "Settled" &&
+        was.withdraw === undefined;
+      if (
+        fresh &&
+        reason !== "late" &&
+        item.group === undefined &&
+        item.spec.follows === undefined &&
+        input._tag !== "Edit" &&
+        input._tag !== "Drain"
+      )
+        problems.push(
+          `${item.spec.key}, firm and due by ${String(item.startBy)}, went at ${String(clock)} as ${reason}`,
+        );
+    }
+  };
 
   const send = (input: Policy.Input, at = clock + 7) => {
     clock = at;
@@ -263,9 +325,11 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           new Set([...(applied.get(filler.index) ?? [])].filter((id) => id !== filler.sessionId)),
         );
     }
+    const before = state;
     const result = Policy.step(settings, state, input, { mono: clock, wall: clock });
     state = result.state;
     wake = result.wake;
+    decideLate(before, input);
     // Nothing falls due before the wake: a Tick at any instant before it does nothing, and wakes
     // at the same time. It is sampled just after the input, halfway, and just before the wake.
     const gap = result.wake === undefined ? 3_600_000 : result.wake - clock;
@@ -642,15 +706,45 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           },
         ]);
       }
-      case "batch":
+      case "batch": {
+        // Some batches add an item due by a firm deadline, which the batch does not hold; some an
+        // insert beside what the batch adds, firm or not; and some replace an item still waiting.
+        const firm = { window: { startByMs: 4_000 + (index % 3) * 4_000, firm: true } };
+        const added = { ...cued(`b${String(index)}`, 1, index), ...(index % 3 === 1 ? firm : {}) };
+        const inserted = {
+          ...cued(`b${String(index)}i`, 1, index + 1),
+          ...(index % 4 === 1 ? firm : {}),
+        };
+        const waiting = [...state.items.values()].filter(
+          (item) => item.phase !== "Settled" && item.phase !== "Started" && item.spec.key !== name,
+        );
+        const target = index % 5 < 2 ? waiting[index % Math.max(1, waiting.length)] : undefined;
+        const replacement = cued(`b${String(index)}r`, 1, index);
+        // A replacement follows what the item it replaces follows.
+        const follows = target === undefined ? undefined : paired.get(target.spec.key);
+        if (follows !== undefined) paired.set(replacement.key, follows);
         return edit(
           index,
           [
             { _tag: "Withdraw", key: key(name) },
-            { _tag: "Submit", spec: cued(`b${String(index)}`, 1, index) },
+            { _tag: "Submit", spec: added },
+            ...(index % 2 === 1
+              ? [
+                  {
+                    _tag: "Insert",
+                    spec: inserted,
+                    anchor: added.key,
+                    side: index % 8 < 4 ? "after" : "before",
+                  } as const,
+                ]
+              : []),
+            ...(target === undefined
+              ? []
+              : [{ _tag: "Replace", key: target.spec.key, spec: replacement } as const]),
           ],
           true,
         );
+      }
       case "group": {
         // The group's timing is its first part's, as the runtime builds it; the rest follow it.
         const { window: _window, ...later } = cued(`g${String(index)}b`, 1, index + 1);
