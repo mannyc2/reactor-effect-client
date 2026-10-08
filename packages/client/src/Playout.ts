@@ -1021,9 +1021,10 @@ export interface Service<Req extends ClipRequest = Request> {
    * Builds `next` for the item's place, lane, group position, start, window and
    * the clip it `follows`, the window's `notBefore` and `startBy` measured from
    * the item's own submission: a place has one time. A firm item's replacement
-   * is not checked against that `startBy` when admitted, nor dropped for a
-   * projected miss of it, since the item airs as cover; it is dropped as `late`
-   * at the deadline it took over. Once `next` is Ready the item goes as
+   * is not checked against that `startBy` when admitted. While the item may
+   * still air as cover, it is not dropped for a projected miss of it, only as
+   * `late` at that deadline; once nothing covers the place, it is dropped as
+   * soon as it is projected to miss it. Once `next` is Ready the item goes as
    * `replaced`; if the item starts first, `next` is dropped as `withdrawn`.
    * `next` builds ahead of every other item waiting in its lane except an
    * `Asap` one and the adds a pending batch does not hold.
@@ -1043,8 +1044,10 @@ export interface Service<Req extends ClipRequest = Request> {
    * run and is not held: it airs as soon as it can, and builds ahead of every
    * other item waiting in its lane except an `Asap` one. An insert may anchor on
    * an item or group the batch adds, and beside one the batch holds it is held
-   * too, whatever its window. A batch that withdraws or replaces what it adds
-   * is refused with `InvalidItem`. An insert before an add the batch does not
+   * too, whatever its window: a firm one is then checked as the batch will run,
+   * and while held is dropped as `late` only at its `startBy`. A batch whose
+   * `Withdraw` or `Replace` names an item or group it adds is refused with
+   * `InvalidItem`. An insert before an add the batch does not
    * hold, with no firm window of its own, is held, so it may air after that
    * add: give it a firm window too, or send it as its own edit.
    */

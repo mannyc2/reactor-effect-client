@@ -2142,13 +2142,16 @@ const decide = <Req extends ClipRequest>(
     return value;
   }
   /**
-   * Whether `item` is firm, not sent, and dropped once projected to miss its `startBy`. A
-   * replacement is not: it takes a place that had a time already, and goes at that `startBy`, or
-   * once what it replaces starts first.
+   * Whether `item` is firm, not sent, and dropped once projected to miss its `startBy`. One its
+   * batch holds is not: it airs once the batch commits, which a projection of its rank, behind
+   * everything while held, does not show. Nor is a replacement while what it replaces may still air
+   * as cover: it takes a place that had a time already, and goes at that `startBy`, or once what it
+   * replaces starts first.
    */
   const lateWhenProjected = (item: Item<Req>): item is Item<Req> & { readonly startBy: number } =>
     item.phase === "Accepted" &&
-    item.replaces === undefined &&
+    item.batch === undefined &&
+    (item.replaces === undefined || !live(replacedOf(item))) &&
     item.spec.window?.firm === true &&
     item.startBy !== undefined &&
     item.dispatchedAt === undefined &&
@@ -2614,10 +2617,13 @@ const decide = <Req extends ClipRequest>(
       if (item.replaces !== undefined) continue;
       // A group's later part has the group's time, none of its own; an insert beside it has its own.
       if (item.group !== undefined && item.group.index > 0 && !item.inserted) continue;
+      // One its batch holds airs once the batch commits, which the run plays out, and a projection
+      // of its rank, behind everything while held, does not.
       if (
         item.spec.window?.firm === true &&
         item.startBy !== undefined &&
-        (misses(item, item.startBy, memo) || !startsBefore(item, item.startBy, forwardRun))
+        ((item.batch === undefined && misses(item, item.startBy, memo)) ||
+          !startsBefore(item, item.startBy, forwardRun))
       ) {
         restore();
         return refuse({ _tag: "WouldMissDeadline", key });

@@ -2920,6 +2920,57 @@ describe("PlayoutPolicy, edit claims", () => {
       "Dropped",
     ]);
   });
+
+  // A firm insert placed before an add its batch holds is held with it, and airs once the batch
+  // commits, ahead of a lower lane's Ready clip: neither admission nor the deadline sweep counts
+  // that clip ahead of it.
+  it("admits a firm insert held beside an add of its batch, and airs it in its slot", () => {
+    const policy = drive({ config: withLane("low", "queue"), from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    const end = onAir(policy, held, log, 1, 15);
+    policy.submit(spec("z", 2, 10));
+    provide(policy, "s1", 2, held, log);
+    const window = { startByMs: end + 3_000 - policy.now(), firm: true };
+    const sent = policy.edit(
+      [
+        { _tag: "Submit", spec: spec("h", 1, 5) },
+        {
+          _tag: "Insert",
+          spec: { ...spec("i", 1, 5), window },
+          anchor: key("h"),
+          side: "before",
+        },
+      ],
+      true,
+    );
+    assert.isTrue(sent.actions.some((action) => action._tag === "Accepted"));
+    provide(policy, "s1", 6, held, log);
+    boundary(policy, "s1", held, end);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "i"]);
+  });
+
+  // What it replaces had nothing built, so it went at once and covers nothing: the replacement is
+  // dropped once projected to miss the deadline it took over, as that item would have been.
+  it("drops an uncovered replacement once projected to miss the deadline it took over", () => {
+    const policy = drive({ config: withLane("low", "queue"), from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    const end = onAir(policy, held, log, 2, 15);
+    // q holds the one build slot.
+    held.slow.add("q");
+    policy.submit(spec("q", 2, 5));
+    provide(policy, "s1", 1, held, log);
+    const window = { startByMs: end + 3_000 - policy.now(), firm: true };
+    policy.submit({ ...spec("y", 1, 5), window });
+    policy.edit([{ _tag: "Replace", key: key("y"), spec: spec("r", 1, 5) }]);
+    assert.deepStrictEqual(statuses(policy.actions, "y"), ["Accepted", "Dropped"]);
+    assert.deepStrictEqual(statuses(policy.actions, "r"), ["Accepted"]);
+    // Ahead of r's place, u leaves it no time to make its deadline.
+    policy.submit({ ...spec("u", 1, 10), start: { _tag: "Asap" } });
+    assert.deepStrictEqual(statuses(policy.actions, "r"), ["Accepted", "Dropped"]);
+    assert.notInclude(enqueued(policy.actions), "r");
+  });
 });
 
 describe("PlayoutPolicy, groups", () => {
