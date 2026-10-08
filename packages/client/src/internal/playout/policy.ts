@@ -998,10 +998,12 @@ const brokenPlace = (placed: ReadonlyArray<PlanItem>): boolean =>
 
 /**
  * Whether an item's clip is queued to air at its place: it isn't held, waiting on its batch or the
- * clip it follows, or withdrawn. An earlier member of its group may still hold it, and an `At`
- * item's time may still be to come.
+ * clip it follows, withdrawn, or settled, as one whose removal applied is though a read may still
+ * list it. An earlier member of its group may still hold it, and an `At` item's time may still be
+ * to come.
  */
 const queuedAtPlace = (roster: Roster, item: PlanItem): boolean =>
+  item.phase !== "Settled" &&
   item.mode !== "held" &&
   item.batch === undefined &&
   item.withdraw === undefined &&
@@ -1740,7 +1742,7 @@ const decide = <Req extends ClipRequest>(
         return (
           compareRank(rankClip(clip, memo.ranks), rank) < 0 &&
           other?.withdraw === undefined &&
-          (other === undefined || keeps(other, memo))
+          (other === undefined || (live(other) && keeps(other, memo)))
         );
       })
       .reduce((total, clip) => total + clip.seconds * 1000, 0);
@@ -4285,12 +4287,14 @@ const decide = <Req extends ClipRequest>(
     for (const clip of readyOf(target)) {
       const rank = rankClip(clip, ranks);
       const owner = itemOf(clip);
-      // What this item replaces, or a batch is taking off, is no predecessor, nor a clip of its own.
+      // What this item replaces, or a batch is taking off, is no predecessor, nor a clip of its own,
+      // nor one whose item settled, as a read may still list it once its removal applied.
       if (
         before(rank) &&
         owner?.withdraw === undefined &&
         !ownClip(item, clip) &&
-        (owner === undefined || (!superseded.has(owner.spec.key) && replacedOf(item) !== owner)) &&
+        (owner === undefined ||
+          (live(owner) && !superseded.has(owner.spec.key) && replacedOf(item) !== owner)) &&
         (best === undefined || compareRank(rank, best.rank) > 0)
       )
         best = { rank, clipId: clip.clipId };

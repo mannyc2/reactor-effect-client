@@ -3468,6 +3468,32 @@ describe("PlayoutPolicy, groups", () => {
     assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-p3" });
   });
 
+  // w, urgent, waits Ready ahead of p2 on s2; it is withdrawn, and its removal is refused once.
+  // As s2 takes the air after s1 is lost with p1, w's removal goes again and applies, its reply
+  // ahead of the read that shows w gone. The clip still listed counted as air ahead of p2, so p2
+  // was not taken off: autoplay came on, and H3 started p2 before p1 was built again.
+  it("counts a clip whose removal applied as no air, though a read still lists it", () => {
+    const { policy } = acrossRenewal();
+    policy.submit(spec("w", 0));
+    policy.reply({ _tag: "Done", clipId: "c-w" }, undefined, "s2");
+    const w = clip("c-w", item("w"));
+    const p2 = clip("c-p2", item("p2"));
+    policy.observe({ ready: [p2, w] }, "s2", policy.now() + 2_000);
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Move", clipId: "c-w", position: 0 });
+    policy.observe({ ready: [w, p2] }, "s2");
+    policy.reply({ _tag: "Done" }, undefined, "s2");
+    policy.edit([{ _tag: "Withdraw", key: key("w") }]);
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-w" });
+    policy.reply(failed("replied"), undefined, "s2");
+    policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" });
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-w" });
+    policy.reply({ _tag: "Done" }, undefined, "s2");
+    // p2 waits behind p1, which is to be built again: it is taken off before autoplay comes on.
+    assert.deepStrictEqual(policy.busy("s2"), { _tag: "Remove", clipId: "c-p2" });
+    const now = { mono: policy.now(), wall: policy.now() };
+    assert.strictEqual(Policy.view(config, policy.state(), now).runwaySeconds, 0);
+  });
+
   const moved = (actions: ReadonlyArray<Policy.Action>) =>
     commands(actions).filter((action) => action.command._tag === "Move").length;
 
