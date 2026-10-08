@@ -2412,13 +2412,19 @@ const decide = <Req extends ClipRequest>(
     const replaceWaiting = (lane: number, by: ItemKey | undefined): void => {
       if (config.lanes[lane]?.conflict !== "replace") return;
       batched = true;
+      // An earlier add of this edit in the lane goes at once, so what it would have taken over
+      // waits for this one instead.
+      for (const [index, target] of targets.entries())
+        if (target.by !== undefined && items.get(target.by)?.spec.lane === lane)
+          targets[index] = { ...target, by };
       for (const other of items.values())
         if (
           other.spec.lane === lane &&
           (other.phase === "Accepted" ||
             other.phase === "Building" ||
             other.phase === "Ready" ||
-            other.phase === "Unknown")
+            other.phase === "Unknown") &&
+          !targets.some((target) => target.key === other.spec.key && target.by === by)
         )
           targets.push({ key: other.spec.key, index: -1, reason: "replaced", by });
     };

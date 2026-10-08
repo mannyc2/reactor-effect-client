@@ -3003,6 +3003,33 @@ describe("PlayoutPolicy, edit claims", () => {
     );
     assert.notInclude(names, "c");
   });
+
+  // A batch's second add to a lane that replaces takes its first add there off at once. Since
+  // 5830107 what waited in the lane named that first add as taking its place, so it went once the
+  // batch committed, with nothing Ready to cover it.
+  it("keeps a replacing lane's cover until the batch's last add there is Ready", () => {
+    const policy = drive({ config: withLane("ticker", "replace"), from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    const end = onAir(policy, held, log, 1, 10);
+    policy.submit(spec("t1", 2, 5));
+    provide(policy, "s1", 2, held, log);
+    held.slow.add("n2");
+    const window = { startByMs: end + 3_000 - policy.now(), firm: true };
+    policy.edit(
+      [
+        { _tag: "Submit", spec: { ...spec("f", 1, 5), window } },
+        { _tag: "Submit", spec: spec("n1", 2, 5) },
+        { _tag: "Submit", spec: spec("n2", 2, 5) },
+      ],
+      true,
+    );
+    provide(policy, "s1", 4, held, log);
+    boundary(policy, "s1", held, end);
+    provide(policy, "s1", 3, held, log);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "f"]);
+    assert.deepStrictEqual(statuses(policy.actions, "t1"), ["Accepted", "Building", "Ready"]);
+  });
 });
 
 describe("PlayoutPolicy, groups", () => {
