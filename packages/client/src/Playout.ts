@@ -14,6 +14,7 @@
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
+import { dual } from "effect/Function";
 import * as Layer from "effect/Layer";
 import type * as Redacted from "effect/Redacted";
 import type * as Scope from "effect/Scope";
@@ -192,6 +193,125 @@ export interface Placement {
    */
   readonly continues: boolean;
 }
+
+/** A clip a forecast projects to air. */
+export interface ForecastedClip {
+  /** An item, a filler clip, or null for a clip this playout did not enqueue. */
+  readonly clip: ClipTag | null;
+  /**
+   * The group it is a place of, and which; undefined for an item in no group, or one inserted
+   * beside a part.
+   */
+  readonly group: { readonly key: ItemKey; readonly part: number } | undefined;
+  /** When it is projected to start and to end, in epoch milliseconds. */
+  readonly startsAt: number;
+  readonly endsAt: number;
+  /** `playing` now; `ready` built; `building` sent and not built yet; `queued` not sent yet. */
+  readonly state: "playing" | "ready" | "building" | "queued";
+  /** The session it airs on: the one on air, or its replacement, open or still to open. */
+  readonly session: "on-air" | "replacement";
+}
+
+/** An item a forecast projects to go without airing. */
+export interface ForecastedDrop {
+  readonly key: ItemKey;
+  /** The group it is a place of, and which, as a clip's. */
+  readonly group?: { readonly key: ItemKey; readonly part: number } | undefined;
+  /**
+   * `late` past its deadline; `displaced` from the clip it follows; `withdrawn` by an edit, a
+   * group's break, or its old item airing first; `replaced` by its Ready replacement.
+   */
+  readonly reason: "late" | "displaced" | "withdrawn" | "replaced";
+  /** When the projection drops it, in epoch milliseconds; now for a withdrawal already asked. */
+  readonly at: number;
+}
+
+/** An item a forecast cannot place, and why. */
+export interface Unplaced {
+  readonly key: ItemKey;
+  /**
+   * `held` until released; `unknown`, sent with its outcome never seen; `cut`, waiting to cut a
+   * lower lane, which the projection does not model; `blocked` behind one of these: a member of
+   * its group, the item whose clip it follows, or another add of its pending batch; `beyond` what
+   * it projects: past the ten minutes it looks ahead, past the looks its run takes, or with no
+   * session on air yet.
+   */
+  readonly why: "held" | "unknown" | "cut" | "blocked" | "beyond";
+}
+
+/**
+ * What the plan projects to air from now, at the build rates it has measured: a projection, not a
+ * promise. It changes as builds are measured and items arrive, and ages between changes: a build
+ * running longer than projected shows once it ends. It looks ten minutes ahead and projects one
+ * renewal at most. Between a renewal's lead and the replacement opening, it puts new work on the
+ * replacement, but the plan keeps sending what fits to the session on air, where such a clip may
+ * air a few hundred milliseconds early. A build projected Ready right at a boundary's readiness
+ * margin can flip which clip airs first there, and the forecast is then a whole clip off.
+ */
+export interface Forecast {
+  /** When it was taken, in epoch milliseconds. */
+  readonly at: number;
+  /** In the order they air, from the clip on air, up to the last item it places. */
+  readonly clips: ReadonlyArray<ForecastedClip>;
+  /** In the order they go. */
+  readonly drops: ReadonlyArray<ForecastedDrop>;
+  /** Every item still to air that it neither airs nor drops. */
+  readonly unplaced: ReadonlyArray<Unplaced>;
+  /** When the last item it projects to air ends, in epoch milliseconds; null when none does. */
+  readonly drainsAt: number | null;
+  /** `unmeasured` before three builds were measured, when every build counts as instant. */
+  readonly basis: "measured" | "unmeasured";
+}
+
+/** Where a forecast puts an item. */
+export type ForecastedItem =
+  | { readonly _tag: "Airs"; readonly clip: ForecastedClip }
+  | { readonly _tag: "Drops"; readonly drop: ForecastedDrop }
+  | { readonly _tag: "Unplaced"; readonly why: Unplaced["why"] }
+  /** Not in it: settled already, or never submitted. */
+  | { readonly _tag: "Absent" };
+
+/** Where `forecast` puts the item `key`. */
+export const forecastFor: {
+  (key: ItemKey): (forecast: Forecast) => ForecastedItem;
+  (forecast: Forecast, key: ItemKey): ForecastedItem;
+} = dual(2, (forecast: Forecast, key: ItemKey): ForecastedItem => {
+  const clip = forecast.clips.find(
+    (entry) => entry.clip?._tag === "Item" && entry.clip.key === key,
+  );
+  if (clip !== undefined) return { _tag: "Airs", clip };
+  const drop = forecast.drops.find((entry) => entry.key === key);
+  if (drop !== undefined) return { _tag: "Drops", drop };
+  const unplaced = forecast.unplaced.find((entry) => entry.key === key);
+  return unplaced === undefined ? { _tag: "Absent" } : { _tag: "Unplaced", why: unplaced.why };
+});
+
+/**
+ * A group's places as a forecast projects them: from the start of the first it airs to the end of
+ * the last, and the places it drops. Items inserted beside its parts are not among them.
+ */
+export interface ForecastedGroup {
+  readonly startsAt: number;
+  readonly endsAt: number;
+  readonly parts: ReadonlyArray<ForecastedClip>;
+  readonly drops: ReadonlyArray<ForecastedDrop>;
+}
+
+/**
+ * Where `forecast` puts the places of the group `key`. Undefined when it airs none of them: the
+ * places it drops then appear only in `forecast.drops`.
+ */
+export const forecastGroup: {
+  (key: ItemKey): (forecast: Forecast) => ForecastedGroup | undefined;
+  (forecast: Forecast, key: ItemKey): ForecastedGroup | undefined;
+} = dual(2, (forecast: Forecast, key: ItemKey): ForecastedGroup | undefined => {
+  const parts = forecast.clips.filter((clip) => clip.group?.key === key);
+  const [first] = parts;
+  const last = parts.at(-1);
+  if (first === undefined || last === undefined) return undefined;
+  const drops = forecast.drops.filter((drop) => drop.group?.key === key);
+  return { startsAt: first.startsAt, endsAt: last.endsAt, parts, drops };
+});
 
 export interface ItemSpec<Req extends ClipRequest = Request> extends ClipSpec<Req> {
   readonly lane: string;
@@ -929,6 +1049,16 @@ export interface Service<Req extends ClipRequest = Request> {
    * or when no boundary is makeable, as before anything has aired.
    */
   readonly place: (probe: PlaceProbe) => Effect.Effect<Placement | null, InvalidItem>;
+  /**
+   * The plan's projection of what airs from now; see `Forecast`. Once the playout has stopped it
+   * projects nothing: a forecast with no clips, taken at the call.
+   */
+  readonly forecast: Effect.Effect<Forecast>;
+  /**
+   * A forecast now, then a new one each time the plan changes; a slow reader skips to the newest.
+   * It ends when the playout stops.
+   */
+  readonly forecasts: Stream.Stream<Forecast>;
   /**
    * A group key withdraws its unstarted parts, and answers `withdrawn` if any
    * part was, else `already-started` if any started; a part key withdraws that
