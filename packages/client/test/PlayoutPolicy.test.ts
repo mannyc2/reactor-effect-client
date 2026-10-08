@@ -4334,4 +4334,45 @@ describe("PlayoutPolicy, groups", () => {
       item("i"),
     );
   });
+
+  // k went in before i, an insert held unbuilt by its window, and i was replaced by ir: as nothing
+  // was built for i, ir took its place at once, before ir's build fell back to p2's clip and sat
+  // behind p2. k, placed beside the item ir replaced, stayed at its own order.
+  it("moves an insert beside a replaced item that was never built with the replacement's seat", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    const log: Array<string> = [];
+    const held = queues();
+    policy.submit(spec("x", 1, 30), 10);
+    provide(policy, "s1", 1, held, log);
+    const x = readyIn(held, "x");
+    held.ready = [];
+    held.playing = x;
+    policy.event({ _tag: "Started", clip: x }, "s1", 13_000);
+    shown(policy, "s1", held, 13_001);
+    policy.edit([group(1, ["p1", "p2"])], false, 13_100);
+    provide(policy, "s1", 6, held, log);
+    const later = { notBeforeMs: 120_000, firm: false } as const;
+    policy.edit([
+      {
+        _tag: "Insert",
+        spec: { ...spec("i", 1, 3), window: later },
+        anchor: key("p1"),
+        side: "after",
+      },
+    ]);
+    policy.edit([{ _tag: "Insert", spec: spec("k", 1, 3), anchor: key("i"), side: "before" }]);
+    provide(policy, "s1", 4, held, log);
+    readyIn(held, "k");
+    replaceBehind(policy);
+    provide(policy, "s1", 8, held, log);
+    assert.include(log, `enqueue ir from ${readyIn(held, "p2").clipId}`);
+    assert.strictEqual(policy.state().items.get(key("k"))?.behind, key("p2"));
+    for (const time of [43_000, 48_100, 53_200, 56_300]) {
+      boundary(policy, "s1", held, time);
+      provide(policy, "s1", 6, held, log);
+    }
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2", "k", "ir"]);
+  });
 });

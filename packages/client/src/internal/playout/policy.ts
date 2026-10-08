@@ -1577,12 +1577,30 @@ const decide = <Req extends ClipRequest>(
     const was = item.behind;
     set(key, { behind: member.spec.key });
     seatBeside(key, was, member);
+    // One that holds the place of what it replaces already has the inserts placed beside that.
+    const old = replacedOf(item);
+    if (
+      old?.withdraw === "replaced" ||
+      (old?.status?._tag === "Dropped" && old.status.reason === "replaced")
+    )
+      seatBesideReplaced(item, member, old);
   };
   /** Seats behind `member` the live inserts placed right before or after `key` that sat at `was`. */
   const seatBeside = (key: ItemKey, was: ItemKey | undefined, member: PlanItem): void => {
     for (const other of [...items.values()])
       if (other.inserted && other.anchor?.key === key && live(other) && other.behind === was)
         seatBehind(other.spec.key, member);
+  };
+  /**
+   * Seats behind `member` the inserts placed beside what `replacement` replaces, down to `old`,
+   * once it holds their place: each that sat where its anchor did goes where it sits.
+   */
+  const seatBesideReplaced = (replacement: PlanItem, member: PlanItem, old: PlanItem): void => {
+    let at = replacement.replaces === undefined ? undefined : items.get(replacement.replaces);
+    while (at !== undefined) {
+      seatBeside(at.spec.key, at.behind, member);
+      at = at === old || at.replaces === undefined ? undefined : items.get(at.replaces);
+    }
   };
   const readyOf = (value: Session<Req>): ReadonlyArray<SourceClip> => value.source?.ready ?? [];
   /** Whether a session still holds the air: it takes new work, or has clips of its own to air. */
@@ -3288,11 +3306,7 @@ const decide = <Req extends ClipRequest>(
       withdraw(old.spec.key, "replaced");
       // It has the place now: the inserts placed beside what it replaces go where it sits.
       const member = item.behind === undefined ? undefined : items.get(item.behind);
-      let at = items.get(item.replaces);
-      while (member !== undefined && at !== undefined) {
-        seatBeside(at.spec.key, at.behind, member);
-        at = at === old || at.replaces === undefined ? undefined : items.get(at.replaces);
-      }
+      if (member !== undefined) seatBesideReplaced(item, member, old);
     }
   }
   // A batch takes effect once everything it adds is Ready or has settled.
