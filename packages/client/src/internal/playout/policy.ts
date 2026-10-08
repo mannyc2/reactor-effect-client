@@ -39,7 +39,12 @@ import type {
 } from "../../Playout.js";
 import { ItemKey } from "./errors.js";
 
-export type Late = "nextBoundary" | "drop" | { readonly skipAfterMs: number };
+export type Late =
+  | "nextBoundary"
+  | "drop"
+  | { readonly skipAfterMs: number }
+  /** Judged once, `readyByMs` after its time, by whether it was Ready by then: see `judgeReadiness`. */
+  | { readonly readyByMs: number };
 
 /** A submission as the runtime normalized it: durations in milliseconds, lanes as indexes. */
 export interface Spec<Req extends ClipRequest = Request> {
@@ -343,6 +348,10 @@ interface Item<Req extends ClipRequest = Request> {
     | undefined;
   /** The provider's length for its clip, once it started. */
   readonly airSeconds?: number | undefined;
+  /** When it was last seen Ready, on the monotonic clock, until it went back to be built again. */
+  readonly readyAt?: number | undefined;
+  /** Judged by its readiness and kept: its `At` time no longer drops it, a firm `startBy` still does. */
+  readonly keptLate?: true | undefined;
   /** The clip it `follows` has been on air while it waited. */
   readonly followsAired?: boolean | undefined;
 }
@@ -896,11 +905,24 @@ const followHeld = <I extends PlanItem>(
   return anchor === undefined || !ahead(anchor);
 };
 const followsAiredOf = (item: PlanItem): boolean => item.followsAired === true;
-/** When an `At` item due at `at` goes late: never at the next boundary, else at or after its time. */
+/**
+ * When an `At` item due at `at` goes late: never at the next boundary, else at or after its time.
+ * One judged by its readiness is judged then, and goes late only if it is not kept.
+ */
 const lateAt = (at: number, late: Late): number => {
   if (late === "nextBoundary") return Infinity;
   if (late === "drop") return at;
-  return at + late.skipAfterMs;
+  return "readyByMs" in late ? at + late.readyByMs : at + late.skipAfterMs;
+};
+/** Whether an item's `At` start is judged by its readiness and has not been kept yet. */
+const unjudged = (item: PlanItem): boolean => {
+  const start = item.spec.start;
+  return (
+    start._tag === "At" &&
+    typeof start.late === "object" &&
+    "readyByMs" in start.late &&
+    item.keptLate !== true
+  );
 };
 /**
  * The start an insert takes from its anchor. A playing anchor's is spent, so the insert follows it
@@ -2207,19 +2229,22 @@ const decide = <Req extends ClipRequest>(
   };
   /**
    * Whether the plan keeps `item` to air rather than drop it as late: past its firm `startBy`, or
-   * its `At` time's lateness, or not sent and projected to miss its `startBy`. The sweep drops
-   * what it does not keep, and a projection counts only what it keeps ahead. Only items ahead
-   * decide that, so `memo` gathers each once.
+   * its `At` time's lateness, or not sent and projected to miss its `startBy`. One judged by its
+   * readiness goes late only as `judgeReadiness` judges it, at its bound. The sweep drops what it
+   * does not keep, and a projection counts only what it keeps ahead. Only items ahead decide that,
+   * so `memo` gathers each once.
    */
   function keeps(item: Item<Req>, memo: Memo): boolean {
     const known = memo.kept.get(item);
     if (known !== undefined) return known;
     const at = atMono(item);
+    const start = item.spec.start;
     const value = !(
       (item.spec.window?.firm === true && item.startBy !== undefined && now.mono >= item.startBy) ||
       (at !== undefined &&
-        item.spec.start._tag === "At" &&
-        now.mono >= lateAt(at, item.spec.start.late)) ||
+        start._tag === "At" &&
+        !(typeof start.late === "object" && "readyByMs" in start.late) &&
+        now.mono >= lateAt(at, start.late)) ||
       (lateWhenProjected(item) && misses(item, item.startBy, memo))
     );
     memo.kept.set(item, value);
@@ -2613,6 +2638,9 @@ const decide = <Req extends ClipRequest>(
                   mode: old.mode,
                   notBefore: old.notBefore,
                   startBy: old.startBy,
+                  // Kept by its readiness, the place stays kept; not judged yet, it is judged at
+                  // the same bound, by the replacement's own readiness.
+                  keptLate: old.keptLate,
                 },
               ),
             );
@@ -3103,6 +3131,7 @@ const decide = <Req extends ClipRequest>(
           dispatchedAt: undefined,
           unknownSince: undefined,
           unbuiltLosses: 0,
+          readyAt: now.mono,
         });
         asRun(item.spec.key, { _tag: "Ready", sessionId });
       } else if (
@@ -3197,6 +3226,7 @@ const decide = <Req extends ClipRequest>(
           sessionId: undefined,
           dispatchedAt: undefined,
           covered: undefined,
+          readyAt: undefined,
           ...(!planned && item.phase === "Building"
             ? { unbuiltLosses: item.unbuiltLosses + 1 }
             : {}),
@@ -3636,23 +3666,41 @@ const decide = <Req extends ClipRequest>(
     return { state: { ...state, items, groups }, actions, wake: undefined };
   }
 
+  /**
+   * Whether a start of `item`'s clip is under way: a play of it in flight starts it or is refused
+   * within the round trip, and the start of one that succeeded comes before its queues change.
+   */
+  const startUnderWay = (item: Item<Req>): boolean => {
+    const lane = session(item.sessionId);
+    const busy = lane?.busy?.command;
+    const played = lane?.played;
+    return (
+      item.clipId !== undefined &&
+      ((busy?._tag === "Play" && busy.clipId === item.clipId) ||
+        (played?.clipId === item.clipId && played.signature === signature(lane)))
+    );
+  };
+  /** Whether an item waits to air with an outcome the plan knows: not sent yet, building or Ready. */
+  const waitingPhase = (item: Item<Req>): boolean =>
+    item.phase === "Accepted" || item.phase === "Building" || item.phase === "Ready";
+  // An item judged by its readiness is judged once, at the first look at or after its bound, by
+  // what the look's input left: kept for good, or dropped as late. One whose start is under way is
+  // judged at the next look, if it has not started by then.
+  for (const item of [...items.values()]) {
+    const at = atMono(item);
+    const start = item.spec.start;
+    if (at === undefined || start._tag !== "At" || !unjudged(item) || !waitingPhase(item)) continue;
+    if (now.mono < lateAt(at, start.late) || startUnderWay(item)) continue;
+    if (judgeReadiness(item)) set(item.spec.key, { keptLate: true });
+    else withdraw(item.spec.key, "late");
+  }
   // Sweep every waiting item, not only the heads: expiry must not strand behind a live one. Each
   // is late from the instant its deadline falls due, where the wake is. Projections share what
   // they know until a withdrawal changes what they rest on.
   let projected = emptyMemo();
   for (const item of [...items.values()]) {
-    if (item.phase !== "Accepted" && item.phase !== "Building" && item.phase !== "Ready") continue;
-    // A play of its clip in flight starts it or is refused within the round trip, and the start of
-    // one that succeeded comes before its queues change: the next look decides then.
-    const lane = session(item.sessionId);
-    const busy = lane?.busy?.command;
-    const played = lane?.played;
-    if (
-      item.clipId !== undefined &&
-      ((busy?._tag === "Play" && busy.clipId === item.clipId) ||
-        (played?.clipId === item.clipId && played.signature === signature(lane)))
-    )
-      continue;
+    // The next look decides an item whose start is under way.
+    if (!waitingPhase(item) || startUnderWay(item)) continue;
     if (keeps(item, projected)) continue;
     withdraw(item.spec.key, "late");
     projected = emptyMemo();
@@ -4036,6 +4084,7 @@ const decide = <Req extends ClipRequest>(
       clipId: undefined,
       sessionId: undefined,
       covered: undefined,
+      readyAt: undefined,
       discarded: { sessionId: value.id, clipId },
     });
     queueCommand(value.id, { _tag: "Remove", clipId }, key);
@@ -4701,6 +4750,34 @@ const decide = <Req extends ClipRequest>(
    * an earlier item of its line with none of those Ready ahead of it, and about to be next;
    * waiting for the clip it follows and about to air before it; or an `At` item Ready too early.
    */
+  /**
+   * Whether an item judged by its readiness is kept, at the first look at or after its bound: it
+   * was Ready by then, by when it was last seen Ready, and nothing but filler airs before it. It is
+   * queued to air in its turn, held by nothing and waiting behind no other item; the clip on air
+   * is filler or none; and no item's clip airs before it in turn, on its own session or, if that is
+   * the replacement, on the session on air. A clip it waits out then may be long: once kept, it
+   * airs at the next boundary however late.
+   */
+  function judgeReadiness(item: Item<Req>): boolean {
+    const at = atMono(item);
+    const start = item.spec.start;
+    if (at === undefined || start._tag !== "At") return false;
+    const bound = lateAt(at, start.late);
+    if (item.phase !== "Ready" || item.readyAt === undefined || item.readyAt > bound) return false;
+    if (!queuedToAir(roster, item)) return false;
+    const air = session(state.air);
+    const playing = air?.source?.playing;
+    if (playing !== undefined && playing.tag?._tag !== "Filler") return false;
+    const value = session(item.sessionId);
+    if (value === undefined) return false;
+    const order = airOrder(value, airs);
+    const index = order.findIndex((clip) => clip.clipId === item.clipId);
+    const ahead = [
+      ...(air === undefined || air.id === value.id ? [] : inTurn(air, airs)),
+      ...order.slice(0, Math.max(0, index)),
+    ];
+    return index >= 0 && !ahead.some((clip) => clip.tag?._tag === "Item");
+  }
   function exposure(
     value: Session<Req>,
     item: Item<Req>,
@@ -5556,10 +5633,13 @@ const decide = <Req extends ClipRequest>(
         start: playing.at,
       });
 
+    /** Items the run judged by their readiness and kept, as `judgeReadiness` keeps one. */
+    const keptIn = new Set<PlanItem>();
     const deadline = (item: PlanItem): number => {
       const at = atMono(item);
       const late = item.spec.start._tag === "At" ? item.spec.start.late : "nextBoundary";
-      const own = at === undefined ? Infinity : lateAt(at, late);
+      const kept = item.keptLate === true || keptIn.has(item);
+      const own = at === undefined || kept ? Infinity : lateAt(at, late);
       const firm =
         item.spec.window?.firm === true && item.startBy !== undefined ? item.startBy : Infinity;
       return Math.min(own, firm);
@@ -6107,6 +6187,41 @@ const decide = <Req extends ClipRequest>(
       const index = pool.indexOf(clip);
       if (index >= 0) pool.splice(index, 1);
     };
+    /** When the run judges `item` by its readiness, if it is judged so and the run has not yet. */
+    const boundIn = (item: PlanItem): number | undefined => {
+      const at = atMono(item);
+      const start = item.spec.start;
+      return at === undefined || start._tag !== "At" || !unjudged(item) || keptIn.has(item)
+        ? undefined
+        : lateAt(at, start.late);
+    };
+    /**
+     * As `judgeReadiness`, at the bound in the run: `clip` was Ready by then, as the plan last saw
+     * it for one Ready as the run starts; it is queued to air in its turn; and nothing but filler
+     * airs at the bound or ranks ahead of it among the clips Ready by then, those of the session on
+     * air first if it is on the replacement.
+     */
+    const judgeIn = (item: PlanItem, clip: Projected, bound: number): boolean => {
+      const ready =
+        clip.readyAt <= bound || (!clip.projected && (item.readyAt ?? Infinity) <= bound);
+      if (!ready || !queuedAt(item, bound)) return false;
+      const airing = aired.find(
+        (entry) => entry.start <= bound && bound < entry.start + entry.clip.seconds * 1000,
+      );
+      if (airing !== undefined && airing.clip.tag?._tag !== "Filler") return false;
+      const ranks = new Map<PlanItem, Rank>();
+      const rank = rankIn(clip, ranks);
+      return !pool.some(
+        (other) =>
+          other !== clip &&
+          other.item !== undefined &&
+          !gone.has(other.item) &&
+          other.readyAt <= bound &&
+          airsAt(other, bound) &&
+          ((other.sessionId === onAir && clip.sessionId !== onAir) ||
+            (other.sessionId === clip.sessionId && compareRank(rankIn(other, ranks), rank) < 0)),
+      );
+    };
     // What a deadline drops, a Ready replacement displaces, or a batch commit withdraws, in the
     // order the plan sweeps them, each for its own reason.
     const purge = (time: number): void => {
@@ -6138,6 +6253,9 @@ const decide = <Req extends ClipRequest>(
         const taken = (targetsOf.get(item.spec.key) ?? []).find(
           ({ batch, target }) => !open(batch.id, time) && takenOver(target.by),
         );
+        // One judged by its readiness is judged at its bound; kept, its time drops it no more.
+        const bound = boundIn(item);
+        if (bound !== undefined && time >= bound && judgeIn(item, clip, bound)) keptIn.add(item);
         if (time >= deadline(item)) drop(item, "late", Math.min(time, deadline(item)));
         else if (replaced) drop(item, "replaced", time);
         else if (taken !== undefined) drop(item, taken.target.reason, time);
@@ -6278,12 +6396,14 @@ const decide = <Req extends ClipRequest>(
       later(item.notBefore);
       later(item.startBy);
       later(item.retryAt);
+      // As it goes late after its time, or is judged by its readiness.
       if (
         at !== undefined &&
         item.spec.start._tag === "At" &&
-        typeof item.spec.start.late === "object"
+        typeof item.spec.start.late === "object" &&
+        item.keptLate !== true
       )
-        later(at + item.spec.start.late.skipAfterMs);
+        later(lateAt(at, item.spec.start.late));
       if (item.unknownSince !== undefined) later(item.unknownSince + config.unknownTimeoutMs);
       if (item.phase === "Started")
         for (const [index, cue] of item.spec.cues.entries())

@@ -4794,7 +4794,7 @@ describe("PlayoutPolicy, groups", () => {
   });
 });
 
-describe("PlayoutPolicy, strict lanes", () => {
+describe("PlayoutPolicy, strict lanes and readiness", () => {
   /**
    * Plays s1 as H3 with autoplay on, up to `until`: answers what the plan asks, starts the Ready
    * head as soon as nothing plays, and ends each clip at its length.
@@ -4815,6 +4815,28 @@ describe("PlayoutPolicy, strict lanes", () => {
       } else policy.tick(policy.now() + 250);
     }
   };
+  /** An `At` item due at `time`, kept or dropped by whether it is Ready `byMs` after it. */
+  const readyBy = (name: string, time: number, byMs: number): Policy.Spec => ({
+    ...spec(name),
+    start: { _tag: "At", time, late: { readyByMs: byMs } },
+  });
+  /** A filler clip, `seconds` long, on air on s1 from 1 ms. */
+  const idleOnAir = (policy: ReturnType<typeof drive>, held: Queues, seconds: number): void => {
+    held.playing = clip("c-idle", { _tag: "Filler", index: 0 }, seconds);
+    policy.event({ _tag: "Started", clip: held.playing }, "s1", 1);
+    shown(policy, "s1", held, 2);
+  };
+  /** How `name` settled, if it did, with its reason. */
+  const dropped = (actions: ReadonlyArray<Policy.Action>, name: string) =>
+    actions.flatMap((action) =>
+      action._tag === "Emit" &&
+      action.event._tag === "AsRun" &&
+      action.event.event.key === name &&
+      action.event.event.status._tag === "Dropped"
+        ? [action.event.event.status]
+        : [],
+    );
+
   it("a strict lane airs items in their places whatever their times", () => {
     const starts = (settings: Policy.Config) => {
       const policy = drive({ config: settings, from: measured });
@@ -4832,5 +4854,62 @@ describe("PlayoutPolicy, strict lanes", () => {
     assert.deepStrictEqual(starts(strictLine), ["a", "b"]);
     // In a lane that is not strict, b is due first and airs first.
     assert.deepStrictEqual(starts(config), ["b", "a"]);
+  });
+
+  it("a readyBy item Ready in time waits out the filler and airs", () => {
+    const policy = drive({ from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    policy.tick(0);
+    policy.open();
+    idleOnAir(policy, held, 10);
+    // r is due at 2 s and judged at 5 s: Ready at about 2 s, it waits out the idle clip.
+    policy.submit(readyBy("r", 2_000, 3_000), 3);
+    provide(policy, "s1", 2, held, log);
+    readyIn(held, "r");
+    assert.strictEqual(policy.tick(2_100).wake, 5_000);
+    policy.tick(5_000);
+    boundary(policy, "s1", held, 10_001);
+    assert.deepStrictEqual(startOrder(policy.actions), ["r"]);
+    assert.deepStrictEqual(dropped(policy.actions, "r"), []);
+  });
+
+  it("a readyBy item not Ready by its bound is dropped late at it", () => {
+    const policy = drive({ from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    policy.tick(0);
+    policy.open();
+    idleOnAir(policy, held, 10);
+    held.slow.add("r");
+    policy.submit(readyBy("r", 2_000, 3_000), 3);
+    provide(policy, "s1", 2, held, log);
+    assert.deepStrictEqual(commands(policy.tick(4_999).actions), []);
+    const removal = commands(policy.tick(5_000).actions).map((action) => action.command);
+    assert.deepStrictEqual(removal, [{ _tag: "Remove", clipId: held.building[0]?.clipId ?? "" }]);
+    held.building = [];
+    provide(policy, "s1", 2, held, log);
+    assert.deepStrictEqual(dropped(policy.actions, "r"), [{ _tag: "Dropped", reason: "late" }]);
+  });
+
+  it("a readyBy item Ready but behind another item at its bound is dropped", () => {
+    const policy = drive({ from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    policy.tick(0);
+    policy.open();
+    idleOnAir(policy, held, 10);
+    // y, placed before r, is Ready ahead of it at r's bound: r would air only after y.
+    policy.submit(spec("y"), 3);
+    policy.submit(readyBy("r", 2_000, 3_000), 4);
+    provide(policy, "s1", 2, held, log);
+    readyIn(held, "y");
+    const r = readyIn(held, "r");
+    assert.deepStrictEqual(
+      commands(policy.tick(5_000).actions).map((action) => action.command),
+      [{ _tag: "Remove", clipId: r.clipId }],
+    );
+    provide(policy, "s1", 2, held, log);
+    assert.deepStrictEqual(dropped(policy.actions, "r"), [{ _tag: "Dropped", reason: "late" }]);
   });
 });

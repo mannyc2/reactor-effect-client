@@ -315,6 +315,59 @@ const simulate = (
   };
   /** Whether `lane` keeps its items in the order of their places. */
   const strictLane = (lane: number): boolean => settings.lanes[lane]?.strict === true;
+  /** Each item's identity: its key, and its order, which a key used afresh does not share. */
+  const idOf = (item: { readonly spec: { readonly key: string }; readonly order: number }) =>
+    `${item.spec.key}@${String(item.order)}`;
+  /** When a clip of each item was first Ready on the provider, by `idOf`. */
+  const readied = new Map<string, number>();
+  const readyNow = (value: SourceClip): void => {
+    const owner = value.tag?._tag === "Item" ? state.items.get(value.tag.key) : undefined;
+    if (owner !== undefined && !readied.has(idOf(owner))) readied.set(idOf(owner), clock);
+  };
+  /** Items whose first step at or after their readiness bound has been taken, by `idOf`. */
+  const judged = new Set<string>();
+  /** Keys of the items that were kept at that step: a replacement of one is kept with it. */
+  const kept = new Set<string>();
+  /**
+   * The first step at or after a `readyBy` item's bound keeps it only if a clip of it was Ready on
+   * the provider by then, unless it replaces an item kept there. An item whose enqueue outcome is
+   * unknown is judged at the first step it is known again; one with a play of its clip in flight,
+   * or a start still to be seen, at the step after that.
+   */
+  const decideReadyBy = () => {
+    if (state.closed) return;
+    for (const item of state.items.values()) {
+      const start = item.spec.start;
+      if (start._tag !== "At" || typeof start.late !== "object" || !("readyByMs" in start.late))
+        continue;
+      const bound = start.time + start.late.readyByMs;
+      if (clock < bound || item.phase === "Unknown" || judged.has(idOf(item))) continue;
+      const lane = state.sessions.find((value) => value.id === item.sessionId);
+      const command = lane?.busy?.command;
+      if (
+        item.clipId !== undefined &&
+        ((command?._tag === "Play" && command.clipId === item.clipId) ||
+          lane?.played?.clipId === item.clipId)
+      )
+        continue;
+      judged.add(idOf(item));
+      if (
+        item.phase === "Started" ||
+        item.phase === "Settled" ||
+        item.startedAt !== undefined ||
+        item.withdraw !== undefined
+      )
+        continue;
+      kept.add(item.spec.key);
+      let old = replaced.get(item.spec.key);
+      while (old !== undefined && !kept.has(old)) old = replaced.get(old);
+      const ready = readied.get(idOf(item));
+      if (old === undefined && (ready === undefined || ready > bound))
+        problems.push(
+          `${item.spec.key}, judged by its readiness at ${String(bound)}, was kept at ${String(clock)} though not Ready by then`,
+        );
+    }
+  };
 
   const send = (input: Policy.Input, at = clock + 7) => {
     clock = at;
@@ -384,6 +437,27 @@ const simulate = (
     state = result.state;
     wake = result.wake;
     decideLate(before, input);
+    decideReadyBy();
+    // A `readyBy` item goes as late only once its bound has come; a firm one may go as late before,
+    // once projected to miss its startBy.
+    for (const action of result.actions) {
+      if (action._tag !== "Emit" || action.event._tag !== "AsRun") continue;
+      const status = action.event.event.status;
+      const item = state.items.get(action.event.event.key);
+      const start = item?.spec.start;
+      if (
+        status._tag === "Dropped" &&
+        status.reason === "late" &&
+        start?._tag === "At" &&
+        typeof start.late === "object" &&
+        "readyByMs" in start.late &&
+        clock < start.time + start.late.readyByMs &&
+        item?.spec.window?.firm !== true
+      )
+        problems.push(
+          `${action.event.event.key} went late at ${String(clock)}, before its readiness bound at ${String(start.time + start.late.readyByMs)}`,
+        );
+    }
     // Nothing falls due before the wake: a Tick at any instant before it does nothing, and wakes
     // at the same time. It is sampled just after the input, halfway, and just before the wake.
     const gap = result.wake === undefined ? 3_600_000 : result.wake - clock;
@@ -585,7 +659,12 @@ const simulate = (
       }
     }
   };
-  const lates: ReadonlyArray<Policy.Late> = ["nextBoundary", "drop", { skipAfterMs: 1_000 }];
+  const lates: ReadonlyArray<Policy.Late> = [
+    "nextBoundary",
+    "drop",
+    { skipAfterMs: 1_000 },
+    { readyByMs: 2_000 },
+  ];
   // Some items start at an instant, some within a window, and some are held and never released:
   // each brings deadlines of its own. A strict lane refuses a held one, which follows instead.
   const timing = (
@@ -597,7 +676,7 @@ const simulate = (
           start: {
             _tag: "At",
             time: clock + 2_000 + (index % 3) * 3_000,
-            late: Array.getUnsafe(lates, index % 3),
+            late: Array.getUnsafe(lates, index % lates.length),
           },
         }
       : index % 5 === 2
@@ -857,7 +936,9 @@ const simulate = (
       case "ready": {
         const [sessionId, value] = builder() ?? [];
         if (sessionId === undefined || value === undefined) return send({ _tag: "Tick" });
-        value.ready.push(Array.getUnsafe(value.building.splice(0, 1), 0));
+        const built = Array.getUnsafe(value.building.splice(0, 1), 0);
+        value.ready.push(built);
+        readyNow(built);
         return observe(sessionId);
       }
       case "start": {
@@ -879,7 +960,9 @@ const simulate = (
         const pending = state.sessions.find((other) => other.id === state.air)?.busy;
         if (pending?.command._tag === "Remove") complete({ ...pending, sessionId: airId() });
         if (value.ready.length === 0 && value.building.length > 0) {
-          value.ready.push(Array.getUnsafe(value.building.splice(0, 1), 0));
+          const built = Array.getUnsafe(value.building.splice(0, 1), 0);
+          value.ready.push(built);
+          readyNow(built);
           observe(airId());
         }
         if (value.autoplay === false) return send({ _tag: "Tick" });

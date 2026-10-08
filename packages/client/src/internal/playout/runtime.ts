@@ -713,6 +713,21 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
     Effect.fromOption(ItemKey.makeOption(key)).pipe(
       Effect.mapError(() => InvalidItem.make({ key, message: "a key must be a nonempty string" })),
     );
+  /** An `At` start's lateness, its durations in milliseconds. */
+  const lateOf = (
+    late: Extract<Playout.Start, { readonly _tag: "At" }>["late"],
+    duration: (value: Duration.Input) => Effect.Effect<number | undefined, InvalidItem>,
+  ): Effect.Effect<Policy.Late, InvalidItem> => {
+    switch (late._tag) {
+      case "nextBoundary":
+      case "drop":
+        return Effect.succeed(late._tag);
+      case "skipIfLaterThan":
+        return Effect.map(duration(late.by), (skipAfterMs) => ({ skipAfterMs: skipAfterMs ?? 0 }));
+      case "readyBy":
+        return Effect.map(duration(late.by), (readyByMs) => ({ readyByMs: readyByMs ?? 0 }));
+    }
+  };
   const spec = (
     input: {
       readonly key: string;
@@ -741,12 +756,7 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
               }),
             );
       const start = input.start ?? { _tag: "Follow" };
-      const late: Policy.Late | undefined =
-        start._tag !== "At"
-          ? undefined
-          : start.late._tag === "skipIfLaterThan"
-            ? { skipAfterMs: (yield* duration(start.late.by)) ?? 0 }
-            : start.late._tag;
+      const late = start._tag === "At" ? yield* lateOf(start.late, duration) : undefined;
       const cues = yield* Effect.forEach(input.cues ?? [], (cue) =>
         Effect.map(duration(cue.at.offset), (offsetMs) => ({
           name: cue.name,

@@ -94,7 +94,15 @@ export type Start =
       readonly late:
         | { readonly _tag: "nextBoundary" }
         | { readonly _tag: "skipIfLaterThan"; readonly by: Duration.Input }
-        | { readonly _tag: "drop" };
+        | { readonly _tag: "drop" }
+        /**
+         * Judged once, at `time + by`: kept if it was Ready by then and nothing but filler airs
+         * before it (the clip on air, and the Ready clips ahead of it), so that it airs at the next
+         * boundary however late; otherwise dropped as `late` then. A clip Ready in time that waits
+         * out filler is on time; one not made by then, or waiting behind another item, is not. A
+         * firm window's `startBy` still applies. A replacement of a kept item is kept too.
+         */
+        | { readonly _tag: "readyBy"; readonly by: Duration.Input };
     };
 
 /** A secondary event on a clip, fired while it plays: from its observed start, or back from its end. */
