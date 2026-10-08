@@ -60,9 +60,17 @@ export interface LaneSpec {
    * second. A clip is stopped at most once, and a stopped clip cannot resume.
    */
   readonly cut?: boolean | undefined;
+  /**
+   * Air this lane's items in the order of their places, submissions at the end and inserts beside
+   * their anchors: an item waits while one placed before it is live and not on air yet, unless
+   * that one was sent with its outcome never seen, or is being withdrawn. Later items wait behind
+   * a slow one, so give its items deadlines. `Asap` and `Manual` starts are refused here, since
+   * they would break the order.
+   */
+  readonly strict?: boolean | undefined;
 }
 
-/** When an item may air. Only `Follow` keeps its lane's order. */
+/** When an item may air. Only `Follow` keeps its lane's order, and any start in a strict lane. */
 export type Start =
   /** The next boundary its lane reaches, in order: the default. */
   | { readonly _tag: "Follow" }

@@ -135,6 +135,7 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       name: lane.name,
       conflict: lane.conflict ?? "queue",
       cut: lane.cut ?? false,
+      strict: lane.strict ?? false,
     })),
     filler:
       options.filler === undefined

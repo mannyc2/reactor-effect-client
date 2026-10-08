@@ -16,6 +16,7 @@ import {
   renewing,
   source,
   spec,
+  strictLine,
 } from "./PlayoutPolicy.js";
 
 /** Runs inputs in order at one-millisecond steps and collects every action. */
@@ -2796,7 +2797,7 @@ describe("PlayoutPolicy, edit claims", () => {
     const policy = drive({
       config: {
         ...config,
-        lanes: [...config.lanes, { name: "news", conflict: "replace", cut: false }],
+        lanes: [...config.lanes, { name: "news", conflict: "replace", cut: false, strict: false }],
       },
     });
     policy.tick(0);
@@ -3006,7 +3007,7 @@ describe("PlayoutPolicy, edit claims", () => {
   /** The test config with a third lane, `low` or a `ticker` that replaces what waits in it. */
   const withLane = (name: string, conflict: "queue" | "replace"): Policy.Config => ({
     ...config,
-    lanes: [...config.lanes, { name, conflict, cut: false }],
+    lanes: [...config.lanes, { name, conflict, cut: false, strict: false }],
   });
   /** `x`, `seconds` long in `lane`, built and on air on s1; when it ends. */
   const onAir = (
@@ -3214,7 +3215,7 @@ describe("PlayoutPolicy, groups", () => {
   it("builds each part of a group in a pending batch once, while its first part is held", () => {
     const lanes: Policy.Config = {
       ...config,
-      lanes: [...config.lanes, { name: "news", conflict: "replace", cut: false }],
+      lanes: [...config.lanes, { name: "news", conflict: "replace", cut: false, strict: false }],
     };
     for (const [how, lane, batch] of [
       ["in a replace lane", 2, false],
@@ -4093,7 +4094,7 @@ describe("PlayoutPolicy, groups", () => {
   it("keeps a part behind an insert that continues from a lower lane's clip", () => {
     const lanes: Policy.Config = {
       ...config,
-      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false }],
+      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false, strict: false }],
     };
     const policy = drive({ config: lanes, from: measured });
     policy.tick(0);
@@ -4136,7 +4137,7 @@ describe("PlayoutPolicy, groups", () => {
   it("counts no part waiting behind a held part ahead of a clip a follower continues from", () => {
     const lanes: Policy.Config = {
       ...config,
-      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false }],
+      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false, strict: false }],
     };
     const policy = drive({ config: lanes, from: measured });
     policy.tick(0);
@@ -4187,7 +4188,7 @@ describe("PlayoutPolicy, groups", () => {
   it("keeps a part in turn behind a part whose replacement is still building", () => {
     const lanes: Policy.Config = {
       ...config,
-      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false }],
+      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false, strict: false }],
     };
     const policy = drive({ config: lanes });
     policy.tick(0);
@@ -4273,7 +4274,7 @@ describe("PlayoutPolicy, groups", () => {
   /** A lane below the line, whose clips air after its parts. */
   const low: Policy.Config = {
     ...config,
-    lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false }],
+    lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false, strict: false }],
   };
   /** x airs from 3 s to 23 s on s1, and the group `parts` is submitted, with y behind it in `low`. */
   const lowBehind = (parts: ReadonlyArray<Policy.Spec>) => {
@@ -4790,5 +4791,46 @@ describe("PlayoutPolicy, groups", () => {
       provide(policy, "s1", 6, held, log);
     }
     assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2", "k", "ir"]);
+  });
+});
+
+describe("PlayoutPolicy, strict lanes", () => {
+  /**
+   * Plays s1 as H3 with autoplay on, up to `until`: answers what the plan asks, starts the Ready
+   * head as soon as nothing plays, and ends each clip at its length.
+   */
+  const playOut = (
+    policy: ReturnType<typeof drive>,
+    held: Queues,
+    log: Array<string>,
+    until: number,
+  ): void => {
+    let ends = Infinity;
+    while (policy.now() < until) {
+      provide(policy, "s1", 4, held, log);
+      if (held.playing === undefined ? held.ready.length > 0 : policy.now() >= ends) {
+        const time = policy.now() + 1;
+        boundary(policy, "s1", held, time);
+        ends = time + 40 + (held.playing?.seconds ?? 0) * 1000;
+      } else policy.tick(policy.now() + 250);
+    }
+  };
+  it("a strict lane airs items in their places whatever their times", () => {
+    const starts = (settings: Policy.Config) => {
+      const policy = drive({ config: settings, from: measured });
+      const held = queues();
+      const log: Array<string> = [];
+      policy.tick(0);
+      policy.open();
+      // a, placed first, is due at 25 s, and b, placed after it, at 9 s.
+      const at = (time: number) => ({ _tag: "At", time, late: "nextBoundary" }) as const;
+      policy.submit({ ...spec("a"), start: at(25_000) }, 10);
+      policy.submit({ ...spec("b"), start: at(9_000) }, 20);
+      playOut(policy, held, log, 60_000);
+      return startOrder(policy.actions);
+    };
+    assert.deepStrictEqual(starts(strictLine), ["a", "b"]);
+    // In a lane that is not strict, b is due first and airs first.
+    assert.deepStrictEqual(starts(config), ["b", "a"]);
   });
 });

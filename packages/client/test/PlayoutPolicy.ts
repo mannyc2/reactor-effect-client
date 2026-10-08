@@ -11,8 +11,8 @@ const config: Policy.Config = {
   // The scripted provider builds what is asked.
   builtSeconds: (seconds) => seconds,
   lanes: [
-    { name: "urgent", conflict: "queue", cut: true },
-    { name: "line", conflict: "queue", cut: false },
+    { name: "urgent", conflict: "queue", cut: true, strict: false },
+    { name: "line", conflict: "queue", cut: false, strict: false },
   ],
   filler: undefined,
   maxBuildsInFlight: 1,
@@ -131,9 +131,20 @@ interface Lifetimes {
 const lasting: Lifetimes = { lifetimeMs: 120_000, leadMs: 30_000 };
 const renewing: Lifetimes = { lifetimeMs: 20_000, leadMs: 10_000 };
 
-const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = lasting) => {
+/** The test config with its line lane strict. */
+const strictLine: Policy.Config = {
+  ...config,
+  lanes: config.lanes.map((lane) => (lane.name === "line" ? { ...lane, strict: true } : lane)),
+};
+
+const simulate = (
+  script: Script,
+  from: Policy.State,
+  lifetimes: Lifetimes = lasting,
+  base: Policy.Config = config,
+) => {
   const settings: Policy.Config = {
-    ...config,
+    ...base,
     leadMs: lifetimes.leadMs,
     filler: {
       floor: 5,
@@ -302,22 +313,47 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
         );
     }
   };
+  /** Whether `lane` keeps its items in the order of their places. */
+  const strictLane = (lane: number): boolean => settings.lanes[lane]?.strict === true;
 
   const send = (input: Policy.Input, at = clock + 7) => {
     clock = at;
     inputs.push(input);
     if (input._tag === "Source" && input.event._tag === "Started") {
       const { clipId, tag } = input.event.clip;
+      const removalAsked = actions.some(
+        (action) =>
+          action._tag === "Command" &&
+          action.command._tag === "Remove" &&
+          action.command.clipId === clipId,
+      );
       starts.push({
         tag,
         follows: tag?._tag === "Item" ? state.items.get(tag.key)?.spec.follows : undefined,
-        removalAsked: actions.some(
-          (action) =>
-            action._tag === "Command" &&
-            action.command._tag === "Remove" &&
-            action.command.clipId === clipId,
-        ),
+        removalAsked,
       });
+      // In a strict lane an item starts only once each placed before it there has started, or
+      // holds nothing: settled, sent with its outcome unknown, or being withdrawn. Inserts, which
+      // sit beside their anchors, are left out, as a start the plan asked to remove is.
+      const starting = tag?._tag === "Item" ? state.items.get(tag.key) : undefined;
+      if (
+        starting !== undefined &&
+        strictLane(starting.spec.lane) &&
+        starting.anchor === undefined &&
+        starting.startedAt === undefined &&
+        !removalAsked
+      )
+        for (const other of state.items.values())
+          if (
+            other.spec.lane === starting.spec.lane &&
+            other.anchor === undefined &&
+            other.order < starting.order &&
+            (other.phase === "Accepted" || other.phase === "Building" || other.phase === "Ready") &&
+            other.withdraw === undefined
+          )
+            problems.push(
+              `${starting.spec.key} started at ${String(at)} while ${other.spec.key}, placed before it in its strict lane, waited ${other.phase}`,
+            );
     }
     if (input._tag === "OpenFailed") {
       if (input.retryAfterMs !== undefined) retryAfter = { at, until: at + input.retryAfterMs };
@@ -551,8 +587,11 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
   };
   const lates: ReadonlyArray<Policy.Late> = ["nextBoundary", "drop", { skipAfterMs: 1_000 }];
   // Some items start at an instant, some within a window, and some are held and never released:
-  // each brings deadlines of its own.
-  const timing = (index: number): Pick<Policy.Spec, "start"> | Pick<Policy.Spec, "window"> =>
+  // each brings deadlines of its own. A strict lane refuses a held one, which follows instead.
+  const timing = (
+    index: number,
+    lane: number,
+  ): Pick<Policy.Spec, "start"> | Pick<Policy.Spec, "window"> =>
     index % 5 === 1
       ? {
           start: {
@@ -569,14 +608,14 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
               ...(index % 2 === 0 ? { notBeforeMs: 1_000 } : {}),
             },
           }
-        : index % 7 === 6
+        : index % 7 === 6 && !strictLane(lane)
           ? { start: { _tag: "Manual" } }
           : { start: { _tag: "Follow" } };
   const cued = (name: string, lane: number, index: number): Policy.Spec => ({
     ...spec(name, lane, 5 + (index % 3) * 5),
     cues: index % 2 === 0 ? [{ name: "cue", from: "end", offsetMs: 500 }] : [],
     continuity: index % 4 === 3,
-    ...timing(index),
+    ...timing(index, lane),
   });
 
   /** The provider carries out the command in flight on a lane, and answers it. */
@@ -690,7 +729,8 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
         return edit(index, [{ _tag: "Submit", spec: cued(name, 1, index) }]);
       case "urgent": {
         // Some wait to air right after the next filler clip, or the one after it, submitted as
-        // `place` answers after filler: `Asap`, in the lowest lane.
+        // `place` answers after filler: `Asap`, in the lowest lane, or in turn if that lane is
+        // strict, which refuses an `Asap` start.
         if (index % 4 === 0) {
           const follows: ClipTag = {
             _tag: "Filler",
@@ -699,7 +739,10 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           const urgent = cued(`u${String(index)}`, 1, index);
           paired.set(urgent.key, follows);
           return edit(index, [
-            { _tag: "Submit", spec: { ...urgent, start: { _tag: "Asap" }, follows } },
+            {
+              _tag: "Submit",
+              spec: { ...urgent, start: { _tag: strictLane(1) ? "Follow" : "Asap" }, follows },
+            },
           ]);
         }
         return edit(index, [{ _tag: "Submit", spec: cued(`u${String(index)}`, 0, index) }]);
@@ -919,8 +962,12 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
  */
 // Test fixtures are called directly rather than composed as a public pipeable API.
 // @effect-diagnostics-next-line missingPipeableSignature:off
-const check = (script: Script, lifetimes: Lifetimes = lasting): void => {
-  for (const from of [Policy.initial, measured]) keeps(script, from, lifetimes);
+const check = (
+  script: Script,
+  lifetimes: Lifetimes = lasting,
+  base: Policy.Config = config,
+): void => {
+  for (const from of [Policy.initial, measured]) keeps(script, from, lifetimes, base);
 };
 /**
  * What a script keeps as it runs, from each start `check` runs it from: nothing falls due before
@@ -930,13 +977,22 @@ const check = (script: Script, lifetimes: Lifetimes = lasting): void => {
  */
 // Test fixtures are called directly rather than composed as a public pipeable API.
 // @effect-diagnostics-next-line missingPipeableSignature:off
-const wakes = (script: Script, lifetimes: Lifetimes = lasting): void => {
+const wakes = (
+  script: Script,
+  lifetimes: Lifetimes = lasting,
+  base: Policy.Config = config,
+): void => {
   for (const from of [Policy.initial, measured]) {
-    const { problems } = simulate(script, from, lifetimes);
+    const { problems } = simulate(script, from, lifetimes, base);
     assert.deepStrictEqual(problems, [], problems.join("; "));
   }
 };
-const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lasting): void => {
+const keeps = (
+  script: Script,
+  from: Policy.State,
+  lifetimes: Lifetimes = lasting,
+  base: Policy.Config = config,
+): void => {
   const {
     actions,
     inputs,
@@ -951,9 +1007,9 @@ const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lastin
     replaced,
     paired,
     starts,
-  } = simulate(script, from, lifetimes);
+  } = simulate(script, from, lifetimes, base);
   // What `wakes` checks as the script runs: a refusal is then always attributable.
-  assert.deepStrictEqual(problems, []);
+  assert.deepStrictEqual(problems, [], problems.join("; "));
   const history = new Map<string, Array<Policy.Action & { readonly _tag: "Emit" }>>();
   for (const action of actions)
     if (action._tag === "Emit" && action.event._tag === "AsRun")
@@ -1392,6 +1448,8 @@ const counterexamples: ReadonlyArray<Script> = [
 
 export {
   config,
+  strictLine,
+  lasting,
   key,
   spec,
   clip,
