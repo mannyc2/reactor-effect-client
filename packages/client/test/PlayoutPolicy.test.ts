@@ -2972,6 +2972,32 @@ describe("PlayoutPolicy, edit claims", () => {
     assert.notInclude(enqueued(policy.actions), "r");
   });
 
+  // The forward run leaves a firm item that follows a clip to the projection. Since 9ae46e7 one its
+  // batch held skipped the projection, so nothing checked it: the batch was accepted, and the
+  // insert dropped as late while its anchor aired alone.
+  it("refuses a batch whose held firm insert follows a clip and cannot make its deadline", () => {
+    const policy = drive({ from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    onAir(policy, held, log, 1, 15);
+    const follows = { _tag: "Item", key: key("h") } as const;
+    const refused = policy
+      .edit(
+        [
+          { _tag: "Submit", spec: spec("h", 1, 5) },
+          {
+            _tag: "Insert",
+            spec: { ...spec("i", 1, 5), window: { startByMs: 1_000, firm: true }, follows },
+            anchor: key("h"),
+            side: "after",
+          },
+        ],
+        true,
+      )
+      .actions.flatMap((action) => (action._tag === "Refused" ? [action.refusal._tag] : []));
+    assert.deepStrictEqual(refused, ["WouldMissDeadline"]);
+  });
+
   // A batch that withdraws an item waiting in a lane that replaces, and adds to that lane, names
   // the item twice. Since 5830107 the forward run read only the first, the cover waiting for the
   // add, so the forecast aired the item the plan withdraws once the firm insert starts.

@@ -2646,11 +2646,13 @@ const decide = <Req extends ClipRequest>(
       // A group's later part has the group's time, none of its own; an insert beside it has its own.
       if (item.group !== undefined && item.group.index > 0 && !item.inserted) continue;
       // One its batch holds airs once the batch commits, which the run plays out, and a projection
-      // of its rank, behind everything while held, does not.
+      // of its rank, behind everything while held, does not. The run leaves one that cuts or
+      // follows a clip to that projection, held or not.
+      const projected = item.batch === undefined || cuts(item) || item.spec.follows !== undefined;
       if (
         item.spec.window?.firm === true &&
         item.startBy !== undefined &&
-        ((item.batch === undefined && misses(item, item.startBy, memo)) ||
+        ((projected && misses(item, item.startBy, memo)) ||
           !startsBefore(item, item.startBy, forwardRun))
       ) {
         restore();
