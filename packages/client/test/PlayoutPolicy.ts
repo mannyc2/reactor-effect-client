@@ -245,10 +245,11 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
    * may have, or a start of it is under way: a play of its clip in flight, or one that succeeded
    * whose start is still to be seen. A withdrawal that came first keeps its reason, as can one the
    * step's own input makes, an edit or a drain, or a break of the item's group, or one of an item
-   * that follows a clip. An item whose enqueue outcome is unknown may hold a clip the plan cannot
-   * name, so it is checked at the first step it is known again, as a read adopts it, unless it
-   * settles as unknown: it may have aired unseen. The scripted provider starts clips when the
-   * script says, so only the plan's decision is checked, not start times.
+   * that follows a clip; and a loss or a failed command in that step may fail it instead. An item
+   * whose enqueue outcome is unknown may hold a clip the plan cannot name, so it is checked at the
+   * first step it is known again, as a read adopts it, unless it settles as unknown: it may have
+   * aired unseen. The scripted provider starts clips when the script says, so only the plan's
+   * decision is checked, not start times.
    */
   const decideLate = (before: Policy.State, input: Policy.Input) => {
     if (state.closed) return;
@@ -293,7 +294,8 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
         item.group === undefined &&
         item.spec.follows === undefined &&
         input._tag !== "Edit" &&
-        input._tag !== "Drain"
+        input._tag !== "Drain" &&
+        !(reason === "Failed" && (input._tag === "Lost" || input._tag === "Result"))
       )
         problems.push(
           `${item.spec.key}, firm and due by ${String(item.startBy)}, went at ${String(clock)} as ${reason}`,
