@@ -1780,11 +1780,33 @@ const decide = <Req extends ClipRequest>(
     const behind = [
       ...holders(item),
       ...(followed === undefined ? [] : [followed]),
-      ...batchedWith(item),
+      ...(freedOnStart(item, holders, memo) ? [] : batchedWith(item)),
     ];
     return behind.some((other) => unplaceable(other, holders, memo) !== undefined)
       ? "blocked"
       : undefined;
+  };
+  /**
+   * Whether the batch that holds `item` has an add it does not hold that a run can place: that
+   * add's start commits the batch, which then holds `item` no more.
+   */
+  const freedOnStart = (
+    item: PlanItem,
+    holders: (item: PlanItem) => ReadonlyArray<PlanItem>,
+    memo: Map<PlanItem, Unplaceable | undefined>,
+  ): boolean => {
+    const batch =
+      item.batch === undefined ? undefined : state.batches.find((value) => value.id === item.batch);
+    return (batch?.adds ?? []).some((key) => {
+      const other = items.get(key);
+      return (
+        other !== undefined &&
+        other !== item &&
+        other.batch === undefined &&
+        !placedAlready(other) &&
+        unplaceable(other, holders, memo) === undefined
+      );
+    });
   };
   /** The other adds of the pending batch that holds `item` that are not Ready, started or settled. */
   const batchedWith = (item: PlanItem): ReadonlyArray<PlanItem> => {

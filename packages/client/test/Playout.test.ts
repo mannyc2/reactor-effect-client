@@ -1970,6 +1970,29 @@ layer(seamed, { timeout: "10 minutes" })("forecast", (it) => {
     }),
   );
 
+  it.effect(
+    "a forecast airs a batch's held add once the firm add the batch does not hold starts",
+    () =>
+      Effect.gen(function* () {
+        const { playout } = yield* start({ filler: gridFiller("8 seconds", "16 seconds") });
+        yield* eventually(playout.state, (state) => state.estimates.build !== undefined);
+        yield* nextFiller(playout);
+        const firm = { startBy: Duration.seconds(40), firm: true };
+        yield* playout.edit([
+          { _tag: "Submit", item: { key: key("cut"), lane: "urgent", request: clip("cut") } },
+          { _tag: "Submit", item: { key: key("mate"), lane: "line", request: clip("mate") } },
+          {
+            _tag: "Submit",
+            item: { key: key("due"), lane: "line", request: clip("due"), window: firm },
+          },
+        ]);
+        const projected = yield* playout.forecast;
+        // The firm add airs on its own, and its start commits the batch, which then holds mate no more.
+        assert.strictEqual(Playout.forecastFor(projected, key("due"))._tag, "Airs");
+        assert.strictEqual(Playout.forecastFor(projected, key("mate"))._tag, "Airs");
+      }),
+  );
+
   it.effect("forecasts follows the plan", () =>
     Effect.gen(function* () {
       const { playout } = yield* start({ lanes: [{ name: "line" }] });
