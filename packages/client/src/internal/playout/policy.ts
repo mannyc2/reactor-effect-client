@@ -3815,8 +3815,10 @@ const decide = <Req extends ClipRequest>(
   // what the look's input left: kept for good, or dropped as late. One whose start is under way is
   // judged at the next look, if it has not started by then. Those due at one look are judged
   // together, so the order they were admitted in decides nothing: one not Ready by its bound goes
-  // whatever else airs. Then what goes by its own time at this look goes first, and holds none of
-  // them; and they are judged in the order they air, each once those ahead of it are kept or gone.
+  // whatever else airs. While a removal in flight is to break a group, the rest wait for it: the
+  // members after that place go once it lands, and until then hold or rank ahead as any live item
+  // does. Then what goes by its own time at this look goes first, and holds none of them; and they
+  // are judged in the order they air, each once those ahead of it are kept or gone.
   const due = [...items.values()].filter((item) => {
     const at = atMono(item);
     const start = item.spec.start;
@@ -3831,7 +3833,7 @@ const decide = <Req extends ClipRequest>(
   });
   for (const item of due) if (!readyInTime(item)) withdraw(item.spec.key, "late");
   const inTime = due.filter(readyInTime);
-  if (inTime.length > 0) {
+  if (inTime.length > 0 && !breakPending()) {
     const judged = new Set(inTime.map((item) => item.spec.key));
     for (const item of [...items.values()])
       if (
@@ -4940,6 +4942,31 @@ const decide = <Req extends ClipRequest>(
     );
   }
   /**
+   * Whether a removal in flight is to break a group: a place's item is being withdrawn, nothing of
+   * that place may still air, and a member seated after it is live and not withdrawn yet, as
+   * `breakAfter` withdraws it once the removal lands.
+   */
+  function breakPending(): boolean {
+    for (const item of items.values()) {
+      if (item.withdraw === undefined || item.phase === "Settled") continue;
+      if (item.group === undefined || item.inserted) continue;
+      const { key, index } = item.group;
+      if (!brokenPlace(placeOf(key, index))) continue;
+      const seat = seatOf(roster, item);
+      for (const member of roster.members(key)) {
+        const other = items.get(member);
+        if (
+          other !== undefined &&
+          live(other) &&
+          other.withdraw === undefined &&
+          compareSeat(seatOf(roster, other), seat) > 0
+        )
+          return true;
+      }
+    }
+    return false;
+  }
+  /**
    * Whether `item`, Ready on `value` at `index`, must leave its queue now: held, or waiting behind
    * an earlier item of its line with none of those Ready ahead of it, and about to be next;
    * waiting for the clip it follows and about to air before it; or an `At` item Ready too early.
@@ -5813,6 +5840,10 @@ const decide = <Req extends ClipRequest>(
       // with it as `displaced`, and its own followers with it in turn.
       if (until._tag === "Placed")
         for (const other of followed) if (waitsFor(other, item)) drop(other, "displaced", at);
+      breakAt(item, at);
+    };
+    /** As `breakAfter`, once `item`, a part or a replacement of one, went or is being withdrawn. */
+    const breakAt = (item: PlanItem, at: number): void => {
       const group = item.group;
       if (group === undefined || item.inserted) return;
       const placed = membersIn(group.key).filter(
@@ -5843,6 +5874,10 @@ const decide = <Req extends ClipRequest>(
         followsAired.get(follower) !== true
       );
     };
+    // A place whose items are being withdrawn breaks once the removal lands, as `breakAfter` does
+    // then: the members seated after it go as the run starts.
+    for (const item of items.values())
+      if (live(item) && item.withdraw !== undefined) breakAt(item, now.mono);
     const readyBy = (item: PlanItem, time: number): boolean =>
       item.phase === "Ready" ||
       item.phase === "Started" ||

@@ -5033,4 +5033,57 @@ describe("PlayoutPolicy, strict lanes and readiness", () => {
       assert.deepStrictEqual(dropped(policy.actions, "x"), [{ _tag: "Dropped", reason: "late" }]);
     }
   });
+
+  // A group's later parts go once a removal of its broken place lands, so at the next line's bound
+  // a part of a line whose first part was being taken back still held that line, Ready in time, and
+  // it was dropped late. The forecast had the part go at once.
+  it("a line whose first part goes late holds the next line no more, its removal landed or not", () => {
+    const settings: Policy.Config = { ...strictLine, maxBuildsInFlight: 4 };
+    const line = (name: string, byMs: number): Policy.EditInput => ({
+      _tag: "SubmitGroup",
+      key: key(name),
+      lane: 1,
+      fingerprint: name,
+      parts: [readyBy(`${name}a`, 2_000, byMs), spec(`${name}b`)],
+    });
+    for (const landed of [true, false]) {
+      const policy = drive({ config: settings, from: measured });
+      const held = queues();
+      const log: Array<string> = [];
+      policy.tick(0);
+      policy.open();
+      idleOnAir(policy, held, 10);
+      held.slow.add("l1a");
+      policy.edit([line("l1", 3_000)], false, 3);
+      policy.edit([line("l2", 4_000)], false, 4);
+      provide(policy, "s1", 4, held, log, 100);
+      // At 5 s l1a, still building, goes late, and its removal is asked.
+      assert.deepStrictEqual(
+        commands(policy.tick(5_000).actions).map((action) => action.command),
+        [{ _tag: "Remove", clipId: held.building[0]?.clipId ?? "" }],
+      );
+      const land = (time: number) => {
+        policy.reply({ _tag: "Done" }, time);
+        held.building = [];
+        shown(policy, "s1", held, time + 10);
+      };
+      if (landed) land(5_050);
+      assert.strictEqual(foreseen(settings, policy.state(), policy.now(), "l2a"), "Airs");
+      assert.strictEqual(foreseen(settings, policy.state(), policy.now(), "l1b"), "withdrawn");
+      policy.tick(6_000);
+      // Its removal still in flight at l2a's bound, l2a is judged once it lands.
+      assert.strictEqual(policy.state().items.get(key("l2a"))?.keptLate, landed ? true : undefined);
+      if (!landed) land(6_050);
+      assert.isTrue(policy.state().items.get(key("l2a"))?.keptLate);
+      provide(policy, "s1", 4, held, log);
+      for (const time of [10_001, 15_100]) {
+        boundary(policy, "s1", held, time);
+        provide(policy, "s1", 2, held, log);
+      }
+      assert.deepStrictEqual(startOrder(policy.actions), ["l2a", "l2b"]);
+      assert.deepStrictEqual(dropped(policy.actions, "l1b"), [
+        { _tag: "Dropped", reason: "withdrawn" },
+      ]);
+    }
+  });
 });

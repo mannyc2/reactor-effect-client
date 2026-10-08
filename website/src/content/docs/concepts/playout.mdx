@@ -178,7 +178,8 @@ dropped as `late` then. So a clip made in time may wait out an idle clip that ca
 while one not made by then, or waiting behind another item, goes. A firm `startBy` still applies,
 and a replacement of a kept item is kept too. Items judged at the same moment are judged in the
 order they air, after what goes late by its own time then, so an item that goes then holds back
-none of them, whatever order they were sent in.
+none of them, whatever order they were sent in. While a removal that breaks a group is in flight,
+the judgment waits for it to land, since the group's later parts go with it.
 
 A `window` adds `notBefore` and `startBy`, measured from submission on the monotonic clock. A `firm`
 item is dropped at `startBy` with reason `late`, and refused up front with `WouldMissDeadline` when

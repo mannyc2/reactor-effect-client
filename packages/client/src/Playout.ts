@@ -102,7 +102,8 @@ export type Start =
          * out filler is on time; one not made by then, or waiting behind another item, is not. A
          * firm window's `startBy` still applies. A replacement of a kept item is kept too. Items
          * judged at the same moment are judged in the order they air, after what goes late by its
-         * own time then, so neither holds back one behind it.
+         * own time then, so neither holds back one behind it; while a removal that breaks a group
+         * is in flight, the judgment waits for it to land.
          */
         | { readonly _tag: "readyBy"; readonly by: Duration.Input };
     };
