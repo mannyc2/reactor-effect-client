@@ -1682,6 +1682,20 @@ const startErrors = (
     }),
   ).pipe(Effect.map((errors) => errors.flat()));
 
+/** Where `projected` drops `name`, or undefined when it does not. */
+const dropIn = (projected: Playout.Forecast, name: string) => {
+  const found = Playout.forecastFor(projected, key(name));
+  return found._tag === "Drops" ? found.drop : undefined;
+};
+
+/** When the as-run reported `name` dropped, in epoch milliseconds. */
+const droppedAt = (all: ReadonlyArray<Playout.Event>, name: string): number | undefined =>
+  all.flatMap((event) =>
+    event._tag === "AsRun" && event.event.key === name && event.event.status._tag === "Dropped"
+      ? [event.event.at]
+      : [],
+  )[0];
+
 // The fixed seam is the forward run's own, so a forecast's error is what the run gets wrong.
 layer(seamed, { timeout: "10 minutes" })("forecast", (it) => {
   it.effect("a forecast's starts hold with nothing submitted after it", () =>
@@ -1768,6 +1782,87 @@ layer(seamed, { timeout: "10 minutes" })("forecast", (it) => {
     }),
   );
 
+  it.effect(
+    "a forecast drops a follower with the item it follows, and stops at its last item",
+    () =>
+      Effect.gen(function* () {
+        const { playout, events, statuses } = yield* start({
+          lanes: [{ name: "news" }, { name: "line" }],
+          filler: gridFiller("8 seconds", "16 seconds"),
+        });
+        const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+          playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+        );
+        for (const handle of measured) yield* handle.outcome;
+        const long = yield* playout.submit({
+          key: key("long"),
+          lane: "line",
+          request: clip("long", 10),
+        });
+        yield* long.started;
+        const firm = yield* playout.submit({
+          key: key("firm"),
+          lane: "line",
+          request: clip("firm"),
+          window: { startBy: "12 seconds", firm: true },
+        });
+        const after = yield* playout.submit({
+          key: key("after"),
+          lane: "line",
+          request: clip("after"),
+          follows: { _tag: "Item", key: key("firm") },
+        });
+        yield* eventually(statuses("firm"), (all) => all.includes("Ready"));
+        // A clip of a higher lane airs first: firm goes late, and after, which follows it, with it.
+        yield* playout.submit({ key: key("news"), lane: "news", request: clip("news") });
+        const projected = yield* playout.forecast;
+        assert.strictEqual(dropIn(projected, "firm")?.reason, "late");
+        assert.strictEqual(dropIn(projected, "after")?.reason, "displaced");
+        assert.strictEqual(dropIn(projected, "after")?.at, dropIn(projected, "firm")?.at);
+        // Once every item it places aired or went it stops, rather than run filler to its horizon.
+        assert.deepStrictEqual(projected.clips.at(-1)?.clip, { _tag: "Item", key: key("news") });
+        assert.deepStrictEqual(yield* firm.outcome, { _tag: "Dropped", reason: "late" });
+        assert.deepStrictEqual(yield* after.outcome, { _tag: "Dropped", reason: "displaced" });
+        const errorMs =
+          (droppedAt(yield* events, "firm") ?? NaN) - (dropIn(projected, "firm")?.at ?? NaN);
+        assert.isAtMost(Math.abs(errorMs), 100, `firm dropped ${errorMs.toFixed(0)} ms off`);
+      }),
+  );
+
+  it.effect("a forecast times the late drop of an item not sent at its deadline", () =>
+    Effect.gen(function* () {
+      const { playout, events, statuses } = yield* start({
+        lanes: [{ name: "news" }, { name: "line" }],
+      });
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const handle of measured) yield* handle.outcome;
+      const long = yield* playout.submit({
+        key: key("long"),
+        lane: "line",
+        request: clip("long", 15),
+      });
+      yield* long.started;
+      // A long clip of a higher lane holds the build slot for some 6 s, past timed's deadline.
+      yield* playout.submit({ key: key("slow"), lane: "news", request: clip("slow", 15) });
+      yield* eventually(statuses("slow"), (all) => all.includes("Building"));
+      const now = yield* Clock.currentTimeMillis;
+      const timed = yield* playout.submit({
+        key: key("timed"),
+        lane: "line",
+        request: clip("timed"),
+        start: { _tag: "At", time: now + 2000, late: { _tag: "skipIfLaterThan", by: "1 second" } },
+      });
+      const projected = yield* playout.forecast;
+      assert.deepStrictEqual(yield* timed.outcome, { _tag: "Dropped", reason: "late" });
+      assert.strictEqual(dropIn(projected, "timed")?.reason, "late");
+      const errorMs =
+        (droppedAt(yield* events, "timed") ?? NaN) - (dropIn(projected, "timed")?.at ?? NaN);
+      assert.isAtMost(Math.abs(errorMs), 100, `timed dropped ${errorMs.toFixed(0)} ms off`);
+    }),
+  );
+
   it.effect("a forecast says what it cannot place", () =>
     Effect.gen(function* () {
       const test = yield* ReactorTest.ReactorTest;
@@ -1794,6 +1889,31 @@ layer(seamed, { timeout: "10 minutes" })("forecast", (it) => {
         _tag: "Unplaced",
         why: "unknown",
       });
+    }),
+  );
+
+  it.effect("a forecast holds a batch's add behind a cutting add it does not project", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start({ filler: gridFiller("8 seconds", "16 seconds") });
+      yield* eventually(playout.state, (state) => state.estimates.build !== undefined);
+      yield* nextFiller(playout);
+      yield* playout.edit([
+        { _tag: "Submit", item: { key: key("cut"), lane: "urgent", request: clip("cut") } },
+        { _tag: "Submit", item: { key: key("mate"), lane: "line", request: clip("mate") } },
+      ]);
+      const projected = yield* playout.forecast;
+      assert.deepStrictEqual(Playout.forecastFor(projected, key("cut")), {
+        _tag: "Unplaced",
+        why: "cut",
+      });
+      // The batch holds mate until the cut is Ready, and the forecast does not project the cut.
+      assert.deepStrictEqual(Playout.forecastFor(projected, key("mate")), {
+        _tag: "Unplaced",
+        why: "blocked",
+      });
+      // Nothing it can place is left, so it projects no filler past the clip on air.
+      const lastStart = projected.clips.at(-1)?.startsAt ?? projected.at;
+      assert.isBelow(lastStart - projected.at, 60_000);
     }),
   );
 
