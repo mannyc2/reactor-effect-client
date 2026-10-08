@@ -5321,7 +5321,7 @@ const decide = <Req extends ClipRequest>(
     // `place` and admission skip them themselves.
     const leftOut = (item: PlanItem): boolean => until._tag === "Placed" && cuts(item);
 
-    const pending: Array<PlanItem> = [...items.values()].filter(
+    let pending: Array<PlanItem> = [...items.values()].filter(
       (item) =>
         item.phase === "Accepted" &&
         item.withdraw === undefined &&
@@ -5966,6 +5966,8 @@ const decide = <Req extends ClipRequest>(
       }
       // As the plan sweeps each step: what went late meanwhile no longer counts as air.
       purge(time);
+      // What was sent or went is never pending in the run again.
+      pending = pending.filter(pendingIn);
       // As `buildOrder`, each batch as the run has it: an add still to build keeps its batch open
       // until another of its adds airs, there or before it; once the batch commits there, its
       // adds build as any other does. Nothing airs while the run dispatches, so each batch is
@@ -6013,26 +6015,24 @@ const decide = <Req extends ClipRequest>(
       return at > time && at < t ? at : undefined;
     };
     const nextDispatch = (time: number): number | undefined => {
-      const times = [
-        ...pool.flatMap((clip) =>
-          clip.item === undefined || gone.has(clip.item)
-            ? [clip.readyAt]
-            : [clip.readyAt, deadline(clip.item)],
-        ),
-        ...pending.flatMap((item) =>
-          pendingIn(item)
-            ? [
-                item.notBefore,
-                atMono(item),
-                item === hypothesis?.item ? hypothesis.submitAt : undefined,
-              ]
-            : [],
-        ),
-        refillAt(time),
-        state.filler.retryAt,
-        targetId === replacementId ? undefined : opensAt,
-      ].filter((at): at is number => at !== undefined && at > time && Number.isFinite(at));
-      return times.length === 0 ? undefined : Math.min(...times);
+      let soonest = Infinity;
+      const consider = (at: number | undefined): void => {
+        if (at !== undefined && at > time && at < soonest) soonest = at;
+      };
+      for (const clip of pool) {
+        consider(clip.readyAt);
+        if (clip.item !== undefined && !gone.has(clip.item)) consider(deadline(clip.item));
+      }
+      for (const item of pending)
+        if (pendingIn(item)) {
+          consider(item.notBefore);
+          consider(atMono(item));
+          if (item === hypothesis?.item) consider(hypothesis.submitAt);
+        }
+      consider(refillAt(time));
+      consider(state.filler.retryAt);
+      if (targetId !== replacementId) consider(opensAt);
+      return Number.isFinite(soonest) ? soonest : undefined;
     };
     const remove = (clip: Projected): void => {
       const index = pool.indexOf(clip);
@@ -6041,16 +6041,18 @@ const decide = <Req extends ClipRequest>(
     // What a deadline drops, a Ready replacement displaces, or a batch commit withdraws, in the
     // order the plan sweeps them, each for its own reason.
     const purge = (time: number): void => {
+      // The replacements Ready by `time`, by what each replaces: a sweep drops, but adds nothing.
+      const replacements = new Map<ItemKey, Array<PlanItem>>();
+      for (const clip of pool) {
+        const replaces = clip.item?.replaces;
+        if (clip.item === undefined || replaces === undefined || clip.readyAt > time) continue;
+        replacements.set(replaces, [...(replacements.get(replaces) ?? []), clip.item]);
+      }
       for (const clip of pool) {
         const item = clip.item;
         if (item === undefined || gone.has(item)) continue;
-        const replaced = pool.some(
-          (other) =>
-            other.item !== undefined &&
-            !gone.has(other.item) &&
-            other.item.replaces === item.spec.key &&
-            other.readyAt <= time &&
-            !open(other.item.batch, time),
+        const replaced = (replacements.get(item.spec.key) ?? []).some(
+          (other) => !gone.has(other) && !open(other.batch, time),
         );
         // What an add takes over in a lane that replaces goes once that add is Ready.
         const takenOver = (key: ItemKey | undefined): boolean => {
