@@ -433,8 +433,8 @@ before it, and on a replacement only if it airs there before that session's cap.
 An application that writes for a slot needs to know when what it queued will play: when a clip
 starts, to bring a page on air just before it, and when everything queued will have played, to
 pace what it writes next. `forecast` reads that from the plan's own forward run, the one `place`
-and firm admission use. Each clip it projects to air, from the one on air to the last item it can
-place, comes with its start and end in epoch milliseconds (`startsAt`, `endsAt`), how far it is
+and firm admission use. Each clip it projects to air, from the one on air up to the last item it
+places, comes with its start and end in epoch milliseconds (`startsAt`, `endsAt`), how far it is
 from air (`state`: `playing`, `ready`, `building` or `queued`) and the session it airs on, the
 one on air or its replacement. `drops` lists the items it projects to go without airing, why and
 when, and `drainsAt` is when the last item it projects to air ends.
@@ -462,22 +462,30 @@ export const lookAhead = Effect.fn("lookAhead")(function* (
 
 `forecastFor` says where a forecast puts one item: it `Airs`, it `Drops` (`late`, `displaced`,
 `withdrawn` or `replaced`, with when), it is `Unplaced`, or it is `Absent`, settled already or
-never submitted. `forecastGroup` gathers a group's places that air and those it drops.
+never submitted. `forecastGroup` gives a group's places that air, from the first one's start to
+the last one's end, and the places it drops. It is undefined when none of the group's places airs,
+and the places it drops then appear only in `drops`.
 
 A forecast does not project what the plan cannot know. `unplaced` lists each item it neither airs
 nor drops, and why: a held `Manual` item (`held`), one whose enqueue's outcome is unknown
-(`unknown`), one waiting to cut a lower lane (`cut`), one waiting behind any of these in its group
-or as the clip it follows (`blocked`), and one past the ten minutes it looks ahead, or with no
-session on air yet (`beyond`). It projects one renewal at most, and `basis` is `unmeasured` until
-three builds were measured, when every build counts as instant.
+(`unknown`), one waiting to cut a lower lane (`cut`), one waiting behind any of these as a member
+of its group, as the clip it follows or as another add of its pending batch (`blocked`), and one
+beyond what it projects: past the ten minutes it looks ahead or the looks its run takes, or with
+no session on air yet (`beyond`). It projects one renewal at most, and `basis` is `unmeasured`
+until three builds were measured, when every build counts as instant.
 
 A forecast is a projection at the build rates the plan has measured, not a promise. It changes as
 builds are measured and items arrive, and it ages between changes: a build that runs longer than
-projected shows only once it ends. `forecasts` gives a forecast now and a new one each time the
-plan changes, and none while it holds still; a slow reader skips to the newest. Forecasts have run
-only on the simulated Reactor, where each item started within 0.1 s of its `startsAt` with nothing
-submitted after the forecast, and within 0.15 s on the replacement across a renewal; not on hosted
-H3.
+projected shows only once it ends. Between a renewal's lead and the replacement opening, a forecast
+puts new work on the replacement, but the plan keeps sending what fits to the session on air,
+where such a clip may air a few hundred milliseconds early. A build projected Ready right at a
+boundary's readiness margin can flip which clip airs first there, and the forecast is then a whole
+clip off. `forecasts` gives a forecast now and a new one each time the plan changes, and none while
+it holds still; a slow reader skips to the newest.
+
+Forecasts have run only on the simulated Reactor, not on hosted H3. There, with nothing submitted
+after the forecast, items submitted as a filler clip started began within 0.1 s of their
+`startsAt`, and a renewal's items, submitted once the replacement had opened, within 0.15 s.
 
 ## Renewal across sessions
 

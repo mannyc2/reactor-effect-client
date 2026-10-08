@@ -231,9 +231,10 @@ export interface Unplaced {
   readonly key: ItemKey;
   /**
    * `held` until released; `unknown`, sent with its outcome never seen; `cut`, waiting to cut a
-   * lower lane, which the projection does not model; `blocked` behind one of these, a member of
-   * its group or the item whose clip it follows; `beyond` what it projects: past the ten minutes
-   * it looks ahead, or with no session on air yet.
+   * lower lane, which the projection does not model; `blocked` behind one of these: a member of
+   * its group, the item whose clip it follows, or another add of its pending batch; `beyond` what
+   * it projects: past the ten minutes it looks ahead, past the looks its run takes, or with no
+   * session on air yet.
    */
   readonly why: "held" | "unknown" | "cut" | "blocked" | "beyond";
 }
@@ -242,12 +243,15 @@ export interface Unplaced {
  * What the plan projects to air from now, at the build rates it has measured: a projection, not a
  * promise. It changes as builds are measured and items arrive, and ages between changes: a build
  * running longer than projected shows once it ends. It looks ten minutes ahead and projects one
- * renewal at most.
+ * renewal at most. Between a renewal's lead and the replacement opening, it puts new work on the
+ * replacement, but the plan keeps sending what fits to the session on air, where such a clip may
+ * air a few hundred milliseconds early. A build projected Ready right at a boundary's readiness
+ * margin can flip which clip airs first there, and the forecast is then a whole clip off.
  */
 export interface Forecast {
   /** When it was taken, in epoch milliseconds. */
   readonly at: number;
-  /** In the order they air, from the clip on air, up to the last item it can place. */
+  /** In the order they air, from the clip on air, up to the last item it places. */
   readonly clips: ReadonlyArray<ForecastedClip>;
   /** In the order they go. */
   readonly drops: ReadonlyArray<ForecastedDrop>;
@@ -293,7 +297,10 @@ export interface ForecastedGroup {
   readonly drops: ReadonlyArray<ForecastedDrop>;
 }
 
-/** Where `forecast` puts the places of the group `key`; undefined when it airs none of them. */
+/**
+ * Where `forecast` puts the places of the group `key`. Undefined when it airs none of them: the
+ * places it drops then appear only in `forecast.drops`.
+ */
 export const forecastGroup: {
   (key: ItemKey): (forecast: Forecast) => ForecastedGroup | undefined;
   (forecast: Forecast, key: ItemKey): ForecastedGroup | undefined;
