@@ -1644,6 +1644,213 @@ layer(seamed)("place across short sessions", (it) => {
   );
 });
 
+/** Filler on H3's grid at the length the plan asks for, as `place`'s checks use. */
+const gridFiller = (floor: Duration.Input, target: Duration.Input) => ({
+  runway: { floor, target },
+  clip: ({ index }: Playout.FillContext) => clip(`idle ${index}`, grid(0)),
+  lengths: { min: grid(0), max: grid(0) },
+});
+
+/** The next filler clip's start: what is submitted then builds well inside that clip. */
+const nextFiller = (playout: Playout.Service) =>
+  playout.events.pipe(
+    Stream.filter((event) => event._tag === "Filler" && event.phase === "Started"),
+    Stream.runHead,
+  );
+
+/**
+ * How far each of `handles` started from where `projected` put it, past `toleranceMs`, or the
+ * empty list. One on the replacement may be `renewalMs` off.
+ */
+const startErrors = (
+  projected: Playout.Forecast,
+  handles: ReadonlyArray<Playout.ItemHandle>,
+  toleranceMs: number,
+  renewalMs = toleranceMs,
+) =>
+  Effect.forEach(handles, (handle) =>
+    Effect.gen(function* () {
+      const found = Playout.forecastFor(projected, handle.key);
+      const started = yield* handle.started;
+      if (found._tag !== "Airs" || started._tag !== "Started")
+        return [`${handle.key}: forecast ${found._tag}, then ${started._tag}`];
+      const errorMs = started.at - found.clip.startsAt;
+      const bound = found.clip.session === "replacement" ? renewalMs : toleranceMs;
+      return Math.abs(errorMs) <= bound
+        ? []
+        : [`${handle.key} on the ${found.clip.session} started ${errorMs.toFixed(0)} ms off`];
+    }),
+  ).pipe(Effect.map((errors) => errors.flat()));
+
+// The fixed seam is the forward run's own, so a forecast's error is what the run gets wrong.
+layer(seamed, { timeout: "10 minutes" })("forecast", (it) => {
+  it.effect("a forecast's starts hold with nothing submitted after it", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start({
+        lanes: [{ name: "news" }, { name: "line" }],
+        filler: gridFiller("8 seconds", "16 seconds"),
+      });
+      yield* eventually(playout.state, (state) => state.estimates.build !== undefined);
+      yield* nextFiller(playout);
+      const lineup = [
+        { name: "a", lane: "line", seconds: grid(0) },
+        { name: "n", lane: "news", seconds: grid(3) },
+        { name: "b", lane: "line", seconds: grid(5) },
+        { name: "m", lane: "news", seconds: grid(1) },
+        { name: "c", lane: "line", seconds: grid(2) },
+      ];
+      const handles = yield* Effect.forEach(lineup, ({ name, lane, seconds }) =>
+        playout.submit({ key: key(name), lane, request: clip(name, seconds) }),
+      );
+      const projected = yield* playout.forecast;
+      assert.strictEqual(projected.basis, "measured");
+      assert.deepStrictEqual(yield* startErrors(projected, handles, 100), []);
+    }),
+  );
+
+  // Sessions of 75 s renewed 40 s before their cap, as `place`'s renewal checks run. What is
+  // submitted once the replacement is open builds there and airs after the switch, whose grace
+  // and first start are only projected.
+  it.effect("a forecast's starts hold across a renewal", () =>
+    Effect.gen(function* () {
+      const { playout, events } = yield* start(
+        {
+          lifetime: "75 seconds",
+          renewal: { lead: "40 seconds", grace: "100 millis" },
+          lanes: [{ name: "line" }],
+          filler: gridFiller("15 seconds", "15 seconds"),
+        },
+        "20 millis",
+      );
+      const opened = (all: ReadonlyArray<Playout.Event>) =>
+        all.filter((event) => event._tag === "Session" && event.event._tag === "Opened").length;
+      yield* eventually(events, (all) => opened(all) >= 2);
+      yield* nextFiller(playout);
+      const handles = yield* Effect.forEach(["a", "b"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      const projected = yield* playout.forecast;
+      const sessions = handles.map((handle) => {
+        const found = Playout.forecastFor(projected, handle.key);
+        return found._tag === "Airs" ? found.clip.session : found._tag;
+      });
+      assert.deepStrictEqual(sessions, ["replacement", "replacement"]);
+      assert.deepStrictEqual(yield* startErrors(projected, handles, 100, 150), []);
+    }),
+  );
+
+  it.effect("a forecast names an item it will drop, and why", () =>
+    Effect.gen(function* () {
+      const { playout, statuses } = yield* start({ lanes: [{ name: "news" }, { name: "line" }] });
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const handle of measured) yield* handle.outcome;
+      const long = yield* playout.submit({
+        key: key("long"),
+        lane: "line",
+        request: clip("long", 10),
+      });
+      yield* long.started;
+      const firm = yield* playout.submit({
+        key: key("firm"),
+        lane: "line",
+        request: clip("firm"),
+        window: { startBy: "12 seconds", firm: true },
+      });
+      yield* eventually(statuses("firm"), (all) => all.includes("Ready"));
+      // A clip of a higher lane now airs first, and firm can no longer start by its startBy.
+      yield* playout.submit({ key: key("news"), lane: "news", request: clip("news") });
+      const projected = yield* playout.forecast;
+      const found = Playout.forecastFor(projected, key("firm"));
+      assert.strictEqual(found._tag === "Drops" ? found.drop.reason : found._tag, "late");
+      assert.deepStrictEqual(yield* firm.outcome, { _tag: "Dropped", reason: "late" });
+    }),
+  );
+
+  it.effect("a forecast says what it cannot place", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      const { playout, statuses } = yield* start({ lanes: [{ name: "line" }] });
+      const a = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a", 10) });
+      yield* a.started;
+      yield* playout.submit({
+        key: key("held"),
+        lane: "line",
+        request: clip("held"),
+        start: { _tag: "Manual" },
+      });
+      // Without filler the held item is not built, so the next enqueue is lost's: its reply never
+      // comes.
+      yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 1 });
+      yield* playout.submit({ key: key("lost"), lane: "line", request: clip("lost") });
+      yield* eventually(statuses("lost"), (all) => all.includes("Unknown"));
+      const projected = yield* playout.forecast;
+      assert.deepStrictEqual(Playout.forecastFor(projected, key("held")), {
+        _tag: "Unplaced",
+        why: "held",
+      });
+      assert.deepStrictEqual(Playout.forecastFor(projected, key("lost")), {
+        _tag: "Unplaced",
+        why: "unknown",
+      });
+    }),
+  );
+
+  it.effect("forecasts follows the plan", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start({ lanes: [{ name: "line" }] });
+      const a = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      yield* a.outcome;
+      // The reads that follow its end, and the grace after it, land first.
+      yield* Effect.sleep("2 seconds");
+      const seen = yield* Ref.make(0);
+      const first = yield* Deferred.make<void>();
+      const listed = yield* Deferred.make<void>();
+      yield* playout.forecasts.pipe(
+        Stream.runForEach((projected) =>
+          Effect.gen(function* () {
+            yield* Ref.update(seen, (count) => count + 1);
+            yield* Deferred.succeed(first, undefined);
+            if (Playout.forecastFor(projected, key("b"))._tag === "Airs")
+              yield* Deferred.succeed(listed, undefined);
+          }),
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      yield* Deferred.await(first);
+      assert.strictEqual(yield* Ref.get(seen), 1);
+      // Nothing plays or builds for half a minute: the plan holds still, and no forecast comes.
+      yield* Effect.sleep("30 seconds");
+      assert.strictEqual(yield* Ref.get(seen), 1);
+      yield* playout.submit({ key: key("b"), lane: "line", request: clip("b") });
+      yield* Deferred.await(listed);
+    }),
+  );
+
+  it.effect("drainsAt is when the last item ends", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start({
+        lanes: [{ name: "line" }],
+        filler: gridFiller("8 seconds", "16 seconds"),
+      });
+      yield* eventually(playout.state, (state) => state.estimates.build !== undefined);
+      yield* nextFiller(playout);
+      const handles = yield* Effect.forEach(["x", "y", "z"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      const projected = yield* playout.forecast;
+      const items = projected.clips.filter((clip) => clip.clip?._tag === "Item");
+      assert.strictEqual(projected.drainsAt, items.at(-1)?.endsAt);
+      const ended = yield* handles[2]!.outcome;
+      if (ended._tag !== "Ended" || projected.drainsAt === null)
+        return yield* Effect.die(`z ${ended._tag}, drains at ${String(projected.drainsAt)}`);
+      const errorMs = ended.at - projected.drainsAt;
+      assert.isAtMost(Math.abs(errorMs), 100, `ended ${errorMs.toFixed(0)} ms off`);
+    }),
+  );
+});
+
 layer(hosted)("uncertainty", (it) => {
   it.effect("never sends an enqueue again after its reply was lost", () =>
     Effect.gen(function* () {

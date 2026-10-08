@@ -195,6 +195,8 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
     >(),
   );
   const onAir = yield* SubscriptionRef.make<Playout.Source<Req> | undefined>(undefined);
+  // Counts the steps that changed the plan, so `forecasts` reads it again only after one.
+  const revision = yield* SubscriptionRef.make(0);
   // Why the playout stopped; it dies with a defect that stopped it.
   const failure = yield* Deferred.make<ReactorFailure | InvalidFiller>();
   /** Completes once the playout has stopped, however it stopped. */
@@ -572,6 +574,9 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
           if (placed !== undefined) yield* Deferred.succeed(placed, action.placement);
           return;
         }
+        // A forecast is read in a look of its own, never asked of the loop.
+        case "Forecasted":
+          return;
         case "GroupStarted":
           return yield* Deferred.succeed((yield* groupHandle(action.key)).started, action.started);
         case "GroupSettled":
@@ -623,6 +628,12 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
           return next;
         });
       yield* Effect.forEach(result.actions, act, { discard: true });
+      // A wake that decided nothing, or a placement answered with nothing decided, leaves the plan
+      // as it was.
+      const changed =
+        (input._tag !== "Tick" && input._tag !== "Place") ||
+        result.actions.some((action) => action._tag !== "Placed");
+      if (changed) yield* SubscriptionRef.update(revision, (count) => count + 1);
       return result.wake;
     });
 
@@ -928,6 +939,17 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       return { commit, results: mapped };
     });
 
+  /**
+   * The plan's forecast now, read as `state` is and never through the inbox. A playout that has
+   * stopped projects nothing, though its plan closes only at the step after.
+   */
+  const forecast: Effect.Effect<Playout.Forecast> = Effect.gen(function* () {
+    const value = yield* Ref.get(state);
+    const at = yield* now;
+    const stoppedAlready = yield* Deferred.isDone(failure);
+    return Policy.forecast(config, stoppedAlready ? { ...value, closed: true } : value, at);
+  });
+
   const service: Playout.Service<Req> = {
     submit: Effect.fn("Playout.submit")(function* (item: Playout.ItemSpec<Req>) {
       const { results } = yield* edit([{ _tag: "Submit", item }], false);
@@ -1017,6 +1039,13 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
         Effect.ensuring(claim(placements, id)),
       );
     }),
+    forecast,
+    // A slow reader skips to the newest revision, and reads the forecast once for it.
+    forecasts: SubscriptionRef.changes(revision).pipe(
+      Stream.buffer({ capacity: 1, strategy: "sliding" }),
+      Stream.mapEffect(() => forecast),
+      Stream.interruptWhen(stopped),
+    ),
     withdraw: Effect.fn("Playout.withdraw")(function* (key: ItemKey) {
       const none = Effect.succeed({ results: [] as ReadonlyArray<Playout.EditResult> });
       const { results } = yield* edit([{ _tag: "Withdraw", key }], false).pipe(

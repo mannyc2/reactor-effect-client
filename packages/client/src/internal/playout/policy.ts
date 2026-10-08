@@ -22,6 +22,9 @@ import type {
   ClipTag,
   Event,
   FillContext,
+  Forecast,
+  ForecastedClip,
+  ForecastedDrop,
   GroupOutcome,
   NotStarted,
   Placement,
@@ -31,6 +34,7 @@ import type {
   SourceEvent,
   SourceState,
   State as PublicState,
+  Unplaced,
   WithdrawOutcome,
 } from "../../Playout.js";
 import { ItemKey } from "./errors.js";
@@ -152,7 +156,9 @@ export type Input<Req extends ClipRequest = Request> =
   | { readonly _tag: "Tick" }
   | { readonly _tag: "Close" }
   /** Where a clip like `probe` would land. */
-  | { readonly _tag: "Place"; readonly id: number; readonly probe: Probe };
+  | { readonly _tag: "Place"; readonly id: number; readonly probe: Probe }
+  /** What the plan projects to air: `forecast` asks it in a look of its own, never in the loop. */
+  | { readonly _tag: "Forecast" };
 
 export type Refusal =
   | { readonly _tag: "KeyMismatch"; readonly key: ItemKey }
@@ -191,6 +197,8 @@ export type Action<Req extends ClipRequest = Request> =
   | { readonly _tag: "Drained"; readonly id: number }
   /** The answer to a `Place`. */
   | { readonly _tag: "Placed"; readonly id: number; readonly placement: Placement | null }
+  /** The answer to a `Forecast`. */
+  | { readonly _tag: "Forecasted"; readonly forecast: Forecast }
   /**
    * The playout fails for good: `open` when sessions could not be opened, `lost`
    * when they were lost before playing, `moderation` when content moderation
@@ -1368,12 +1376,19 @@ type Until = { readonly _tag: "Clips"; readonly limit: number } | { readonly _ta
  * Why a forward run cannot place an item: held until released, sent with its outcome never seen,
  * waiting to cut a lower lane, which the run does not project, or waiting behind one of these.
  */
-type Unplaceable = "held" | "unknown" | "cut" | "blocked";
+type Unplaceable = Exclude<Unplaced["why"], "beyond">;
 
 /** `unmeasured` before three builds are measured; else whether what it rests on is projected. */
 const basisOf = (unmeasured: boolean, projected: boolean): Placement["basis"] => {
   if (unmeasured) return "unmeasured";
   return projected ? "projected" : "ready";
+};
+
+/** How far a clip of a forward run is from air: the clip on air plays; the rest, by their builds. */
+const forecastedState = (clip: Projected, playing: boolean): ForecastedClip["state"] => {
+  if (playing) return "playing";
+  if (!clip.projected) return "ready";
+  return clip.flight ? "building" : "queued";
 };
 
 /** One look at the plan: applies the input, then decides what is due at `now`. */
@@ -3281,6 +3296,7 @@ const decide = <Req extends ClipRequest>(
     case "Tick":
     // Answered at the end of the step, from the plan the step leaves.
     case "Place":
+    case "Forecast":
       break;
     case "Close": {
       state = { ...state, accepting: false, closed: true };
@@ -3310,6 +3326,7 @@ const decide = <Req extends ClipRequest>(
   }
   if (state.closed) {
     if (input._tag === "Place") actions.push({ _tag: "Placed", id: input.id, placement: null });
+    if (input._tag === "Forecast") actions.push({ _tag: "Forecasted", forecast: noForecast() });
     return { state: { ...state, items, groups }, actions, wake: undefined };
   }
 
@@ -3538,6 +3555,7 @@ const decide = <Req extends ClipRequest>(
   }
   if (input._tag === "Place")
     actions.push({ _tag: "Placed", id: input.id, placement: place(input.probe) });
+  if (input._tag === "Forecast") actions.push({ _tag: "Forecasted", forecast: forecast() });
 
   // History: settled keys past the bound are forgotten, oldest first, and a group with the last of
   // its parts.
@@ -4907,6 +4925,71 @@ const decide = <Req extends ClipRequest>(
     };
   }
   /**
+   * What the plan projects to air from now: a forward run until each item it can place aired or
+   * went, read as it ran, with what it cannot place and why.
+   */
+  function forecast(): Forecast {
+    const air = session(state.air);
+    const run = forward(undefined, { _tag: "Placed" });
+    const wall = (mono: number): number => now.wall + (mono - now.mono);
+    const partOf = (item: PlanItem | undefined): ForecastedClip["group"] =>
+      item?.group === undefined || item.inserted
+        ? undefined
+        : { key: item.group.key, part: item.group.index };
+    const clips = run.aired.map((entry, index): ForecastedClip => ({
+      clip: entry.clip.tag ?? null,
+      group: partOf(entry.clip.item),
+      startsAt: wall(entry.start),
+      endsAt: wall(entry.start + entry.clip.seconds * 1000),
+      state: forecastedState(entry.clip, index === 0 && air?.playing !== undefined),
+      session: entry.clip.sessionId === air?.id ? "on-air" : "replacement",
+    }));
+    // A withdrawal already asked goes now, whatever the run projected for the item.
+    const withdrawing = [...items.values()].flatMap((item): ReadonlyArray<ForecastedDrop> =>
+      live(item) && item.withdraw !== undefined
+        ? [{ key: item.spec.key, group: partOf(item), reason: item.withdraw, at: now.wall }]
+        : [],
+    );
+    const projected = [...run.gone].flatMap(([item, gone]): ReadonlyArray<ForecastedDrop> =>
+      item.withdraw === undefined
+        ? [{ key: item.spec.key, group: partOf(item), reason: gone.reason, at: wall(gone.at) }]
+        : [],
+    );
+    const aired = new Set(run.aired.flatMap((entry) => entry.clip.item ?? []));
+    const reasons = new Map<PlanItem, Unplaceable | undefined>();
+    const holders = (item: PlanItem): ReadonlyArray<PlanItem> =>
+      item.group === undefined
+        ? []
+        : roster.members(item.group.key).flatMap((key) => {
+            const other = items.get(key);
+            return other !== undefined && holds(roster, other, item) ? [other] : [];
+          });
+    const unplaced = [...items.values()].flatMap((item): ReadonlyArray<Unplaced> =>
+      placedAlready(item) || aired.has(item) || run.gone.has(item)
+        ? []
+        : [{ key: item.spec.key, why: unplaceable(item, holders, reasons) ?? "beyond" }],
+    );
+    const ends = clips.flatMap((clip) => (clip.clip?._tag === "Item" ? [clip.endsAt] : []));
+    return {
+      ...noForecast(),
+      clips,
+      drops: [...withdrawing, ...projected].sort((a, b) => a.at - b.at),
+      unplaced,
+      drainsAt: ends.length === 0 ? null : Math.max(...ends),
+    };
+  }
+  /** A forecast of nothing, taken now. */
+  function noForecast(): Forecast {
+    return {
+      at: now.wall,
+      clips: [],
+      drops: [],
+      unplaced: [],
+      drainsAt: null,
+      basis: estimates().build === undefined ? "unmeasured" : "measured",
+    };
+  }
+  /**
    * The plan run forward from now at the median build rates. Builds go one at a time in H3's
    * order: those in flight, then what the plan would send as each slot frees, the best eligible
    * item by build order, else a filler refill below the floor. At each boundary the best clip by
@@ -5931,6 +6014,22 @@ export const view: {
       starved: state.starved,
       estimates: estimatesOf(config, state.samples),
     };
+  },
+);
+
+/**
+ * What the plan projects to air from now: the answer of one look at `now`, whose state and other
+ * actions go unused, so reading it changes nothing. A closed plan projects nothing.
+ */
+export const forecast: {
+  <Req extends ClipRequest>(state: State<Req>, now: Now): (config: Config<Req>) => Forecast;
+  <Req extends ClipRequest>(config: Config<Req>, state: State<Req>, now: Now): Forecast;
+} = dual(
+  3,
+  <Req extends ClipRequest>(config: Config<Req>, state: State<Req>, now: Now): Forecast => {
+    for (const action of decide(config, state, { _tag: "Forecast" }, now).actions)
+      if (action._tag === "Forecasted") return action.forecast;
+    throw new Error("a forecast look answered no forecast");
   },
 );
 
