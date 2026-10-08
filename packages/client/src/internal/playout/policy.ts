@@ -445,7 +445,11 @@ interface Batch {
     readonly key: ItemKey;
     readonly index: number;
     readonly reason: DropReason;
+    /** The add that takes its place in a lane that replaces: it stays as cover until that is Ready. */
+    readonly by?: ItemKey | undefined;
   }>;
+  /** It committed as one of its adds started, and keeps what waits for the add that takes its place. */
+  readonly committed?: true | undefined;
 }
 
 /**
@@ -1663,7 +1667,7 @@ const decide = <Req extends ClipRequest>(
     pendingAdds.clear();
     for (const batch of state.batches) {
       for (const target of batch.targets) superseded.add(target.key);
-      for (const key of batch.adds) pendingAdds.add(key);
+      if (batch.committed !== true) for (const key of batch.adds) pendingAdds.add(key);
     }
   };
   supersede();
@@ -2377,9 +2381,10 @@ const decide = <Req extends ClipRequest>(
     };
     /**
      * What a new item or group in a lane that replaces does: it takes the place of the items
-     * waiting there, which stay as cover until it is Ready and then go as `replaced`.
+     * waiting there, which stay as cover until it, `by`, a group by its first part, is Ready and
+     * then go as `replaced`.
      */
-    const replaceWaiting = (lane: number): void => {
+    const replaceWaiting = (lane: number, by: ItemKey | undefined): void => {
       if (config.lanes[lane]?.conflict !== "replace") return;
       batched = true;
       for (const other of items.values())
@@ -2390,13 +2395,13 @@ const decide = <Req extends ClipRequest>(
             other.phase === "Ready" ||
             other.phase === "Unknown")
         )
-          targets.push({ key: other.spec.key, index: -1, reason: "replaced" });
+          targets.push({ key: other.spec.key, index: -1, reason: "replaced", by });
     };
     for (const [index, edit] of edits.entries()) {
       switch (edit._tag) {
         case "Submit": {
           if (!items.has(edit.spec.key)) {
-            replaceWaiting(edit.spec.lane);
+            replaceWaiting(edit.spec.lane, edit.spec.key);
             put(newItem(edit.spec));
           }
           results.push({ _tag: "Added", key: edit.spec.key });
@@ -2404,7 +2409,7 @@ const decide = <Req extends ClipRequest>(
         }
         case "SubmitGroup": {
           if (!groups.has(edit.key)) {
-            replaceWaiting(edit.lane);
+            replaceWaiting(edit.lane, edit.parts[0]?.key);
             groups.set(edit.key, {
               fingerprint: edit.fingerprint,
               parts: edit.parts.map((part) => part.key),
@@ -3499,7 +3504,8 @@ const decide = <Req extends ClipRequest>(
         else settle(item.spec.key, { _tag: "Failed", reason: { _tag: "Closed" } });
       }
       for (const batch of state.batches)
-        actions.push({ _tag: "Refused", id: batch.id, refusal: { _tag: "PlayoutClosed" } });
+        if (batch.committed !== true)
+          actions.push({ _tag: "Refused", id: batch.id, refusal: { _tag: "PlayoutClosed" } });
       for (const drain of state.drains) actions.push({ _tag: "Drained", id: drain.id });
       state = { ...state, batches: [], drains: [] };
       break;
@@ -3560,31 +3566,49 @@ const decide = <Req extends ClipRequest>(
     }
   }
   // A batch takes effect once everything it adds is Ready or has settled, or as soon as any of it
-  // starts, or may have: what it takes off must not air after what it adds.
+  // starts, or may have: what it takes off must not air after what it adds. What an add takes over
+  // in a lane that replaces stays as cover until that add is Ready, as on its own.
+  const tookOver = (key: ItemKey | undefined): boolean => {
+    const add = key === undefined ? undefined : items.get(key);
+    return (
+      add === undefined ||
+      add.phase === "Ready" ||
+      add.phase === "Started" ||
+      add.phase === "Settled"
+    );
+  };
   for (const batch of state.batches) {
-    const added = batch.adds.map((key) => items.get(key));
-    const done =
-      added.some((item) => item !== undefined && startedOrUnseen(item)) ||
-      added.every(
-        (item) =>
-          item === undefined ||
-          item.phase === "Ready" ||
-          item.phase === "Started" ||
-          item.phase === "Settled",
-      );
-    if (!done) continue;
-    state = { ...state, batches: state.batches.filter((value) => value.id !== batch.id) };
-    for (const key of batch.adds) {
-      if (items.has(key)) set(key, { batch: undefined });
-      pendingAdds.delete(key);
+    const committing = batch.committed !== true;
+    if (committing) {
+      const added = batch.adds.map((key) => items.get(key));
+      const done =
+        added.some((item) => item !== undefined && startedOrUnseen(item)) ||
+        added.every((item) => tookOver(item?.spec.key));
+      if (!done) continue;
+      for (const key of batch.adds) {
+        if (items.has(key)) set(key, { batch: undefined });
+        pendingAdds.delete(key);
+      }
     }
+    const waiting = batch.targets.filter((target) => !tookOver(target.by));
+    if (!committing && waiting.length === batch.targets.length) continue;
+    state = {
+      ...state,
+      batches:
+        waiting.length === 0
+          ? state.batches.filter((value) => value.id !== batch.id)
+          : state.batches.map((value) =>
+              value.id === batch.id ? { ...batch, targets: waiting, committed: true } : value,
+            ),
+    };
     for (const target of batch.targets)
-      withdraw(
-        target.key,
-        target.reason,
-        target.index >= 0 ? { id: batch.id, index: target.index } : undefined,
-      );
-    actions.push({ _tag: "Committed", id: batch.id });
+      if (!waiting.includes(target))
+        withdraw(
+          target.key,
+          target.reason,
+          target.index >= 0 ? { id: batch.id, index: target.index } : undefined,
+        );
+    if (committing) actions.push({ _tag: "Committed", id: batch.id });
   }
 
   // An enqueue whose outcome stays unknown past the deadline makes its session indeterminate:
@@ -5457,14 +5481,15 @@ const decide = <Req extends ClipRequest>(
       done.has(item) ||
       gone.has(item) ||
       pool.some((clip) => clip.item === item && clip.readyAt <= time);
-    /** The pending batch that adds each item, for the build order. */
+    /** The batch not committed yet that adds each item, for the build order. */
     const pendingBatchOf = new Map<ItemKey, Batch>();
     for (const batch of state.batches)
-      for (const key of batch.adds) pendingBatchOf.set(key, batch);
+      if (batch.committed !== true) for (const key of batch.adds) pendingBatchOf.set(key, batch);
     // As the plan commits a batch: it holds what it adds until all of it is Ready, or until any of
     // it starts, before the run or in it.
     const open = (id: number | undefined, time: number): boolean => {
       const batch = id === undefined ? undefined : state.batches.find((value) => value.id === id);
+      if (batch?.committed === true) return false;
       const added = (batch?.adds ?? []).flatMap((key) => {
         const add = items.get(key);
         return add === undefined ? [] : [add];
@@ -5945,9 +5970,17 @@ const decide = <Req extends ClipRequest>(
             other.readyAt <= time &&
             !open(other.item.batch, time),
         );
+        // What an add takes over in a lane that replaces goes once that add is Ready.
+        const by = target?.by === undefined ? undefined : items.get(target.by);
+        const takenOver =
+          by === undefined ||
+          !live(by) ||
+          by.phase === "Ready" ||
+          startedOrUnseen(by) ||
+          readyBy(by, time);
         if (time >= deadline(item)) drop(item, "late", Math.min(time, deadline(item)));
         else if (replaced) drop(item, "replaced", time);
-        else if (batch !== undefined && target !== undefined && !open(batch.id, time))
+        else if (batch !== undefined && target !== undefined && !open(batch.id, time) && takenOver)
           drop(item, target.reason, time);
       }
     };

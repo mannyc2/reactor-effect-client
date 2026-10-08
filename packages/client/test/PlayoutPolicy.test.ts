@@ -2863,6 +2863,63 @@ describe("PlayoutPolicy, edit claims", () => {
     );
     assert.deepStrictEqual(due, [{ _tag: "Dropped", reason: "late" }]);
   });
+
+  /** The test config with a third lane, `low` or a `ticker` that replaces what waits in it. */
+  const withLane = (name: string, conflict: "queue" | "replace"): Policy.Config => ({
+    ...config,
+    lanes: [...config.lanes, { name, conflict, cut: false }],
+  });
+  /** `x`, `seconds` long in `lane`, built and on air on s1; when it ends. */
+  const onAir = (
+    policy: ReturnType<typeof drive>,
+    held: Queues,
+    log: Array<string>,
+    lane: number,
+    seconds: number,
+  ): number => {
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("x", lane, seconds));
+    provide(policy, "s1", 2, held, log);
+    boundary(policy, "s1", held, policy.now() + 1);
+    return (policy.state().items.get(key("x"))?.startedAt ?? Number.NaN) + seconds * 1_000;
+  };
+
+  // In a lane that replaces, what a new item takes over stays as cover until that item is Ready,
+  // though another add of its batch started and so committed it.
+  it("keeps a replacing lane's cover until its new item is Ready, once its batch committed", () => {
+    const policy = drive({ config: withLane("ticker", "replace"), from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    const end = onAir(policy, held, log, 1, 10);
+    policy.submit(spec("t1", 2, 5));
+    provide(policy, "s1", 2, held, log);
+    held.slow.add("n");
+    const window = { startByMs: end + 3_000 - policy.now(), firm: true };
+    policy.edit(
+      [
+        { _tag: "Submit", spec: { ...spec("f", 1, 5), window } },
+        { _tag: "Submit", spec: spec("n", 2, 5) },
+      ],
+      true,
+    );
+    provide(policy, "s1", 4, held, log);
+    boundary(policy, "s1", held, end);
+    provide(policy, "s1", 3, held, log);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "f"]);
+    assert.deepStrictEqual(statuses(policy.actions, "t1"), ["Accepted", "Building", "Ready"]);
+    // n is Ready: t1 goes as replaced.
+    held.ready = [...held.ready, ...held.building];
+    held.building = [];
+    shown(policy, "s1", held);
+    provide(policy, "s1", 3, held, log);
+    assert.deepStrictEqual(statuses(policy.actions, "t1"), [
+      "Accepted",
+      "Building",
+      "Ready",
+      "Dropped",
+    ]);
+  });
 });
 
 describe("PlayoutPolicy, groups", () => {

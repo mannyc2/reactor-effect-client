@@ -562,7 +562,8 @@ export interface EditHandle {
    * The batch took effect together: every clip it adds is Ready or settled, or
    * one of them started, and what it withdraws went at once. An item it
    * replaces stays as cover until its replacement is Ready, and airs instead if
-   * it starts first.
+   * it starts first; what waits in a lane that replaces stays as cover until the
+   * item the batch adds there is Ready.
    */
   readonly committed: Effect.Effect<void, PlayoutClosed>;
 }
@@ -1034,9 +1035,10 @@ export interface Service<Req extends ClipRequest = Request> {
   /**
    * Several edits as one make-before-break change: all are checked before any
    * takes effect. The batch holds what it adds from the air until all of it is
-   * Ready or settled, or until any of it starts, and what it withdraws or
-   * replaces stays as cover until then; an item it replaces stays on until its
-   * replacement is Ready. An item it submits or inserts, or a group's first
+   * Ready or settled, or until any of it starts, and what it withdraws stays as
+   * cover until then; an item it replaces stays on until its replacement is
+   * Ready, and what waits in a lane that replaces until the item the batch adds
+   * there is. An item it submits or inserts, or a group's first
    * part, due by a firm `startBy` is checked against the plan as the batch will
    * run and is not held: it airs as soon as it can, and builds ahead of every
    * other item waiting in its lane except an `Asap` one. An insert may anchor on
