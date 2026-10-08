@@ -423,11 +423,30 @@ export interface InsertSpec<Req extends ClipRequest = Request> extends ClipSpec<
 /** The clip that takes a queued item's place, under a key of its own. */
 export type ReplacementSpec<Req extends ClipRequest = Request> = ClipSpec<Req>;
 
+/**
+ * A group placed right before or after an anchor, as `insert` places a clip: give exactly one of
+ * `before` and `after`. Its parts form a group of their own, with its handle, `started` and
+ * `outcome`, in the anchor's lane between the anchor and its neighbour. The first part takes the
+ * anchor's start as an insert does, and `window`; the rest follow it. Only a strict lane keeps
+ * such a place, so it is refused with `InvalidItem` in any other. Its anchor and side are part of
+ * it: sent again under its key with another, it is refused with `KeyMismatch`.
+ */
+export type InsertGroupSpec<Req extends ClipRequest = Request> = {
+  readonly key: ItemKey;
+  readonly parts: readonly [GroupPart<Req>, ...ReadonlyArray<GroupPart<Req>>];
+  /** It applies to the first part. */
+  readonly window?: Window | undefined;
+} & (
+  | { readonly before: ItemKey; readonly after?: undefined }
+  | { readonly after: ItemKey; readonly before?: undefined }
+);
+
 /** One edit of a batch applied together. */
 export type Edit<Req extends ClipRequest = Request> =
   | { readonly _tag: "Submit"; readonly item: ItemSpec<Req> }
   | { readonly _tag: "SubmitGroup"; readonly group: GroupSpec<Req> }
   | { readonly _tag: "Insert"; readonly insert: InsertSpec<Req> }
+  | { readonly _tag: "InsertGroup"; readonly insert: InsertGroupSpec<Req> }
   | { readonly _tag: "Replace"; readonly key: ItemKey; readonly next: ReplacementSpec<Req> }
   | { readonly _tag: "Withdraw"; readonly key: ItemKey };
 
@@ -1033,6 +1052,8 @@ export interface Service<Req extends ClipRequest = Request> {
    */
   readonly submitGroup: (group: GroupSpec<Req>) => Effect.Effect<GroupHandle, SubmitError>;
   readonly insert: (spec: InsertSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
+  /** A group right before or after an anchor in a strict lane; see `InsertGroupSpec`. */
+  readonly insertGroup: (spec: InsertGroupSpec<Req>) => Effect.Effect<GroupHandle, SubmitError>;
   /**
    * Builds `next` for the item's place, lane, group position, start, window and
    * the clip it `follows`, the window's `notBefore` and `startBy` measured from

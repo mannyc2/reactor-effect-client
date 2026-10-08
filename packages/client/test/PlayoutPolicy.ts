@@ -609,7 +609,10 @@ const simulate = (
         }
         replacing.push({ key: value.spec.key, group: joins ? part.group : undefined });
       }
-      if (value._tag === "SubmitGroup" && !groups.has(value.key)) {
+      if (
+        (value._tag === "SubmitGroup" || value._tag === "InsertGroup") &&
+        !groups.has(value.key)
+      ) {
         fresh.push(value.key);
         groups.set(
           value.key,
@@ -696,6 +699,25 @@ const simulate = (
     continuity: index % 4 === 3,
     ...timing(index, lane),
   });
+
+  /** A group of two placed `side` of `anchor`, its first part `first`, as `insertGroup` sends it. */
+  const besideGroup = (
+    name: string,
+    first: Policy.Spec,
+    index: number,
+    anchor: ItemKey,
+    side: "before" | "after",
+  ): Policy.EditInput => {
+    const { window: _window, ...later } = cued(`${name}b`, 1, index + 1);
+    return {
+      _tag: "InsertGroup",
+      key: key(name),
+      parts: [first, { ...later, start: { _tag: "Follow" } }],
+      fingerprint: name,
+      anchor,
+      side,
+    };
+  };
 
   /** The provider carries out the command in flight on a lane, and answers it. */
   const complete = (busy: {
@@ -836,6 +858,17 @@ const simulate = (
         return edit(index, [{ _tag: "Replace", key: key(name), spec: replacement }]);
       }
       case "insert": {
+        // In a strict lane some insert a group of two.
+        if (strictLane(1) && index % 3 === 2)
+          return edit(index, [
+            besideGroup(
+              `n${String(index)}`,
+              cued(`n${String(index)}a`, 1, index),
+              index,
+              key(name),
+              index % 2 === 0 ? "after" : "before",
+            ),
+          ]);
         // Some inserts after an item must air right after it.
         const inserted = cued(`i${String(index)}`, 1, index);
         const pair = index % 2 === 0 && index % 3 === 0;
@@ -878,12 +911,21 @@ const simulate = (
             { _tag: "Submit", spec: added },
             ...(index % 2 === 1
               ? [
-                  {
-                    _tag: "Insert",
-                    spec: inserted,
-                    anchor: added.key,
-                    side: index % 8 < 4 ? "after" : "before",
-                  } as const,
+                  // In a strict lane some insert a group of two instead.
+                  strictLane(1) && index % 3 === 0
+                    ? besideGroup(
+                        `b${String(index)}n`,
+                        { ...inserted, key: key(`b${String(index)}na`) },
+                        index,
+                        added.key,
+                        index % 8 < 4 ? "after" : "before",
+                      )
+                    : ({
+                        _tag: "Insert",
+                        spec: inserted,
+                        anchor: added.key,
+                        side: index % 8 < 4 ? "after" : "before",
+                      } as const),
                 ]
               : []),
             ...(target === undefined

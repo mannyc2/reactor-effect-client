@@ -94,6 +94,15 @@ export type EditInput<Req extends ClipRequest = Request> =
       readonly anchor: ItemKey;
       readonly side: "before" | "after";
     }
+  /** A group placed right before or after `anchor`, its parts as a `SubmitGroup`'s, its lane the anchor's. */
+  | {
+      readonly _tag: "InsertGroup";
+      readonly key: ItemKey;
+      readonly parts: ReadonlyArray<Spec<Req>>;
+      readonly fingerprint: string;
+      readonly anchor: ItemKey;
+      readonly side: "before" | "after";
+    }
   | { readonly _tag: "Replace"; readonly key: ItemKey; readonly spec: Spec<Req> }
   | { readonly _tag: "Withdraw"; readonly key: ItemKey };
 
@@ -476,6 +485,8 @@ interface Group {
   readonly first?: Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted | undefined;
   /** Its outcome went out. */
   readonly settled?: true | undefined;
+  /** Where an inserted group was placed, which a resubmission under its key must repeat. */
+  readonly anchor?: { readonly key: ItemKey; readonly side: "before" | "after" } | undefined;
 }
 
 export interface State<Req extends ClipRequest = Request> {
@@ -1689,10 +1700,13 @@ const decide = <Req extends ClipRequest>(
     )
       seatBesideReplaced(item, member, old);
   };
-  /** Seats behind `member` the live inserts placed right before or after `key` that sat at `was`. */
+  /**
+   * Seats behind `member` the live items placed right before or after `key`, inserts and an
+   * inserted group's parts, that sat at `was`.
+   */
   const seatBeside = (key: ItemKey, was: ItemKey | undefined, member: PlanItem): void => {
     for (const other of [...items.values()])
-      if (other.inserted && other.anchor?.key === key && live(other) && other.behind === was)
+      if (other.anchor?.key === key && live(other) && other.behind === was)
         seatBehind(other.spec.key, member);
   };
   /**
@@ -2289,6 +2303,18 @@ const decide = <Req extends ClipRequest>(
     ...place,
   });
 
+  /**
+   * The order next to `anchor` on `side` in its lane, or one step from it with none there: what is
+   * placed beside the anchor goes between the two.
+   */
+  const neighbourOf = (anchor: PlanItem, side: "before" | "after"): number => {
+    const sameLane = [...items.values()]
+      .filter((other) => other.spec.lane === anchor.spec.lane && other !== anchor)
+      .map((other) => other.order);
+    return side === "before"
+      ? Math.max(anchor.order - 1, ...sameLane.filter((order) => order < anchor.order))
+      : Math.min(anchor.order + 1, ...sameLane.filter((order) => order > anchor.order));
+  };
   const applyEdit = (id: number, edits: ReadonlyArray<EditInput<Req>>, batched: boolean): void => {
     // A drain stops admissions, not withdrawals.
     if (state.closed || (!state.accepting && edits.some((edit) => edit._tag !== "Withdraw"))) {
@@ -2299,6 +2325,36 @@ const decide = <Req extends ClipRequest>(
       actions.push({ _tag: "Refused", id, refusal });
     };
     const seen = new Set<string>();
+    /** The keys an edit puts: an item's, or a group's and its parts'. */
+    const keysOf = (edit: EditInput<Req>): ReadonlyArray<ItemKey> => {
+      switch (edit._tag) {
+        case "Withdraw":
+          return [];
+        case "SubmitGroup":
+        case "InsertGroup":
+          return [edit.key, ...edit.parts.map((part) => part.key)];
+        case "Submit":
+        case "Insert":
+        case "Replace":
+          return [edit.spec.key];
+      }
+    };
+    /** The fingerprint an edit gives `key`, one of its keys. */
+    const fingerprintOf = (edit: EditInput<Req>, key: ItemKey): string | undefined => {
+      switch (edit._tag) {
+        case "Withdraw":
+          return undefined;
+        case "SubmitGroup":
+        case "InsertGroup":
+          return key === edit.key
+            ? edit.fingerprint
+            : edit.parts.find((part) => part.key === key)?.fingerprint;
+        case "Submit":
+        case "Insert":
+        case "Replace":
+          return edit.spec.fingerprint;
+      }
+    };
     /** What the batch adds: each item or group it puts that the plan does not hold yet. */
     const added = new Set(
       edits.flatMap((edit): ReadonlyArray<ItemKey> => {
@@ -2306,7 +2362,8 @@ const decide = <Req extends ClipRequest>(
           case "Withdraw":
             return [];
           case "SubmitGroup":
-            return groups.has(edit.key) ? [] : [edit.key, ...edit.parts.map((part) => part.key)];
+          case "InsertGroup":
+            return groups.has(edit.key) ? [] : keysOf(edit);
           case "Submit":
           case "Insert":
           case "Replace":
@@ -2348,54 +2405,57 @@ const decide = <Req extends ClipRequest>(
     };
     // Check every edit before any takes effect.
     for (const edit of edits) {
-      const keys =
-        edit._tag === "SubmitGroup"
-          ? [edit.key, ...edit.parts.map((part) => part.key)]
-          : edit._tag === "Withdraw"
-            ? []
-            : [edit.spec.key];
-      for (const key of keys) {
+      for (const key of keysOf(edit)) {
         if (seen.has(key))
           return refuse({ _tag: "InvalidItem", key, message: "a key appears twice in one batch" });
         seen.add(key);
         const existing = items.get(key);
-        const fingerprint =
-          edit._tag === "SubmitGroup" && key === edit.key
-            ? edit.fingerprint
-            : edit._tag === "SubmitGroup"
-              ? edit.parts.find((part) => part.key === key)?.fingerprint
-              : edit._tag === "Withdraw"
-                ? undefined
-                : edit.spec.fingerprint;
+        const fingerprint = fingerprintOf(edit, key);
         const group = groups.get(key);
+        const grouped = edit._tag === "SubmitGroup" || edit._tag === "InsertGroup";
         if (
           (existing !== undefined && existing.spec.fingerprint !== fingerprint) ||
           (group !== undefined && group.fingerprint !== fingerprint) ||
-          // An insert's place is part of it; a new group cannot take another item's key as a part.
+          // An insert's place is part of it, and an inserted group's, which a submitted one lacks;
+          // a new group cannot take another item's key as a part.
           (edit._tag === "Insert" &&
             existing !== undefined &&
             (existing.anchor?.key !== edit.anchor || existing.anchor.side !== edit.side)) ||
-          (edit._tag === "SubmitGroup" &&
-            key !== edit.key &&
-            existing !== undefined &&
-            !groups.has(edit.key))
+          (edit._tag === "InsertGroup" &&
+            group !== undefined &&
+            (group.anchor?.key !== edit.anchor || group.anchor.side !== edit.side)) ||
+          (edit._tag === "SubmitGroup" && group?.anchor !== undefined) ||
+          (grouped && key !== edit.key && existing !== undefined && !groups.has(edit.key))
         )
           return refuse({ _tag: "KeyMismatch", key: key });
       }
-      // An insert already admitted under this key, spec and anchor is answered as it is.
-      if (edit._tag === "Insert" && !items.has(edit.spec.key)) {
-        const anchor = anchorOf(edit.anchor, edit.side);
-        if (anchor?.waiting !== true)
+      // An insert or inserted group already admitted under this key, spec and anchor is answered
+      // as it is.
+      const placed =
+        edit._tag === "Insert" && !items.has(edit.spec.key)
+          ? { key: edit.spec.key, anchor: anchorOf(edit.anchor, edit.side) }
+          : edit._tag === "InsertGroup" && !groups.has(edit.key)
+            ? { key: edit.key, anchor: anchorOf(edit.anchor, edit.side) }
+            : undefined;
+      if (placed !== undefined) {
+        if (placed.anchor?.waiting !== true)
           return refuse({
             _tag: "InvalidItem",
-            key: edit.spec.key,
+            key: placed.key,
             message: "the anchor is not waiting to air",
           });
-        if (anchor.mode === "held")
+        if (placed.anchor.mode === "held")
           return refuse({
             _tag: "InvalidItem",
-            key: edit.spec.key,
+            key: placed.key,
             message: "a held Manual item cannot anchor an insert",
+          });
+        // In a lane that is not strict, what is placed after it need not wait for it.
+        if (edit._tag === "InsertGroup" && config.lanes[placed.anchor.lane]?.strict !== true)
+          return refuse({
+            _tag: "InvalidItem",
+            key: placed.key,
+            message: "an inserted group keeps its place only in a strict lane",
           });
       }
       if (edit._tag === "Submit" || edit._tag === "Insert") {
@@ -2479,6 +2539,22 @@ const decide = <Req extends ClipRequest>(
               lane: anchor.lane,
               mode: anchor.playing ? "follow" : anchor.mode,
             });
+          break;
+        }
+        case "InsertGroup": {
+          const anchor = anchorOf(edit.anchor, edit.side);
+          if (groups.has(edit.key) || anchor === undefined) break;
+          earlierGroups.set(
+            edit.key,
+            edit.parts.map((part) => part.key),
+          );
+          // Its first part takes its start from the anchor, as an insert does: the rest follow it.
+          edit.parts.forEach((part, index) =>
+            earlier.set(part.key, {
+              lane: anchor.lane,
+              mode: index === 0 && !anchor.playing ? anchor.mode : "follow",
+            }),
+          );
           break;
         }
         case "Replace": {
@@ -2574,15 +2650,8 @@ const decide = <Req extends ClipRequest>(
         case "Insert": {
           if (!items.has(edit.spec.key)) {
             const anchor = items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side)!;
-            const sameLane = [...items.values()]
-              .filter((other) => other.spec.lane === anchor.spec.lane && other !== anchor)
-              .map((other) => other.order);
-            const neighbour =
-              edit.side === "before"
-                ? Math.max(anchor.order - 1, ...sameLane.filter((order) => order < anchor.order))
-                : Math.min(anchor.order + 1, ...sameLane.filter((order) => order > anchor.order));
             const playing = anchor.phase === "Started";
-            const order = (anchor.order + neighbour) / 2;
+            const order = (anchor.order + neighbourOf(anchor, edit.side)) / 2;
             // Beside an insert that sits behind a later member, it sits behind that member too.
             const behind = anchor.behind === undefined ? undefined : items.get(anchor.behind);
             put(
@@ -2604,6 +2673,51 @@ const decide = <Req extends ClipRequest>(
             state = { ...state, nextOrder: state.nextOrder - 1 };
           }
           results.push({ _tag: "Added", key: edit.spec.key });
+          break;
+        }
+        case "InsertGroup": {
+          if (!groups.has(edit.key)) {
+            const anchor = items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side)!;
+            const playing = anchor.phase === "Started";
+            const neighbour = neighbourOf(anchor, edit.side);
+            const count = edit.parts.length;
+            groups.set(edit.key, {
+              fingerprint: edit.fingerprint,
+              parts: edit.parts.map((part) => part.key),
+              places: edit.parts.map(() => undefined),
+              anchor: { key: edit.anchor, side: edit.side },
+            });
+            // Beside an insert that sits behind a later item, it sits behind that item too.
+            const behind = anchor.behind === undefined ? undefined : items.get(anchor.behind);
+            // Its parts take consecutive places between the anchor and its neighbour, the first
+            // part the anchor's start and the window, as an insert does; the rest follow it.
+            edit.parts.forEach((part, partIndex) => {
+              const step = edit.side === "after" ? partIndex + 1 : count - partIndex;
+              const order = anchor.order + ((neighbour - anchor.order) * step) / (count + 1);
+              const { window: _window, follows: _follows, ...rest } = part;
+              put(
+                newItem(
+                  partIndex === 0
+                    ? { ...part, lane: anchor.spec.lane, start: insertStart(anchor, edit.side) }
+                    : { ...rest, lane: anchor.spec.lane, start: { _tag: "Follow" } },
+                  {
+                    order,
+                    group: { key: edit.key, index: partIndex },
+                    anchor: { key: edit.anchor, side: edit.side },
+                    mode: partIndex === 0 && !playing ? anchor.mode : "follow",
+                    behind:
+                      behind !== undefined && behind.order > order ? anchor.behind : undefined,
+                  },
+                ),
+              );
+            });
+            state = { ...state, nextOrder: state.nextOrder - count };
+          }
+          results.push({
+            _tag: "AddedGroup",
+            key: edit.key,
+            parts: edit.parts.map((part) => part.key),
+          });
           break;
         }
         case "Replace": {
@@ -2719,11 +2833,12 @@ const decide = <Req extends ClipRequest>(
       for (const key of adds) {
         const item = items.get(key);
         if (!pending || item === undefined) continue;
-        // An insert beside what its batch holds is held with it, or it would air before its anchor.
+        // An insert, or an inserted group, beside what its batch holds is held with it, or it would
+        // air before its anchor.
         const anchor =
-          item.inserted && item.anchor !== undefined
-            ? (items.get(item.anchor.key) ?? firstOrLastPart(item.anchor.key, item.anchor.side))
-            : undefined;
+          item.anchor === undefined
+            ? undefined
+            : (items.get(item.anchor.key) ?? firstOrLastPart(item.anchor.key, item.anchor.side));
         if (!firmAdd(item) || anchor?.batch === id) set(key, { batch: id });
       }
       for (const target of targets)
@@ -5311,15 +5426,8 @@ const decide = <Req extends ClipRequest>(
     const submitAt = now.mono + probe.submitInMs;
     if (anchor === undefined)
       return { item: { ...newItem(spec), followsAired: aired }, submitAt, anchor: "next" };
-    const neighbour = Math.min(
-      anchor.order + 1,
-      ...[...items.values()]
-        .filter((other) => other.spec.lane === anchor.spec.lane && other !== anchor)
-        .map((other) => other.order)
-        .filter((order) => order > anchor.order),
-    );
     const playing = anchor.phase === "Started";
-    const order = (anchor.order + neighbour) / 2;
+    const order = (anchor.order + neighbourOf(anchor, "after")) / 2;
     // Beside an insert that sits behind a later member, it sits behind that member too.
     const behind = anchor.behind === undefined ? undefined : items.get(anchor.behind);
     return {

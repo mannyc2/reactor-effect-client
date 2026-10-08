@@ -895,6 +895,37 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
             side: edit.insert.before === undefined ? "after" : "before",
           };
         }
+        case "InsertGroup": {
+          const insert = edit.insert;
+          const anchor = insert.before ?? insert.after;
+          if (anchor === undefined || (insert.before !== undefined && insert.after !== undefined))
+            return yield* InvalidItem.make({
+              key: insert.key,
+              message: "give exactly one of before and after",
+            });
+          // A part is its clip alone: the group's window is its first part's, and its start the
+          // anchor's.
+          const parts = yield* Effect.forEach(insert.parts, (part, partIndex) =>
+            spec(
+              {
+                key: part.key,
+                request: part.request,
+                cues: part.cues,
+                continuity: part.continuity,
+                ...(partIndex === 0 ? { window: insert.window } : {}),
+              },
+              0,
+            ),
+          );
+          return {
+            _tag: "InsertGroup",
+            key: yield* itemKey(insert.key),
+            parts,
+            fingerprint: fingerprint(parts.map((part) => part.fingerprint)),
+            anchor: yield* itemKey(anchor),
+            side: insert.before === undefined ? "after" : "before",
+          };
+        }
         case "Replace":
           return {
             _tag: "Replace",
@@ -982,6 +1013,13 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       return first?._tag === "Added"
         ? first.handle
         : yield* Effect.die("an insert returned no handle");
+    }),
+    insertGroup: Effect.fn("Playout.insertGroup")(function* (insert: Playout.InsertGroupSpec<Req>) {
+      const { results } = yield* edit([{ _tag: "InsertGroup", insert }], false);
+      const [first] = results;
+      return first?._tag === "AddedGroup"
+        ? first.handle
+        : yield* Effect.die("an inserted group returned no handle");
     }),
     replace: Effect.fn("Playout.replace")(function* (
       key: ItemKey,
