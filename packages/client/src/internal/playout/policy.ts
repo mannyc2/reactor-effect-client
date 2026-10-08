@@ -1943,7 +1943,26 @@ const decide = <Req extends ClipRequest>(
     });
   };
 
-  const estimates = (): PublicState["estimates"] => estimatesOf(config, state.samples);
+  // The estimates and build rates of the samples last read, each worked out once: each sorts the
+  // samples, and a look reads them for every item it projects.
+  let measured: State<Req>["samples"] | undefined;
+  let estimated: PublicState["estimates"] | undefined;
+  /** By subject, each rule's rate, the independent one first: none until worked out. */
+  const rates = new Map<
+    number | "filler",
+    Array<{ readonly rate: number | undefined } | undefined>
+  >();
+  const measuredNow = (): void => {
+    if (measured === state.samples) return;
+    measured = state.samples;
+    estimated = undefined;
+    rates.clear();
+  };
+  const estimates = (): PublicState["estimates"] => {
+    measuredNow();
+    estimated ??= estimatesOf(config, state.samples);
+    return estimated;
+  };
   /** Seconds a clip asking for `seconds`, not built yet, is projected to air. */
   const lengthOf = (seconds: number): number =>
     airedLengthOf(state.samples, seconds, config.builtSeconds);
@@ -1955,7 +1974,16 @@ const decide = <Req extends ClipRequest>(
     subject: number | "filler",
     rule: "median" | "long",
     continued: boolean,
-  ): number | undefined => buildRateOf(state.samples, subject, rule, continued);
+  ): number | undefined => {
+    measuredNow();
+    const known = rates.get(subject) ?? [];
+    if (known.length === 0) rates.set(subject, known);
+    const index = (rule === "long" ? 2 : 0) + (continued ? 1 : 0);
+    const worked = (known[index] ??= {
+      rate: buildRateOf(state.samples, subject, rule, continued),
+    });
+    return worked.rate;
+  };
   /**
    * Milliseconds `subject`'s build of a clip asking for `seconds` takes at its median rate, per
    * second of the length its model builds; none while nothing is measured.
@@ -2188,6 +2216,9 @@ const decide = <Req extends ClipRequest>(
     generation: 0,
     inserted: false,
     mode: modeOf(spec.start),
+    // Every item has `batch`, held or not, so the engine sees items of one shape: when only held
+    // adds had it, a look at 200 plain items and 200 pending batches took about 1.5 times as long.
+    batch: undefined,
     phase: "Accepted",
     notBefore:
       spec.window?.notBeforeMs === undefined ? undefined : now.mono + spec.window.notBeforeMs,
