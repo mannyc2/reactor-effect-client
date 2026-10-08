@@ -2255,18 +2255,27 @@ const decide = <Req extends ClipRequest>(
   function keeps(item: Item<Req>, memo: Memo): boolean {
     const known = memo.kept.get(item);
     if (known !== undefined) return known;
-    const at = atMono(item);
-    const start = item.spec.start;
     const value = !(
-      (item.spec.window?.firm === true && item.startBy !== undefined && now.mono >= item.startBy) ||
-      (at !== undefined &&
-        start._tag === "At" &&
-        !(typeof start.late === "object" && "readyByMs" in start.late) &&
-        now.mono >= lateAt(at, start.late)) ||
+      pastDeadline(item) ||
       (lateWhenProjected(item) && misses(item, item.startBy, memo))
     );
     memo.kept.set(item, value);
     return value;
+  }
+  /**
+   * Whether an item's own time has passed: its firm `startBy`, or its `At` time's lateness, one
+   * judged by its readiness aside.
+   */
+  function pastDeadline(item: Item<Req>): boolean {
+    const at = atMono(item);
+    const start = item.spec.start;
+    return (
+      (item.spec.window?.firm === true && item.startBy !== undefined && now.mono >= item.startBy) ||
+      (at !== undefined &&
+        start._tag === "At" &&
+        !(typeof start.late === "object" && "readyByMs" in start.late) &&
+        now.mono >= lateAt(at, start.late))
+    );
   }
   /**
    * Whether `item` is firm, not sent, and dropped once projected to miss its `startBy`. One its
@@ -3804,14 +3813,48 @@ const decide = <Req extends ClipRequest>(
     item.phase === "Accepted" || item.phase === "Building" || item.phase === "Ready";
   // An item judged by its readiness is judged once, at the first look at or after its bound, by
   // what the look's input left: kept for good, or dropped as late. One whose start is under way is
-  // judged at the next look, if it has not started by then.
-  for (const item of [...items.values()]) {
+  // judged at the next look, if it has not started by then. Those due at one look are judged
+  // together, so the order they were admitted in decides nothing: one not Ready by its bound goes
+  // whatever else airs. Then what goes by its own time at this look goes first, and holds none of
+  // them; and they are judged in the order they air, each once those ahead of it are kept or gone.
+  const due = [...items.values()].filter((item) => {
     const at = atMono(item);
     const start = item.spec.start;
-    if (at === undefined || start._tag !== "At" || !unjudged(item) || !waitingPhase(item)) continue;
-    if (now.mono < lateAt(at, start.late) || startUnderWay(item)) continue;
-    if (judgeReadiness(item)) set(item.spec.key, { keptLate: true });
-    else withdraw(item.spec.key, "late");
+    return (
+      at !== undefined &&
+      start._tag === "At" &&
+      unjudged(item) &&
+      waitingPhase(item) &&
+      now.mono >= lateAt(at, start.late) &&
+      !startUnderWay(item)
+    );
+  });
+  for (const item of due) if (!readyInTime(item)) withdraw(item.spec.key, "late");
+  const inTime = due.filter(readyInTime);
+  if (inTime.length > 0) {
+    const judged = new Set(inTime.map((item) => item.spec.key));
+    for (const item of [...items.values()])
+      if (
+        waitingPhase(item) &&
+        !startUnderWay(item) &&
+        !judged.has(item.spec.key) &&
+        pastDeadline(item)
+      )
+        withdraw(item.spec.key, "late");
+    const ranks = new Map<PlanItem, Rank>();
+    const order = inTime
+      .map((item) => ({
+        key: item.spec.key,
+        onAir: item.sessionId === state.air ? 0 : 1,
+        rank: placeRank(item, ranks),
+      }))
+      .sort((a, b) => a.onAir - b.onAir || compareRank(a.rank, b.rank));
+    for (const { key } of order) {
+      const item = items.get(key);
+      if (item === undefined || !waitingPhase(item) || item.withdraw !== undefined) continue;
+      if (judgeReadiness(item)) set(key, { keptLate: true });
+      else withdraw(key, "late");
+    }
   }
   // Sweep every waiting item, not only the heads: expiry must not strand behind a live one. Each
   // is late from the instant its deadline falls due, where the wake is. Projections share what
@@ -4865,11 +4908,6 @@ const decide = <Req extends ClipRequest>(
     return false;
   }
   /**
-   * Whether `item`, Ready on `value` at `index`, must leave its queue now: held, or waiting behind
-   * an earlier item of its line with none of those Ready ahead of it, and about to be next;
-   * waiting for the clip it follows and about to air before it; or an `At` item Ready too early.
-   */
-  /**
    * Whether an item judged by its readiness is kept, at the first look at or after its bound: it
    * was Ready by then, by when it was last seen Ready, and nothing but filler airs before it. It is
    * queued to air in its turn, held by nothing and waiting behind no other item; the clip on air
@@ -4878,12 +4916,7 @@ const decide = <Req extends ClipRequest>(
    * airs at the next boundary however late.
    */
   function judgeReadiness(item: Item<Req>): boolean {
-    const at = atMono(item);
-    const start = item.spec.start;
-    if (at === undefined || start._tag !== "At") return false;
-    const bound = lateAt(at, start.late);
-    if (item.phase !== "Ready" || item.readyAt === undefined || item.readyAt > bound) return false;
-    if (!queuedToAir(roster, item)) return false;
+    if (!readyInTime(item) || !queuedToAir(roster, item)) return false;
     const air = session(state.air);
     const playing = air?.source?.playing;
     if (playing !== undefined && playing.tag?._tag !== "Filler") return false;
@@ -4897,6 +4930,20 @@ const decide = <Req extends ClipRequest>(
     ];
     return index >= 0 && !ahead.some((clip) => clip.tag?._tag === "Item");
   }
+  /** Whether an item judged by its readiness was Ready by its bound, by when it was last seen Ready. */
+  function readyInTime(item: Item<Req>): boolean {
+    const at = atMono(item);
+    const start = item.spec.start;
+    if (at === undefined || start._tag !== "At") return false;
+    return (
+      item.phase === "Ready" && item.readyAt !== undefined && item.readyAt <= lateAt(at, start.late)
+    );
+  }
+  /**
+   * Whether `item`, Ready on `value` at `index`, must leave its queue now: held, or waiting behind
+   * an earlier item of its line with none of those Ready ahead of it, and about to be next;
+   * waiting for the clip it follows and about to air before it; or an `At` item Ready too early.
+   */
   function exposure(
     value: Session<Req>,
     item: Item<Req>,
@@ -6314,9 +6361,7 @@ const decide = <Req extends ClipRequest>(
      * air first if it is on the replacement.
      */
     const judgeIn = (item: PlanItem, clip: Projected, bound: number): boolean => {
-      const ready =
-        clip.readyAt <= bound || (!clip.projected && (item.readyAt ?? Infinity) <= bound);
-      if (!ready || !queuedAt(item, bound)) return false;
+      if (!readyIn(item, clip, bound) || !queuedAt(item, bound)) return false;
       const airing = aired.find(
         (entry) => entry.start <= bound && bound < entry.start + entry.clip.seconds * 1000,
       );
@@ -6334,9 +6379,67 @@ const decide = <Req extends ClipRequest>(
             (other.sessionId === clip.sessionId && compareRank(rankIn(other, ranks), rank) < 0)),
       );
     };
+    /** Whether `item`'s `clip` was Ready by `bound`: in the run, or as the plan last saw it Ready. */
+    const readyIn = (item: PlanItem, clip: Projected | undefined, bound: number): boolean =>
+      clip !== undefined &&
+      (clip.readyAt <= bound || (!clip.projected && (item.readyAt ?? Infinity) <= bound));
+    /**
+     * As the plan's look, the items due to be judged by their readiness at `time` are judged
+     * together: one not Ready by its bound goes first; then what goes by its own time, which holds
+     * none of them; then the rest in the order they air, each once those ahead of it are kept or
+     * gone.
+     */
+    const judgeAll = (time: number): void => {
+      const due = new Map<
+        PlanItem,
+        { readonly clip: Projected | undefined; readonly bound: number }
+      >();
+      for (const clip of pool) {
+        const item = clip.item;
+        const bound = item === undefined || gone.has(item) ? undefined : boundIn(item);
+        if (item !== undefined && bound !== undefined && time >= bound && !due.has(item))
+          due.set(item, { clip, bound });
+      }
+      for (const item of pending) {
+        const bound = pendingIn(item) ? boundIn(item) : undefined;
+        if (bound !== undefined && time >= bound && !due.has(item))
+          due.set(item, { clip: undefined, bound });
+      }
+      if (due.size === 0) return;
+      const inTime: Array<{
+        readonly item: PlanItem;
+        readonly clip: Projected;
+        readonly bound: number;
+      }> = [];
+      for (const [item, { clip, bound }] of due)
+        if (clip !== undefined && readyIn(item, clip, bound)) inTime.push({ item, clip, bound });
+        else drop(item, "late", Math.min(time, deadline(item)));
+      if (inTime.length === 0) return;
+      const judged = new Set(inTime.map(({ item }) => item));
+      const lapsed = (item: PlanItem | undefined): void => {
+        if (item !== undefined && !gone.has(item) && !judged.has(item) && time >= deadline(item))
+          drop(item, "late", Math.min(time, deadline(item)));
+      };
+      for (const clip of pool) lapsed(clip.item);
+      for (const item of pending) if (pendingIn(item)) lapsed(item);
+      const ranks = new Map<PlanItem, Rank>();
+      const order = inTime
+        .map((entry) => ({
+          ...entry,
+          onAir: entry.clip.sessionId === onAir ? 0 : 1,
+          rank: rankIn(entry.clip, ranks),
+        }))
+        .sort((a, b) => a.onAir - b.onAir || compareRank(a.rank, b.rank));
+      for (const { item, clip, bound } of order) {
+        if (gone.has(item)) continue;
+        if (judgeIn(item, clip, bound)) keptIn.add(item);
+        else drop(item, "late", Math.min(time, deadline(item)));
+      }
+    };
     // What a deadline drops, a Ready replacement displaces, or a batch commit withdraws, in the
     // order the plan sweeps them, each for its own reason.
     const purge = (time: number): void => {
+      judgeAll(time);
       // The replacements Ready by `time`, by what each replaces: a sweep drops, but adds nothing.
       const replacements = new Map<ItemKey, Array<PlanItem>>();
       for (const clip of pool) {
@@ -6365,9 +6468,6 @@ const decide = <Req extends ClipRequest>(
         const taken = (targetsOf.get(item.spec.key) ?? []).find(
           ({ batch, target }) => !open(batch.id, time) && takenOver(target.by),
         );
-        // One judged by its readiness is judged at its bound; kept, its time drops it no more.
-        const bound = boundIn(item);
-        if (bound !== undefined && time >= bound && judgeIn(item, clip, bound)) keptIn.add(item);
         if (time >= deadline(item)) drop(item, "late", Math.min(time, deadline(item)));
         else if (replaced) drop(item, "replaced", time);
         else if (taken !== undefined) drop(item, taken.target.reason, time);

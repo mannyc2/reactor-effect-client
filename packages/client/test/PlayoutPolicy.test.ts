@@ -1,7 +1,13 @@
 /** The playout's pure policy on its own: inputs in, actions and as-run out, no clock and no I/O. */
 import { assert, describe, it } from "@effect/vitest";
 import * as Policy from "../src/internal/playout/policy.js";
-import type { ClipTag, SourceClip, SourceEvent, SourceState } from "../src/Playout.js";
+import {
+  forecastFor,
+  type ClipTag,
+  type SourceClip,
+  type SourceEvent,
+  type SourceState,
+} from "../src/Playout.js";
 import { CommandFailure, ReactorError } from "../src/ReactorError.js";
 import {
   buildFailed,
@@ -4913,6 +4919,15 @@ describe("PlayoutPolicy, strict lanes and readiness", () => {
     assert.deepStrictEqual(dropped(policy.actions, "r"), [{ _tag: "Dropped", reason: "late" }]);
   });
 
+  /** What the forecast at `time` says becomes of `name`: "Airs", or the reason it drops. */
+  const foreseen = (settings: Policy.Config, state: Policy.State, time: number, name: string) => {
+    const fate = forecastFor(
+      Policy.forecast(settings, state, { mono: time, wall: time }),
+      key(name),
+    );
+    return fate._tag === "Drops" ? fate.drop.reason : fate._tag;
+  };
+
   // An insert before an `At` anchor took the anchor's start whole, so one placed before a kept
   // readyBy item took a bound already past and was dropped late at the next look.
   it("an insert, or a group inserted, before a kept readyBy item airs before it", () => {
@@ -4953,5 +4968,69 @@ describe("PlayoutPolicy, strict lanes and readiness", () => {
       }),
       ["n1", "n2", "r"],
     );
+  });
+
+  // Items judged at the same look were judged in the order the plan held them, and the forward
+  // run in the order of its pool: r2, Ready in time behind r1, which was not, aired when r1 was
+  // submitted first, went late when r1 was inserted before it, and the forecast said it went late.
+  it("readyBy items due at one look are judged as they air, whatever order they came in", () => {
+    const settings: Policy.Config = { ...strictLine, maxBuildsInFlight: 2 };
+    const run = (how: "submitted" | "inserted") => {
+      const policy = drive({ config: settings, from: measured });
+      const held = queues();
+      const log: Array<string> = [];
+      policy.tick(0);
+      policy.open();
+      idleOnAir(policy, held, 10);
+      // r1, 30 s long, cannot be built by the bound both share: the forecast can see it go.
+      held.slow.add("r1");
+      const r1 = { ...readyBy("r1", 2_000, 3_000), seconds: 30 };
+      if (how === "submitted") {
+        policy.submit(r1, 3);
+        policy.submit(readyBy("r2", 2_000, 3_000), 4);
+      } else {
+        policy.submit(readyBy("r2", 2_000, 3_000), 3);
+        policy.edit([{ _tag: "Insert", spec: r1, anchor: key("r2"), side: "before" }], false, 4);
+      }
+      provide(policy, "s1", 6, held, log);
+      policy.tick(4_000);
+      const foreseenR2 = foreseen(settings, policy.state(), 4_000, "r2");
+      policy.tick(5_000);
+      provide(policy, "s1", 4, held, log);
+      boundary(policy, "s1", held, 10_001);
+      return { foreseenR2, starts: startOrder(policy.actions), r1: dropped(policy.actions, "r1") };
+    };
+    for (const how of ["submitted", "inserted"] as const)
+      assert.deepStrictEqual(run(how), {
+        foreseenR2: "Airs",
+        starts: ["r2"],
+        r1: [{ _tag: "Dropped", reason: "late" }],
+      });
+  });
+
+  // The plan judged readiness before it dropped what went late by its own time at the same look,
+  // so x, ahead of r and going late at r's bound, still counted as air before it; the forecast
+  // dropped x first and kept r.
+  it("an item going late at a readyBy item's bound no longer counts ahead of it", () => {
+    for (const settings of [config, strictLine]) {
+      const policy = drive({ config: settings, from: measured });
+      const held = queues();
+      const log: Array<string> = [];
+      policy.tick(0);
+      policy.open();
+      idleOnAir(policy, held, 10);
+      // x is due at 1 s and goes late at 5 s; r is due at 2 s and judged at 5 s.
+      const at = { _tag: "At", time: 1_000, late: { skipAfterMs: 4_000 } } as const;
+      policy.submit({ ...spec("x"), start: at }, 3);
+      policy.submit(readyBy("r", 2_000, 3_000), 4);
+      provide(policy, "s1", 2, held, log);
+      policy.tick(4_500);
+      assert.strictEqual(foreseen(settings, policy.state(), 4_500, "r"), "Airs");
+      policy.tick(5_000);
+      provide(policy, "s1", 4, held, log);
+      boundary(policy, "s1", held, 10_001);
+      assert.deepStrictEqual(startOrder(policy.actions), ["r"]);
+      assert.deepStrictEqual(dropped(policy.actions, "x"), [{ _tag: "Dropped", reason: "late" }]);
+    }
   });
 });

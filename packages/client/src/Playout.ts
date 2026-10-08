@@ -100,7 +100,9 @@ export type Start =
          * before it (the clip on air, and the Ready clips ahead of it), so that it airs at the next
          * boundary however late; otherwise dropped as `late` then. A clip Ready in time that waits
          * out filler is on time; one not made by then, or waiting behind another item, is not. A
-         * firm window's `startBy` still applies. A replacement of a kept item is kept too.
+         * firm window's `startBy` still applies. A replacement of a kept item is kept too. Items
+         * judged at the same moment are judged in the order they air, after what goes late by its
+         * own time then, so neither holds back one behind it.
          */
         | { readonly _tag: "readyBy"; readonly by: Duration.Input };
     };
