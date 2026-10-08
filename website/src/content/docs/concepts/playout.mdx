@@ -314,7 +314,8 @@ fails, on air too as when its session is lost, is dropped, or is sent with its o
 ends the group: every part and insert after it goes as `withdrawn`. A place that may have aired
 unseen (`Unobserved`) does not end it. An insert with `continuity` whose build would be Ready only
 after the clip before it ends continues, as anywhere, from the clip playing by then, and when that
-is a later part of its group, it airs right behind that part. The group's `start` is any `Start`
+is a later part of its group, it airs right behind that part, as does a replacement of it until
+that one is built. The group's `start` is any `Start`
 for its first part, `Follow` by default, and the rest follow it; `release` takes the group's key.
 The handle's `started` resolves with the first place's start, and `outcome` with how many places
 played out in order and where the group stopped.

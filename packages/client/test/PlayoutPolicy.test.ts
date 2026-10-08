@@ -3205,6 +3205,107 @@ describe("PlayoutPolicy, groups", () => {
     assert.strictEqual(items.get(key("xc"))?.withdraw, "withdrawn");
   });
 
+  // An insert whose continued build falls back to a later part's clip sits behind that part. Its
+  // replacement, not built yet, took the insert's own order instead, before that part, as a place
+  // of its own: the part waited behind it, left the air secured, and was taken off as the part
+  // before it played, and the insert, its clip continued from the part's, aired ahead of the part.
+  it("seats an insert's replacement where the insert sits, behind a later part", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    const log: Array<string> = [];
+    const held = queues();
+    policy.submit(spec("x", 1, 30), 10);
+    provide(policy, "s1", 1, held, log);
+    const x = readyIn(held, "x");
+    held.ready = [];
+    held.playing = x;
+    policy.event({ _tag: "Started", clip: x }, "s1", 13_000);
+    shown(policy, "s1", held, 13_001);
+    policy.edit([group(1, ["p1", "p2"])], false, 13_100);
+    provide(policy, "s1", 6, held, log);
+    // With 5 s of x left, i's continued build would be Ready only after p1 ends: it continues
+    // from p2's clip, behind p2.
+    policy.edit(
+      [
+        {
+          _tag: "Insert",
+          spec: { ...spec("i", 1, 12), continuity: true },
+          anchor: key("p1"),
+          side: "after",
+        },
+      ],
+      false,
+      38_000,
+    );
+    provide(policy, "s1", 4, held, log, 1_000);
+    const p2 = readyIn(held, "p2");
+    assert.strictEqual(policy.state().items.get(key("i"))?.follows, p2.clipId);
+    // The air secured at one instant, before the replacement and after.
+    const at = { mono: 40_000, wall: 40_000 };
+    const runway = () => Policy.view(config, policy.state(), at).runwaySeconds;
+    const secured = runway();
+    held.slow.add("ir");
+    policy.edit([{ _tag: "Replace", key: key("i"), spec: spec("ir", 1, 6) }]);
+    provide(policy, "s1", 6, held, log);
+    assert.strictEqual(runway(), secured);
+    for (const time of [43_000, 48_100, 53_200]) {
+      boundary(policy, "s1", held, time);
+      provide(policy, "s1", 6, held, log);
+    }
+    assert.notInclude(log, `remove ${p2.clipId}`);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2", "i"]);
+  });
+
+  // An insert whose continued build went out continuing from a later part's clip sits behind that
+  // part. It sat there only while that clip was listed as the part's: once the part was taken off,
+  // waiting behind an insert still building, the first insert left its seat and aired right after
+  // the part before it, its clip continued from one that never aired.
+  it("keeps an insert behind the part its build continues from, though that part is taken off", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    const log: Array<string> = [];
+    const held = queues();
+    policy.submit(spec("x", 1, 30), 10);
+    provide(policy, "s1", 1, held, log);
+    const x = readyIn(held, "x");
+    held.ready = [];
+    held.playing = x;
+    policy.event({ _tag: "Started", clip: x }, "s1", 13_000);
+    shown(policy, "s1", held, 13_001);
+    policy.edit([group(1, ["p1", "p2"])], false, 13_100);
+    provide(policy, "s1", 6, held, log);
+    policy.edit(
+      [
+        {
+          _tag: "Insert",
+          spec: { ...spec("i", 1, 12), continuity: true },
+          anchor: key("p1"),
+          side: "after",
+        },
+      ],
+      false,
+      38_000,
+    );
+    provide(policy, "s1", 4, held, log, 1_000);
+    const p2 = readyIn(held, "p2");
+    const i = readyIn(held, "i");
+    assert.strictEqual(policy.state().items.get(key("i"))?.follows, p2.clipId);
+    // k goes in before p2 and builds for as long as the test runs: p2 waits behind it.
+    held.slow.add("k");
+    policy.edit([{ _tag: "Insert", spec: spec("k"), anchor: key("p2"), side: "before" }]);
+    provide(policy, "s1", 4, held, log);
+    // p1 airs from 43 s to 48 s; 1.5 s before its end, p2 is about to air.
+    boundary(policy, "s1", held, 43_000);
+    policy.tick(46_600);
+    provide(policy, "s1", 8, held, log);
+    assert.include(log, `remove ${p2.clipId}`);
+    boundary(policy, "s1", held, 48_100);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1"]);
+    assert.include(log, `remove ${i.clipId}`);
+  });
+
   // A place has one time, the group's: a replacement of a part takes its part's start, window and
   // the clip it follows, as admission gives the part, and none of its own.
   it("gives a part's replacement its part's time, never its own", () => {

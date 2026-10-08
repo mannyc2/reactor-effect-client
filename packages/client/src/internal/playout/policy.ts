@@ -294,6 +294,11 @@ interface Item<Req extends ClipRequest = Request> {
    * behind that clip until the clip starts.
    */
   readonly follows?: string | undefined;
+  /**
+   * For an insert whose latest build went out continuing from a later member's clip, that member:
+   * it sits right behind it while that build is out, though that clip is taken back.
+   */
+  readonly behind?: ItemKey | undefined;
   readonly everUnknown: boolean;
   /** Sessions in a row its clip was lost with before it was built. */
   readonly unbuiltLosses: number;
@@ -931,36 +936,47 @@ const rosterOf = (
   };
 };
 /**
- * The later member of its group whose clip `item`, an insert, continues from and airs right
- * behind: its continued build would have been Ready only after the clip before its place ended.
+ * The later member of the group of `item`, an insert, whose clip on `sessionId` is `clipId`: a
+ * continued build that would be Ready only after the clip before its place ended continues from
+ * it instead, and airs right behind it.
  */
-const fallbackOf = (roster: Roster, item: PlanItem): PlanItem | undefined => {
+const laterMemberWith = (
+  roster: Roster,
+  item: PlanItem,
+  clipId: string | undefined,
+  sessionId: string,
+): PlanItem | undefined => {
   const group = item.group;
-  if (!item.inserted || item.follows === undefined || item.phase === "Accepted") return undefined;
-  if (group === undefined) return undefined;
+  if (!item.inserted || group === undefined || clipId === undefined) return undefined;
   for (const key of roster.members(group.key)) {
     const other = roster.items.get(key);
-    if (
-      other !== undefined &&
-      other.clipId === item.follows &&
-      other.sessionId === item.sessionId &&
-      other.order > item.order
-    )
+    if (other?.clipId === clipId && other.sessionId === sessionId && other.order > item.order)
       return other;
   }
   return undefined;
 };
+/** Whether an item's build has not finished: it is not sent, or sent and not Ready yet. */
+const unbuilt = (item: PlanItem): boolean =>
+  item.phase === "Accepted" || item.phase === "Building" || item.phase === "Unknown";
 /** A member's seat in its group's order: an order, then how far behind it, then its own order. */
 type Seat = readonly [number, number, number];
 /**
- * Where a member sits in its group's order: at its own order; or, for an insert that continues
- * from the clip of a later member, right behind that member, where it airs.
+ * Where a member sits in its group's order: at its own order; for an insert whose build went out
+ * continuing from the clip of a later member, right behind that member, where it airs; and for a
+ * replacement not built yet, where what it replaces sits, since a seat belongs to its place.
  */
 const seatOf = (roster: Roster, item: PlanItem): Seat => {
-  const ahead = fallbackOf(roster, item);
-  if (ahead === undefined) return [item.order, 0, item.order];
-  const seat = seatOf(roster, ahead);
-  return [seat[0], seat[1] + 1, item.order];
+  const ahead =
+    item.inserted && item.phase !== "Accepted" && item.behind !== undefined
+      ? roster.items.get(item.behind)
+      : undefined;
+  if (ahead !== undefined) {
+    const seat = seatOf(roster, ahead);
+    return [seat[0], seat[1] + 1, item.order];
+  }
+  const replaced =
+    item.replaces !== undefined && unbuilt(item) ? roster.items.get(item.replaces) : undefined;
+  return replaced === undefined ? [item.order, 0, item.order] : seatOf(roster, replaced);
 };
 const compareSeat = (a: Seat, b: Seat): number => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
 /** Whether a member holds back those seated after it: it may still air, and has not started. */
@@ -3863,6 +3879,7 @@ const decide = <Req extends ClipRequest>(
         retryAt: undefined,
         continued: from.clipId !== undefined,
         follows: from.follows,
+        behind: laterMemberWith(roster, item, from.follows, target.id)?.spec.key,
       });
       return queueCommand(
         target.id,
