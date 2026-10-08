@@ -1655,11 +1655,16 @@ const decide = <Req extends ClipRequest>(
   // Ranks: lexicographic places in a session's Ready order and in the build order.
   /** What the pending batches take off as they commit, each ranked behind the rest of its lane. */
   const superseded = new Set<ItemKey>();
-  /** Reads `superseded` from the pending batches again, as they change. */
+  /** What the batches not committed yet add, held or not. */
+  const pendingAdds = new Set<ItemKey>();
+  /** Reads `superseded` and `pendingAdds` from the pending batches again, as they change. */
   const supersede = (): void => {
     superseded.clear();
-    for (const batch of state.batches)
+    pendingAdds.clear();
+    for (const batch of state.batches) {
       for (const target of batch.targets) superseded.add(target.key);
+      for (const key of batch.adds) pendingAdds.add(key);
+    }
   };
   supersede();
   const begun = (item: PlanItem): boolean =>
@@ -1869,8 +1874,7 @@ const decide = <Req extends ClipRequest>(
       a.order - b.order;
   /** `buildOrderBy` for the plan as it stands: an add of a pending batch with no hold is unheld. */
   const buildOrder = buildOrderBy(
-    (item) =>
-      item.batch === undefined && state.batches.some((batch) => batch.adds.includes(item.spec.key)),
+    (item) => item.batch === undefined && pendingAdds.has(item.spec.key),
   );
   /** A group's part may build only once the part before it was admitted. */
   const previousAdmitted = (item: Item<Req>): boolean => {
@@ -3570,7 +3574,10 @@ const decide = <Req extends ClipRequest>(
       );
     if (!done) continue;
     state = { ...state, batches: state.batches.filter((value) => value.id !== batch.id) };
-    for (const key of batch.adds) if (items.has(key)) set(key, { batch: undefined });
+    for (const key of batch.adds) {
+      if (items.has(key)) set(key, { batch: undefined });
+      pendingAdds.delete(key);
+    }
     for (const target of batch.targets)
       withdraw(
         target.key,
@@ -5450,6 +5457,10 @@ const decide = <Req extends ClipRequest>(
       done.has(item) ||
       gone.has(item) ||
       pool.some((clip) => clip.item === item && clip.readyAt <= time);
+    /** The pending batch that adds each item, for the build order. */
+    const pendingBatchOf = new Map<ItemKey, Batch>();
+    for (const batch of state.batches)
+      for (const key of batch.adds) pendingBatchOf.set(key, batch);
     // As the plan commits a batch: it holds what it adds until all of it is Ready, or until any of
     // it starts, before the run or in it.
     const open = (id: number | undefined, time: number): boolean => {
@@ -5863,15 +5874,19 @@ const decide = <Req extends ClipRequest>(
             (clip.item === undefined || !gone.has(clip.item)),
         ).length;
         if (inFlight >= config.maxBuildsInFlight) return;
-        // As `buildOrder`, each batch as the run has it: once it commits there, its adds build as
-        // any other does.
-        const order = buildOrderBy(
-          (item) =>
-            item.batch === undefined &&
-            state.batches.some(
-              (batch) => batch.adds.includes(item.spec.key) && open(batch.id, time),
-            ),
-        );
+        // As `buildOrder`, each batch as the run has it: an add still to build keeps its batch
+        // open until another of its adds airs, there or before it; once the batch commits there,
+        // its adds build as any other does.
+        const order = buildOrderBy((item) => {
+          const batch = item.batch === undefined ? pendingBatchOf.get(item.spec.key) : undefined;
+          return (
+            batch !== undefined &&
+            !batch.adds.some((key) => {
+              const add = items.get(key);
+              return add !== undefined && (done.has(add) || startedOrUnseen(add));
+            })
+          );
+        });
         const next = pending.filter((item) => eligibleAt(item, time)).sort(order)[0];
         // What cannot air before the cap of the session on air waits for the replacement.
         if (next !== undefined && fitsAt(next.spec.seconds, time)) launch(next, time);
