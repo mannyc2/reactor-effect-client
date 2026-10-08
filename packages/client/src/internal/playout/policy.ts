@@ -392,9 +392,10 @@ interface Session<Req extends ClipRequest = Request> {
   /** No move goes out before it: one whose command died is asked again a second later. */
   readonly moveRetryAt: number;
   /**
-   * When its run of refused removals began: the first of those it refused one after another. A
-   * removal that applies, or none being due, ends the run. A removal due holds its autoplay off
-   * for at most `refusalHoldMs` from then.
+   * When its run of removals that did not apply began: the first of those, one after another,
+   * that it refused, or whose command died or ended with its outcome unknown. A removal that
+   * applies, or none being due, ends the run. A removal due holds its autoplay off for at most
+   * `refusalHoldMs` from then.
    */
   readonly refusedSince?: number | undefined;
   /** The command in flight on its lane, which carries its commands one at a time. */
@@ -2833,9 +2834,9 @@ const decide = <Req extends ClipRequest>(
         // A removal whose outcome is unknown goes again at once: if it applied, the next is
         // refused, and the clip is gone. One refused goes again once the queues change.
         const unknown = result._tag === "Failed" && result.cause.context.outcome === "unknown";
-        if (result._tag === "Done") updateSession(sessionId, { refusedSince: undefined });
-        else if (!unknown)
-          updateSession(sessionId, { refusedSince: lane.refusedSince ?? now.mono });
+        updateSession(sessionId, {
+          refusedSince: result._tag === "Done" ? undefined : (lane.refusedSince ?? now.mono),
+        });
         if (owner === undefined) {
           if (result._tag === "Done") {
             // A clip taken back from its item is gone, though a read may still list it.
@@ -3589,8 +3590,8 @@ const decide = <Req extends ClipRequest>(
       updateSession(value.id, { refusedSince: undefined });
     // A clip the plan withdrew or took back, or a waiting member H3 would start first, is removed
     // before autoplay comes on: H3 arms its Ready head then, and starts a clip as its build ends.
-    // Refused one time after another, it holds autoplay off a second at most; autoplay then comes
-    // on, and the removal is still asked.
+    // Not applied one time after another, refused or with its outcome unknown, it holds autoplay
+    // off a second at most; autoplay then comes on, and the removal is still asked.
     const holds =
       removal !== undefined && now.mono < (value.refusedSince ?? Infinity) + refusalHoldMs;
     if (value.source?.available === true && value.autoplay !== autoplay && !(autoplay && holds)) {
