@@ -4243,6 +4243,18 @@ const decide = <Req extends ClipRequest>(
     return at === undefined || covered(item) ? undefined : at - runwayTerms().seconds * 1000;
   }
   /**
+   * Whether `item`, Ready on the session on air, waits behind a member of its group that is not
+   * there, to be built or Ready on the session taking new work: it airs only after that member,
+   * from there.
+   */
+  function heldOffAir(item: Item<Req>): boolean {
+    if (item.group === undefined) return false;
+    return roster.members(item.group.key).some((key) => {
+      const other = items.get(key);
+      return other !== undefined && other.sessionId !== state.air && holds(roster, other, item);
+    });
+  }
+  /**
    * Whether `item`, Ready on `value` at `index`, has a member it waits behind that airs before it,
    * held or not: Ready ahead of it there, or, on a session not on air yet, Ready or Building on the
    * one that is, whose clips air first. It cannot air before that one, and is never taken off
@@ -4454,14 +4466,17 @@ const decide = <Req extends ClipRequest>(
         if (before(rank) && (best === undefined || compareRank(rank, best.rank) > 0))
           best = { rank, clipId: undefined };
       }
-    // A clip Ready just before it on another session airs between: there is nothing to continue.
-    for (const other of items.values())
+    // The session on air airs all its Ready clips before a replacement takes over, but one waiting
+    // behind a member that airs from here is built again here, and airs between: from a clip there
+    // is nothing to continue across sessions.
+    for (const other of target.id === state.air ? [] : items.values())
       if (
         other.phase === "Ready" &&
-        other.sessionId !== target.id &&
+        other.sessionId === state.air &&
         other.withdraw === undefined &&
         !superseded.has(other.spec.key) &&
-        replacedOf(item) !== other
+        replacedOf(item) !== other &&
+        heldOffAir(other)
       ) {
         const rank = placeRank(other, ranks);
         if (before(rank) && (best === undefined || compareRank(rank, best.rank) > 0))

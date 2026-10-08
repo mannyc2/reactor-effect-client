@@ -4287,4 +4287,35 @@ describe("PlayoutPolicy, groups", () => {
     }
     assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2", "ir", "k"]);
   });
+
+  // During a renewal, a continued build on the replacement went independent because a clip Ready
+  // on the session on air ranked between it and the clip before it there, though the session on
+  // air airs all of its own first.
+  it("continues a build on a replacement from its clip before it, past a clip on air", () => {
+    const policy = drive({ config: low });
+    policy.tick(0);
+    policy.open("s1");
+    const log: Array<string> = [];
+    const air = queues();
+    policy.submit(spec("x", 2, 30));
+    provide(policy, "s1", 1, air, log);
+    const x = readyIn(air, "x");
+    air.ready = [];
+    air.playing = x;
+    policy.event({ _tag: "Started", clip: x }, "s1", 3_000);
+    shown(policy, "s1", air);
+    policy.submit(spec("a", 2));
+    provide(policy, "s1", 4, air, log);
+    readyIn(air, "a");
+    policy.send({ _tag: "Opened", sessionId: "s2", lifetimeMs: 600_000 });
+    policy.observe({}, "s2");
+    for (let round = 0; round < 3 && policy.busy("s2")?._tag === "Autoplay"; round++)
+      policy.reply({ _tag: "Done" }, undefined, "s2");
+    const replacement = queues();
+    policy.submit(spec("b", 1));
+    provide(policy, "s2", 4, replacement, log);
+    policy.submit({ ...spec("c", 2), continuity: true });
+    provide(policy, "s2", 4, replacement, log);
+    assert.include(log, `enqueue c from ${readyIn(replacement, "b").clipId}`);
+  });
 });
