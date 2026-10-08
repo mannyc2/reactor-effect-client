@@ -5918,6 +5918,23 @@ const decide = <Req extends ClipRequest>(
       }
       // As the plan sweeps each step: what went late meanwhile no longer counts as air.
       purge(time);
+      // As `buildOrder`, each batch as the run has it: an add still to build keeps its batch open
+      // until another of its adds airs, there or before it; once the batch commits there, its
+      // adds build as any other does. Nothing airs while the run dispatches, so each batch is
+      // read once.
+      const committed = new Map<Batch, boolean>();
+      const order = buildOrderBy((item) => {
+        const batch = item.batch === undefined ? pendingBatchOf.get(item.spec.key) : undefined;
+        if (batch === undefined) return false;
+        const known = committed.get(batch);
+        if (known !== undefined) return !known;
+        const value = batch.adds.some((key) => {
+          const add = items.get(key);
+          return add !== undefined && (done.has(add) || startedOrUnseen(add));
+        });
+        committed.set(batch, value);
+        return !value;
+      });
       for (let sent = 0; sent < 64; sent++) {
         const inFlight = pool.filter(
           (clip) =>
@@ -5927,20 +5944,13 @@ const decide = <Req extends ClipRequest>(
             (clip.item === undefined || !gone.has(clip.item)),
         ).length;
         if (inFlight >= config.maxBuildsInFlight) return;
-        // As `buildOrder`, each batch as the run has it: an add still to build keeps its batch
-        // open until another of its adds airs, there or before it; once the batch commits there,
-        // its adds build as any other does.
-        const order = buildOrderBy((item) => {
-          const batch = item.batch === undefined ? pendingBatchOf.get(item.spec.key) : undefined;
-          return (
-            batch !== undefined &&
-            !batch.adds.some((key) => {
-              const add = items.get(key);
-              return add !== undefined && (done.has(add) || startedOrUnseen(add));
-            })
-          );
-        });
-        const next = pending.filter((item) => eligibleAt(item, time)).sort(order)[0];
+        const next = pending.reduce<PlanItem | undefined>(
+          (first, item) =>
+            eligibleAt(item, time) && (first === undefined || order(item, first) < 0)
+              ? item
+              : first,
+          undefined,
+        );
         // What cannot air before the cap of the session on air waits for the replacement.
         if (next !== undefined && fitsAt(next.spec.seconds, time)) launch(next, time);
         else if (!refill(time)) return;
