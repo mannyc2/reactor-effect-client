@@ -3749,4 +3749,83 @@ describe("PlayoutPolicy, groups", () => {
     assert.deepStrictEqual(log.slice(sent), ["enqueue p1r"]);
     assert.strictEqual(secured(), before);
   });
+
+  /** A lane below the line, whose clips air after its parts. */
+  const low: Policy.Config = {
+    ...config,
+    lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false }],
+  };
+  /** x airs from 3 s to 23 s on s1, and the group `parts` is submitted, with y behind it in `low`. */
+  const lowBehind = (parts: ReadonlyArray<Policy.Spec>) => {
+    const policy = drive({ config: low });
+    policy.tick(0);
+    policy.open();
+    const log: Array<string> = [];
+    const held = queues();
+    policy.submit(spec("x", 1, 20));
+    provide(policy, "s1", 1, held, log);
+    const x = readyIn(held, "x");
+    held.ready = [];
+    held.playing = x;
+    policy.event({ _tag: "Started", clip: x }, "s1", 3_000);
+    shown(policy, "s1", held);
+    policy.edit([{ _tag: "SubmitGroup", key: key("g"), lane: 1, parts, fingerprint: "g" }]);
+    provide(policy, "s1", 10, held, log);
+    return { policy, held, log };
+  };
+  /** Whether y waited behind p2 in every order `held`'s queue took from `from` on. */
+  const yBehindP2 = (held: Queues, from: number) =>
+    held.orders.slice(from).every((order) => {
+      const y = order.findIndex((clipId) => clipId.startsWith("c-y-"));
+      return y < 0 || y > order.findIndex((clipId) => clipId.startsWith("c-p2-"));
+    });
+
+  // A part's replacement its batch holds back ranked behind everything that airs, and the part
+  // waiting behind their place ranked just behind it there, though the part it replaces, Ready
+  // ahead, airs first: a lower lane's clip was moved ahead of the waiting part, and aired between.
+  it("keeps a part in place behind a part whose replacement its batch holds back", () => {
+    const { policy, held, log } = lowBehind([spec("p1", 1, 2), spec("p2")]);
+    policy.submit(spec("y", 2));
+    provide(policy, "s1", 10, held, log);
+    const from = held.orders.length;
+    // z never builds, so the batch stays open with p1r held by it.
+    policy.edit(
+      [
+        { _tag: "Replace", key: key("p1"), spec: spec("p1r", 1, 2) },
+        { _tag: "Submit", spec: { ...spec("z"), start: { _tag: "Manual" } } },
+      ],
+      true,
+    );
+    provide(policy, "s1", 10, held, log);
+    assert.isTrue(yBehindP2(held, from), held.orders.slice(from).join(" | "));
+    // x ends, and p1 airs and ends before anything is answered.
+    boundary(policy, "s1", held, 23_000);
+    boundary(policy, "s1", held, 25_000);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2"]);
+  });
+
+  // An insert that follows the part it is inserted after waits behind it by rank. Its replacement
+  // took the clip it follows but not the anchor, so it waited for that part's clip to air, ranked
+  // behind everything that airs, and the part behind it went there too: a lower lane's clip was
+  // moved ahead of that part.
+  it("keeps an insert's replacement, and the part behind it, in place behind the part it follows", () => {
+    const { policy, held, log } = lowBehind([spec("p1", 1, 4), spec("p2")]);
+    policy.edit([
+      {
+        _tag: "Insert",
+        spec: { ...spec("i", 1, 2), follows: item("p1") },
+        anchor: key("p1"),
+        side: "after",
+      },
+    ]);
+    provide(policy, "s1", 10, held, log);
+    policy.submit(spec("y", 2));
+    provide(policy, "s1", 10, held, log);
+    const from = held.orders.length;
+    policy.edit([{ _tag: "Replace", key: key("i"), spec: spec("ir", 1, 2) }]);
+    provide(policy, "s1", 10, held, log);
+    assert.isTrue(yBehindP2(held, from), held.orders.slice(from).join(" | "));
+    for (const time of [23_000, 27_100, 29_200]) boundary(policy, "s1", held, time);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "ir", "p2"]);
+  });
 });

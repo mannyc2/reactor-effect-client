@@ -1224,6 +1224,28 @@ const compareRank = (a: Rank, b: Rank): number =>
 const justBehind = (rank: Rank): Rank => [rank[0], rank[1], rank[2], rank[3], rank[4] + 1];
 /** The later of two ranks. */
 const laterRank = (a: Rank, b: Rank): Rank => (compareRank(a, b) >= 0 ? a : b);
+/**
+ * The later of `rank` and just behind each place of `holders`, the members a member waits behind,
+ * a place, the items that share a seat, ranking at its earliest item among them: a replacement
+ * held back beside the part it replaces, which airs first, holds back nothing that part does not.
+ */
+const behindPlaces = <I extends PlanItem>(
+  rank: Rank,
+  holders: ReadonlyArray<I>,
+  seat: (item: I) => Seat,
+  rankOf: (item: I) => Rank,
+): Rank => {
+  const earliest = new Map<string, Rank>();
+  for (const holder of holders) {
+    const place = seat(holder).join(",");
+    const own = rankOf(holder);
+    const known = earliest.get(place);
+    if (known === undefined || compareRank(own, known) < 0) earliest.set(place, own);
+  }
+  let latest = rank;
+  for (const place of earliest.values()) latest = laterRank(latest, justBehind(place));
+  return latest;
+};
 
 /**
  * What the projections taken in one look share while the plan holds still: each item's rank, its
@@ -1553,21 +1575,29 @@ const decide = <Req extends ClipRequest>(
   const heldRank = (item: PlanItem): Rank => [lanes + 1, 1, item.order, item.generation, 0];
   /**
    * Where an item airs: at its own rank, held or not; or, while it waits behind earlier members
-   * of its group, just behind the last of them to air, if that is later. A member behind one held
-   * back is held behind it, and one behind members that air keeps its place. Where its session's
-   * queue has it never counts. Every reader that orders or places clips reads this. `ranks` keeps
-   * what one look worked out, while the plan holds still.
+   * of its group, just behind the last of their places to air, if that is later, each place at
+   * its earliest item. A member behind a place held back is held behind it, and one behind places
+   * that air keeps its place. Where its session's queue has it never counts. Every reader that
+   * orders or places clips reads this. `ranks` keeps what one look worked out, while the plan
+   * holds still.
    */
   const placeRank = (item: Item<Req>, ranks: Map<PlanItem, Rank> = new Map()): Rank => {
     const known = ranks.get(item);
     if (known !== undefined) return known;
-    let rank = heldBack(item) ? heldRank(item) : airRank(item, ranks);
-    if (item.group !== undefined)
-      for (const key of roster.members(item.group.key)) {
-        const other = items.get(key);
-        if (other !== undefined && holds(roster, other, item))
-          rank = laterRank(rank, justBehind(placeRank(other, ranks)));
-      }
+    const own = heldBack(item) ? heldRank(item) : airRank(item, ranks);
+    const holders =
+      item.group === undefined
+        ? []
+        : roster.members(item.group.key).flatMap((key) => {
+            const other = items.get(key);
+            return other !== undefined && holds(roster, other, item) ? [other] : [];
+          });
+    const rank = behindPlaces(
+      own,
+      holders,
+      (other) => seatOf(roster, other),
+      (other) => placeRank(other, ranks),
+    );
     ranks.set(item, rank);
     return rank;
   };
@@ -2132,6 +2162,9 @@ const decide = <Req extends ClipRequest>(
                   generation: old.generation + 1,
                   group: old.group,
                   inserted: old.inserted,
+                  // An insert's replacement is placed where the insert is, after or before its
+                  // anchor, and so waits behind it as the insert does.
+                  anchor: old.anchor,
                   replaces: old.spec.key,
                   mode: old.mode,
                   ...(part ? { notBefore: old.notBefore } : {}),
@@ -4984,7 +5017,10 @@ const decide = <Req extends ClipRequest>(
         0,
       ];
     };
-    /** As `placeRank`: a member just behind the last to air of those it waits behind in the run. */
+    /**
+     * As `placeRank`: a member just behind the last to air of the places it waits behind in the
+     * run, each at its earliest item.
+     */
     const placeRankIn = (
       item: PlanItem,
       sessionId: string | undefined,
@@ -4992,11 +5028,12 @@ const decide = <Req extends ClipRequest>(
     ): Rank => {
       const known = ranks.get(item);
       if (known !== undefined) return known;
-      let rank = airRankIn(item, sessionId, ranks);
-      if (behindIn(item))
-        for (const other of holdersOf.get(item) ?? [])
-          if (!done.has(other) && !gone.has(other))
-            rank = laterRank(rank, justBehind(placeRankIn(other, other.sessionId, ranks)));
+      const holders = (holdersOf.get(item) ?? []).filter(
+        (other) => !done.has(other) && !gone.has(other),
+      );
+      const rank = behindPlaces(airRankIn(item, sessionId, ranks), holders, seatIn, (other) =>
+        placeRankIn(other, other.sessionId, ranks),
+      );
       ranks.set(item, rank);
       return rank;
     };
