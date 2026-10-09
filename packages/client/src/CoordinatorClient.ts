@@ -30,7 +30,7 @@ import { FailureSummary, Http, ReactorError, summarize } from "./ReactorError.js
 
 export const defaultApiUrl = "https://api.reactor.inc";
 
-const clientInfo = { sdk_version: "0.10.0", sdk_type: "typescript-effect-independent" } as const;
+const clientInfo = { sdk_version: "0.11.0", sdk_type: "typescript-effect-independent" } as const;
 
 /** A field the provider sends as `null` or omits for the same fact decodes as absent. */
 const NullAsAbsent = <S extends Schema.Top>(schema: S) =>
