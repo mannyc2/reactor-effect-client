@@ -89,7 +89,8 @@ const timing = ReactorTest.Timing.fixed({ buildSpeed: 2, http: "20 millis", chan
 const scenario = <E>(
   name: string,
   body: () => Effect.Effect<void, E, Layer.Success<ReturnType<typeof environment>> | Scope.Scope>,
-) => layer(environment({ timing }))(name, (it) => it.effect(name, body));
+  timeout?: number,
+) => layer(environment({ timing }))(name, (it) => it.effect(name, body, timeout));
 
 const connect = Effect.gen(function* () {
   const test = yield* ReactorTest.ReactorTest;
@@ -140,42 +141,47 @@ scenario("a starting frame uploads once and is reported in the accepted clip", (
   }),
 );
 
-scenario("a history clip can continue until it is evicted, then the model refuses it", () =>
-  Effect.gen(function* () {
-    yield* Effect.forkScoped(ReactorTest.flow());
-    const { provider } = yield* connect;
-    yield* provider.setAutoplay(true);
-    const original = yield* provider.prepare({ prompt: "the first view", seconds: 5.167 });
-    const first = yield* original.submit;
-    yield* (yield* provider.operation(original)).ended;
-    assert.include(
-      (yield* provider.getQueue).value.history.map((clip) => clip.clip_id),
-      first.clip.clip_id,
-    );
-    const continuation = yield* provider.prepare({
-      prompt: "continue the view",
-      seconds: 5.167,
-      start: { continueFrom: first.clip.clip_id },
-    });
-    const continued = yield* continuation.submit;
-    assert.strictEqual(continued.clip.continue_from_clip_id, first.clip.clip_id);
-    yield* (yield* provider.operation(continuation)).ended;
-    // ReactorTest's permitted default retains eight clips; this flow crosses that boundary.
-    for (let index = 0; index < 8; index++) {
-      const next = yield* provider.prepare({ prompt: `another view ${index}`, seconds: 5.167 });
-      yield* next.submit;
-      yield* (yield* provider.operation(next)).ended;
-    }
-    assert.notInclude(
-      (yield* provider.getQueue).value.history.map((clip) => clip.clip_id),
-      first.clip.clip_id,
-    );
-    const failure = yield* Effect.flip(
-      provider.enqueue({ prompt: "the old view", start: { continueFrom: first.clip.clip_id } }),
-    );
-    assert.strictEqual(failure.reason._tag, "Remote");
-    assert.strictEqual(failure.context.outcome, "replied");
-  }),
+scenario(
+  "a history clip can continue until it is evicted, then the model refuses it",
+  () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const { provider } = yield* connect;
+      yield* provider.setAutoplay(true);
+      const original = yield* provider.prepare({ prompt: "the first view", seconds: 5.167 });
+      const first = yield* original.submit;
+      yield* (yield* provider.operation(original)).ended;
+      assert.include(
+        (yield* provider.getQueue).value.history.map((clip) => clip.clip_id),
+        first.clip.clip_id,
+      );
+      const continuation = yield* provider.prepare({
+        prompt: "continue the view",
+        seconds: 5.167,
+        start: { continueFrom: first.clip.clip_id },
+      });
+      const continued = yield* continuation.submit;
+      assert.strictEqual(continued.clip.continue_from_clip_id, first.clip.clip_id);
+      yield* (yield* provider.operation(continuation)).ended;
+      // ReactorTest's permitted default retains eight clips; this flow crosses that boundary.
+      for (let index = 0; index < 8; index++) {
+        const next = yield* provider.prepare({ prompt: `another view ${index}`, seconds: 5.167 });
+        yield* next.submit;
+        yield* (yield* provider.operation(next)).ended;
+      }
+      assert.notInclude(
+        (yield* provider.getQueue).value.history.map((clip) => clip.clip_id),
+        first.clip.clip_id,
+      );
+      const failure = yield* Effect.flip(
+        provider.enqueue({ prompt: "the old view", start: { continueFrom: first.clip.clip_id } }),
+      );
+      assert.strictEqual(failure.reason._tag, "Remote");
+      assert.strictEqual(failure.context.outcome, "replied");
+    }),
+  // Ten clips of simulated air: about 1 s under Node on Linux and Bun, up to 5 s under Node on
+  // CI's macOS runners.
+  20_000,
 );
 
 scenario("a six-second request builds the next grid length up", () =>

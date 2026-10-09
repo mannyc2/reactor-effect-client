@@ -1673,7 +1673,8 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
           problems.push(...(yield* forecast(seed, "30 minutes", 100, "5 seconds")));
         assert.deepStrictEqual(problems, []);
       }),
-    { timeout: 60_000 },
+    // About 10 s under Node on Linux and Bun, and 40-60 s or more under Node on CI's macOS runners.
+    { timeout: 180_000 },
   );
 
   // Every call falls near a renewal. The replacement's opening and its first start are only
