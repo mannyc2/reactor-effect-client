@@ -211,6 +211,22 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
    * replacements' order is their place's, and an insert's falls between the places around it.
    */
   const members = new Map<string, { readonly group: string; readonly order: number }>();
+  /**
+   * Each group member's seat as the plan kept it, from the end of each step it changed in, by the
+   * number of actions then: its order, right behind the later member it sits behind, if any.
+   */
+  const seats = new Map<
+    string,
+    Array<{ readonly at: number; readonly seat: ReadonlyArray<number> }>
+  >();
+  const seatOf = (item: {
+    readonly order: number;
+    readonly behind?: string | undefined;
+  }): ReadonlyArray<number> => {
+    const ahead =
+      item.behind === undefined ? undefined : state.items.get(ItemKey.make(item.behind));
+    return ahead === undefined ? [item.order] : [...seatOf(ahead), item.order];
+  };
   /** For each action, the input it answered, by its index in `inputs`. */
   const inputOf: Array<number> = [];
   /**
@@ -222,6 +238,70 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     readonly follows: ClipTag | undefined;
     readonly removalAsked: boolean;
   }> = [];
+  /** Firm items whose first step at or after their startBy has been taken, by key and order. */
+  const due = new Set<string>();
+  /**
+   * The first step at or after a firm item's startBy withdraws it as late, unless it started, or
+   * may have, or a start of it is under way: a play of its clip in flight, or one that succeeded
+   * whose start is still to be seen. A withdrawal that came first keeps its reason, as can one the
+   * step's own input makes, an edit or a drain, or a break of the item's group, or one of an item
+   * that follows a clip; and a loss or a failed command in that step may fail it instead. An item
+   * whose enqueue outcome is unknown may hold a clip the plan cannot name, so it is checked at the
+   * first step it is known again, as a read adopts it, unless it settles as unknown: it may have
+   * aired unseen. The scripted provider starts clips when the script says, so only the plan's
+   * decision is checked, not start times.
+   */
+  const decideLate = (before: Policy.State, input: Policy.Input) => {
+    if (state.closed) return;
+    for (const item of state.items.values()) {
+      if (item.spec.window?.firm !== true || item.startBy === undefined || clock < item.startBy)
+        continue;
+      if (item.phase === "Unknown") continue;
+      const id = `${item.spec.key}@${String(item.order)}`;
+      if (due.has(id)) continue;
+      due.add(id);
+      if (item.phase === "Started" || item.startedAt !== undefined) continue;
+      const settled = item.phase === "Settled" ? item.status?._tag : undefined;
+      if (settled === "Unobserved" || settled === "Unknown") continue;
+      const lane = state.sessions.find((value) => value.id === item.sessionId);
+      const command = lane?.busy?.command;
+      if (
+        item.clipId !== undefined &&
+        ((command?._tag === "Play" && command.clipId === item.clipId) ||
+          lane?.played?.clipId === item.clipId)
+      )
+        continue;
+      // Why it went or is going: the reason it was dropped or is withdrawn, or how it settled.
+      const status = item.status;
+      let reason: string | undefined = item.withdraw;
+      if (item.phase === "Settled")
+        reason = status?._tag === "Dropped" ? status.reason : status?._tag;
+      if (reason === undefined) {
+        problems.push(
+          `${item.spec.key}, firm and due by ${String(item.startBy)}, was kept at ${String(clock)}, ${item.phase}`,
+        );
+        continue;
+      }
+      const was = before.items.get(item.spec.key);
+      const fresh =
+        was !== undefined &&
+        was.order === item.order &&
+        was.phase !== "Settled" &&
+        was.withdraw === undefined;
+      if (
+        fresh &&
+        reason !== "late" &&
+        item.group === undefined &&
+        item.spec.follows === undefined &&
+        input._tag !== "Edit" &&
+        input._tag !== "Drain" &&
+        !(reason === "Failed" && (input._tag === "Lost" || input._tag === "Result"))
+      )
+        problems.push(
+          `${item.spec.key}, firm and due by ${String(item.startBy)}, went at ${String(clock)} as ${reason}`,
+        );
+    }
+  };
 
   const send = (input: Policy.Input, at = clock + 7) => {
     clock = at;
@@ -263,9 +343,11 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           new Set([...(applied.get(filler.index) ?? [])].filter((id) => id !== filler.sessionId)),
         );
     }
+    const before = state;
     const result = Policy.step(settings, state, input, { mono: clock, wall: clock });
     state = result.state;
     wake = result.wake;
+    decideLate(before, input);
     // Nothing falls due before the wake: a Tick at any instant before it does nothing, and wakes
     // at the same time. It is sampled just after the input, halfway, and just before the wake.
     const gap = result.wake === undefined ? 3_600_000 : result.wake - clock;
@@ -281,6 +363,14 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           `a Tick ${String(at)} ms after ${input._tag} at ${String(clock)}, before its wake at ${String(result.wake)}, ` +
             `gave ${quiet.actions.map((action) => (action._tag === "Command" ? action.command._tag : action._tag === "Emit" ? action.event._tag : action._tag)).join(", ") || "nothing"} and a wake at ${String(quiet.wake)}`,
         );
+    }
+    for (const item of state.items.values()) {
+      if (item.group === undefined) continue;
+      const seat = seatOf(item);
+      const kept = seats.get(item.spec.key) ?? [];
+      const last = kept.at(-1)?.seat;
+      if (last === undefined || last.join() !== seat.join())
+        seats.set(item.spec.key, [...kept, { at: actions.length + result.actions.length, seat }]);
     }
     for (const action of result.actions) {
       actions.push(action);
@@ -642,15 +732,45 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           },
         ]);
       }
-      case "batch":
+      case "batch": {
+        // Some batches add an item due by a firm deadline, which the batch does not hold; some an
+        // insert beside what the batch adds, firm or not; and some replace an item still waiting.
+        const firm = { window: { startByMs: 4_000 + (index % 3) * 4_000, firm: true } };
+        const added = { ...cued(`b${String(index)}`, 1, index), ...(index % 3 === 1 ? firm : {}) };
+        const inserted = {
+          ...cued(`b${String(index)}i`, 1, index + 1),
+          ...(index % 4 === 1 ? firm : {}),
+        };
+        const waiting = [...state.items.values()].filter(
+          (item) => item.phase !== "Settled" && item.phase !== "Started" && item.spec.key !== name,
+        );
+        const target = index % 5 < 2 ? waiting[index % Math.max(1, waiting.length)] : undefined;
+        const replacement = cued(`b${String(index)}r`, 1, index);
+        // A replacement follows what the item it replaces follows.
+        const follows = target === undefined ? undefined : paired.get(target.spec.key);
+        if (follows !== undefined) paired.set(replacement.key, follows);
         return edit(
           index,
           [
             { _tag: "Withdraw", key: key(name) },
-            { _tag: "Submit", spec: cued(`b${String(index)}`, 1, index) },
+            { _tag: "Submit", spec: added },
+            ...(index % 2 === 1
+              ? [
+                  {
+                    _tag: "Insert",
+                    spec: inserted,
+                    anchor: added.key,
+                    side: index % 8 < 4 ? "after" : "before",
+                  } as const,
+                ]
+              : []),
+            ...(target === undefined
+              ? []
+              : [{ _tag: "Replace", key: target.spec.key, spec: replacement } as const]),
           ],
           true,
         );
+      }
       case "group": {
         // The group's timing is its first part's, as the runtime builds it; the rest follow it.
         const { window: _window, ...later } = cued(`g${String(index)}b`, 1, index + 1);
@@ -784,6 +904,7 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     problems,
     groups,
     members,
+    seats,
     named,
     replaced,
     paired,
@@ -825,6 +946,7 @@ const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lastin
     problems,
     groups,
     members,
+    seats,
     named,
     replaced,
     paired,
@@ -975,23 +1097,42 @@ const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lastin
       )
     );
   };
+  /** The index just past the last action of the step that took the action at `index`. */
+  const stepEnd = (index: number): number => {
+    let end = index + 1;
+    while (end < actions.length && inputOf[end] === inputOf[index]) end++;
+    return end;
+  };
+  /** A member's seat when the action at `index` was taken: as the plan kept it at that step's end. */
+  const seatAt = (name: string, order: number, index: number): ReadonlyArray<number> => {
+    const end = stepEnd(index);
+    return (seats.get(name) ?? []).findLast((entry) => entry.at <= end)?.seat ?? [order];
+  };
+  /** Seats in their group's order: a seat right behind a member comes after it, and before the next. */
+  const compareSeat = (a: ReadonlyArray<number>, b: ReadonlyArray<number>): number => {
+    for (let index = 0; index < Math.min(a.length, b.length); index++) {
+      const order = (a[index] ?? 0) - (b[index] ?? 0);
+      if (order !== 0) return order;
+    }
+    return a.length - b.length;
+  };
   // An item is dropped as withdrawn only when a withdrawal or a drain named it, a place of its
-  // group ahead of it is broken, then or once the script ends (a withdrawal still landing may drop
-  // the item that breaks it later), or it is a replacement whose item started first, as 0.7.0
-  // withdrew it.
+  // group ahead of its seat is broken, then or once the script ends (a withdrawal still landing
+  // may drop the item that breaks it later), or it is a replacement whose item started first, as
+  // 0.7.0 withdrew it. An insert whose build went out continuing from a later member's clip sits
+  // right behind that member, so that member's place is ahead of it.
   if (drains.length === 0) {
     const allowed = (name: string, index: number): boolean => {
       if (named.has(name)) return true;
       for (let old = replaced.get(name); old !== undefined; old = replaced.get(old))
         if (tags(old).includes("Started")) return true;
       const member = members.get(name);
-      return (
-        member !== undefined &&
-        placesOf(member.group).some(
-          (place) =>
-            place.order < member.order &&
-            (brokenBy(place.keys, index) || brokenBy(place.keys, Infinity)),
-        )
+      if (member === undefined) return false;
+      const seat = seatAt(name, member.order, index);
+      return placesOf(member.group).some(
+        (place) =>
+          compareSeat([place.order], seat) < 0 &&
+          (brokenBy(place.keys, index) || brokenBy(place.keys, Infinity)),
       );
     };
     for (const entry of asRuns)
@@ -1005,12 +1146,6 @@ const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lastin
   // place ahead had started first, or was broken by the end of the step that started the member,
   // since one read of a session's queues names a clip playing before the one that left them
   // unseen settles. A start the plan had asked to remove is excused, as a follower's is below.
-  /** The index just past the last action of the step that took the action at `index`. */
-  const stepEnd = (index: number): number => {
-    let end = index + 1;
-    while (end < actions.length && inputOf[end] === inputOf[index]) end++;
-    return end;
-  };
   /** Whether the clip whose start the action at `index` records had been asked to go first. */
   const removalAsked = (index: number): boolean => {
     const input = inputs[inputOf[index] ?? -1];

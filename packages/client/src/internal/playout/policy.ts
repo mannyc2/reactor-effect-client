@@ -278,7 +278,11 @@ interface Item<Req extends ClipRequest = Request> {
   /** Where an insert was placed, which a resubmission under its key must repeat. */
   readonly anchor?: { readonly key: ItemKey; readonly side: "before" | "after" } | undefined;
   readonly replaces?: ItemKey | undefined;
-  /** The pending batch that added it: it builds, but does not air until the batch commits. */
+  /**
+   * The pending batch that added it and holds it: it builds, but does not air until the batch
+   * commits. An add due by a firm deadline has none, unless it replaces an item or is inserted
+   * beside one the batch holds.
+   */
   readonly batch?: number | undefined;
   readonly mode: "follow" | "asap" | "held";
   readonly phase: Phase;
@@ -441,7 +445,11 @@ interface Batch {
     readonly key: ItemKey;
     readonly index: number;
     readonly reason: DropReason;
+    /** The add that takes its place in a lane that replaces: it stays as cover until that is Ready. */
+    readonly by?: ItemKey | undefined;
   }>;
+  /** It committed as one of its adds started, and keeps what waits for the add that takes its place. */
+  readonly committed?: true | undefined;
 }
 
 /**
@@ -901,6 +909,18 @@ const insertStart = (anchor: PlanItem, side: "before" | "after"): PlanSpec["star
   if (anchor.phase === "Started") return { _tag: "Follow" };
   const start = anchor.spec.start;
   return start._tag === "At" && side === "after" ? { ...start, late: "nextBoundary" } : start;
+};
+/** How an item with `start` airs: at once, held until released, or in its turn. */
+const modeOf = (start: PlanSpec["start"]): PlanItem["mode"] => {
+  switch (start._tag) {
+    case "Asap":
+      return "asap";
+    case "Manual":
+      return "held";
+    case "Follow":
+    case "At":
+      return "follow";
+  }
 };
 
 /** Whether an item started, or may have: its start was seen, or it settled `Unobserved`, unseen. */
@@ -1637,9 +1657,20 @@ const decide = <Req extends ClipRequest>(
     clip?.tag?._tag === "Item" ? items.get(clip.tag.key) : undefined;
 
   // Ranks: lexicographic places in a session's Ready order and in the build order.
-  const superseded = new Set(
-    state.batches.flatMap((batch) => batch.targets.map((target) => target.key)),
-  );
+  /** What the pending batches take off as they commit, each ranked behind the rest of its lane. */
+  const superseded = new Set<ItemKey>();
+  /** What the batches not committed yet add, held or not. */
+  const pendingAdds = new Set<ItemKey>();
+  /** Reads `superseded` and `pendingAdds` from the pending batches again, as they change. */
+  const supersede = (): void => {
+    superseded.clear();
+    pendingAdds.clear();
+    for (const batch of state.batches) {
+      for (const target of batch.targets) superseded.add(target.key);
+      if (batch.committed !== true) for (const key of batch.adds) pendingAdds.add(key);
+    }
+  };
+  supersede();
   const begun = (item: PlanItem): boolean =>
     item.group !== undefined &&
     (groups.get(item.group.key)?.parts ?? []).some((part) => {
@@ -1714,8 +1745,8 @@ const decide = <Req extends ClipRequest>(
    * Why a forward run cannot place `item`, airing or dropping it, or undefined: one settled,
    * started or being withdrawn is placed already. A member waits behind those of its group that
    * hold it, `holders`; a follower behind the item whose clip it follows until that clip airs; and
-   * an add of a pending batch behind the batch's other adds not Ready yet, since the batch holds
-   * them all until each is. `memo` keeps what one reading worked out.
+   * an add a pending batch holds behind the batch's other adds not Ready yet, since the batch holds
+   * it until each is, or one starts. `memo` keeps what one reading worked out.
    */
   const unplaceable = (
     item: PlanItem,
@@ -1749,11 +1780,33 @@ const decide = <Req extends ClipRequest>(
     const behind = [
       ...holders(item),
       ...(followed === undefined ? [] : [followed]),
-      ...batchedWith(item),
+      ...(freedOnStart(item, holders, memo) ? [] : batchedWith(item)),
     ];
     return behind.some((other) => unplaceable(other, holders, memo) !== undefined)
       ? "blocked"
       : undefined;
+  };
+  /**
+   * Whether the batch that holds `item` has an add it does not hold that a run can place: that
+   * add's start commits the batch, which then holds `item` no more.
+   */
+  const freedOnStart = (
+    item: PlanItem,
+    holders: (item: PlanItem) => ReadonlyArray<PlanItem>,
+    memo: Map<PlanItem, Unplaceable | undefined>,
+  ): boolean => {
+    const batch =
+      item.batch === undefined ? undefined : state.batches.find((value) => value.id === item.batch);
+    return (batch?.adds ?? []).some((key) => {
+      const other = items.get(key);
+      return (
+        other !== undefined &&
+        other !== item &&
+        other.batch === undefined &&
+        !placedAlready(other) &&
+        unplaceable(other, holders, memo) === undefined
+      );
+    });
   };
   /** The other adds of the pending batch that holds `item` that are not Ready, started or settled. */
   const batchedWith = (item: PlanItem): ReadonlyArray<PlanItem> => {
@@ -1828,16 +1881,27 @@ const decide = <Req extends ClipRequest>(
     const item = items.get(clip.tag.key);
     return item === undefined ? [-1, 0, 0, 0, 0] : placeRank(item, ranks);
   };
-  /** Which of two waiting items takes the build slot first. */
-  const buildOrder = (a: PlanItem, b: PlanItem): number =>
-    Number(b.mode === "asap") - Number(a.mode === "asap") ||
-    Number(a.mode === "held") - Number(b.mode === "held") ||
-    a.spec.lane - b.spec.lane ||
-    Number(b.replaces !== undefined) - Number(a.replaces !== undefined) ||
-    Number(b.group !== undefined && b.group.index > 0) -
-      Number(a.group !== undefined && a.group.index > 0) ||
-    (a.startBy ?? Infinity) - (b.startBy ?? Infinity) ||
-    a.order - b.order;
+  /**
+   * Which of two waiting items takes the build slot first, `unheld` naming each add a pending batch
+   * does not hold, such as a firm add due in its slot: such an add builds ahead of the rest of its
+   * lane but an `Asap` item, a replacement included.
+   */
+  const buildOrderBy =
+    (unheld: (item: PlanItem) => boolean) =>
+    (a: PlanItem, b: PlanItem): number =>
+      Number(b.mode === "asap") - Number(a.mode === "asap") ||
+      Number(a.mode === "held") - Number(b.mode === "held") ||
+      a.spec.lane - b.spec.lane ||
+      Number(unheld(b)) - Number(unheld(a)) ||
+      Number(b.replaces !== undefined) - Number(a.replaces !== undefined) ||
+      Number(b.group !== undefined && b.group.index > 0) -
+        Number(a.group !== undefined && a.group.index > 0) ||
+      (a.startBy ?? Infinity) - (b.startBy ?? Infinity) ||
+      a.order - b.order;
+  /** `buildOrderBy` for the plan as it stands: an add of a pending batch with no hold is unheld. */
+  const buildOrder = buildOrderBy(
+    (item) => item.batch === undefined && pendingAdds.has(item.spec.key),
+  );
   /** A group's part may build only once the part before it was admitted. */
   const previousAdmitted = (item: Item<Req>): boolean => {
     // An insert waits for the item just before it in its lane to be admitted. One in a group waits
@@ -1879,7 +1943,26 @@ const decide = <Req extends ClipRequest>(
     });
   };
 
-  const estimates = (): PublicState["estimates"] => estimatesOf(config, state.samples);
+  // The estimates and build rates of the samples last read, each worked out once: each sorts the
+  // samples, and a look reads them for every item it projects.
+  let measured: State<Req>["samples"] | undefined;
+  let estimated: PublicState["estimates"] | undefined;
+  /** By subject, each rule's rate, the independent one first: none until worked out. */
+  const rates = new Map<
+    number | "filler",
+    Array<{ readonly rate: number | undefined } | undefined>
+  >();
+  const measuredNow = (): void => {
+    if (measured === state.samples) return;
+    measured = state.samples;
+    estimated = undefined;
+    rates.clear();
+  };
+  const estimates = (): PublicState["estimates"] => {
+    measuredNow();
+    estimated ??= estimatesOf(config, state.samples);
+    return estimated;
+  };
   /** Seconds a clip asking for `seconds`, not built yet, is projected to air. */
   const lengthOf = (seconds: number): number =>
     airedLengthOf(state.samples, seconds, config.builtSeconds);
@@ -1891,7 +1974,16 @@ const decide = <Req extends ClipRequest>(
     subject: number | "filler",
     rule: "median" | "long",
     continued: boolean,
-  ): number | undefined => buildRateOf(state.samples, subject, rule, continued);
+  ): number | undefined => {
+    measuredNow();
+    const known = rates.get(subject) ?? [];
+    if (known.length === 0) rates.set(subject, known);
+    const index = (rule === "long" ? 2 : 0) + (continued ? 1 : 0);
+    const worked = (known[index] ??= {
+      rate: buildRateOf(state.samples, subject, rule, continued),
+    });
+    return worked.rate;
+  };
   /**
    * Milliseconds `subject`'s build of a clip asking for `seconds` takes at its median rate, per
    * second of the length its model builds; none while nothing is measured.
@@ -2099,9 +2191,17 @@ const decide = <Req extends ClipRequest>(
     memo.kept.set(item, value);
     return value;
   }
-  /** Whether `item` is firm, not sent, and dropped once projected to miss its `startBy`. */
+  /**
+   * Whether `item` is firm, not sent, and dropped once projected to miss its `startBy`. One its
+   * batch holds is not: it airs once the batch commits, which a projection of its rank, behind
+   * everything while held, does not show. Nor is a replacement while what it replaces may still air
+   * as cover: it takes a place that had a time already, and goes at that `startBy`, or once what it
+   * replaces starts first.
+   */
   const lateWhenProjected = (item: Item<Req>): item is Item<Req> & { readonly startBy: number } =>
     item.phase === "Accepted" &&
+    item.batch === undefined &&
+    (item.replaces === undefined || !live(replacedOf(item))) &&
     item.spec.window?.firm === true &&
     item.startBy !== undefined &&
     item.dispatchedAt === undefined &&
@@ -2115,7 +2215,10 @@ const decide = <Req extends ClipRequest>(
     order: state.nextOrder,
     generation: 0,
     inserted: false,
-    mode: spec.start._tag === "Asap" ? "asap" : spec.start._tag === "Manual" ? "held" : "follow",
+    mode: modeOf(spec.start),
+    // Every item has `batch`, held or not, so the engine sees items of one shape: when only held
+    // adds had it, a look at 200 plain items and 200 pending batches took about 1.5 times as long.
+    batch: undefined,
     phase: "Accepted",
     notBefore:
       spec.window?.notBeforeMs === undefined ? undefined : now.mono + spec.window.notBeforeMs,
@@ -2137,6 +2240,53 @@ const decide = <Req extends ClipRequest>(
       actions.push({ _tag: "Refused", id, refusal });
     };
     const seen = new Set<string>();
+    /** What the batch adds: each item or group it puts that the plan does not hold yet. */
+    const added = new Set(
+      edits.flatMap((edit): ReadonlyArray<ItemKey> => {
+        switch (edit._tag) {
+          case "Withdraw":
+            return [];
+          case "SubmitGroup":
+            return groups.has(edit.key) ? [] : [edit.key, ...edit.parts.map((part) => part.key)];
+          case "Submit":
+          case "Insert":
+          case "Replace":
+            return items.has(edit.spec.key) ? [] : [edit.spec.key];
+        }
+      }),
+    );
+    /**
+     * What the batch adds ahead of the edit being checked, as an insert beside it finds it: each
+     * item's lane and how it airs, and each group's parts in order.
+     */
+    const earlier = new Map<ItemKey, { readonly lane: number; readonly mode: Item<Req>["mode"] }>();
+    const earlierGroups = new Map<ItemKey, ReadonlyArray<ItemKey>>();
+    /** The anchor an insert beside `key` takes: an item waiting in the plan, or one added ahead. */
+    const anchorOf = (
+      key: ItemKey,
+      side: "before" | "after",
+    ):
+      | {
+          readonly waiting: boolean;
+          readonly playing: boolean;
+          readonly lane: number;
+          readonly mode: Item<Req>["mode"];
+        }
+      | undefined => {
+      const item = items.get(key) ?? firstOrLastPart(key, side);
+      if (item !== undefined)
+        return {
+          // After the playing item is the next boundary; before it is already past.
+          waiting: live(item) && !(item.phase === "Started" && side === "before"),
+          playing: item.phase === "Started",
+          lane: item.spec.lane,
+          mode: item.mode,
+        };
+      const parts = earlierGroups.get(key);
+      const part = side === "before" ? parts?.[0] : parts?.at(-1);
+      const ahead = earlier.get(part ?? key);
+      return ahead === undefined ? undefined : { waiting: true, playing: false, ...ahead };
+    };
     // Check every edit before any takes effect.
     for (const edit of edits) {
       const keys =
@@ -2175,9 +2325,8 @@ const decide = <Req extends ClipRequest>(
       }
       // An insert already admitted under this key, spec and anchor is answered as it is.
       if (edit._tag === "Insert" && !items.has(edit.spec.key)) {
-        const anchor = items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side);
-        // After the playing item is the next boundary; before it is already past.
-        if (!live(anchor) || (anchor.phase === "Started" && edit.side === "before"))
+        const anchor = anchorOf(edit.anchor, edit.side);
+        if (anchor?.waiting !== true)
           return refuse({
             _tag: "InvalidItem",
             key: edit.spec.key,
@@ -2196,9 +2345,7 @@ const decide = <Req extends ClipRequest>(
           return refuse({ _tag: "InvalidItem", key: edit.spec.key, message: issue });
         // A cut airs when its clip is Ready, not at a boundary, so it can't follow a clip.
         const lane =
-          edit._tag === "Submit"
-            ? edit.spec.lane
-            : (items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side))?.spec.lane;
+          edit._tag === "Submit" ? edit.spec.lane : anchorOf(edit.anchor, edit.side)?.lane;
         if (
           edit.spec.follows !== undefined &&
           lane !== undefined &&
@@ -2210,6 +2357,12 @@ const decide = <Req extends ClipRequest>(
             message: "an item in a cutting lane cannot follow a clip",
           });
       }
+      if ((edit._tag === "Withdraw" || edit._tag === "Replace") && added.has(edit.key))
+        return refuse({
+          _tag: "InvalidItem",
+          key: edit.key,
+          message: "a batch cannot withdraw or replace what it adds",
+        });
       if (edit._tag === "Replace" && !live(items.get(edit.key)) && !items.has(edit.spec.key))
         return refuse({
           _tag: "InvalidItem",
@@ -2222,10 +2375,53 @@ const decide = <Req extends ClipRequest>(
         return refuse({ _tag: "LaneBusy", key: edit.spec.key, lane: edit.spec.lane });
       if (edit._tag === "SubmitGroup" && !groups.has(edit.key) && laneBusy(edit.lane))
         return refuse({ _tag: "LaneBusy", key: edit.key, lane: edit.lane });
+      // What it adds, for an insert beside it later in the batch.
+      switch (edit._tag) {
+        case "Submit":
+          if (!items.has(edit.spec.key))
+            earlier.set(edit.spec.key, { lane: edit.spec.lane, mode: modeOf(edit.spec.start) });
+          break;
+        case "SubmitGroup":
+          if (groups.has(edit.key)) break;
+          earlierGroups.set(
+            edit.key,
+            edit.parts.map((part) => part.key),
+          );
+          // The group's start is its first part's: the rest follow it.
+          edit.parts.forEach((part, index) =>
+            earlier.set(part.key, {
+              lane: part.lane,
+              mode: index === 0 ? modeOf(part.start) : "follow",
+            }),
+          );
+          break;
+        case "Insert": {
+          const anchor = anchorOf(edit.anchor, edit.side);
+          if (!items.has(edit.spec.key) && anchor !== undefined)
+            earlier.set(edit.spec.key, {
+              lane: anchor.lane,
+              mode: anchor.playing ? "follow" : anchor.mode,
+            });
+          break;
+        }
+        case "Replace": {
+          const old = items.get(edit.key);
+          if (!items.has(edit.spec.key) && old !== undefined)
+            earlier.set(edit.spec.key, { lane: old.spec.lane, mode: old.mode });
+          break;
+        }
+        case "Withdraw":
+          break;
+      }
     }
     // An edit refused below, as an item it adds would wait on itself or miss its deadline, leaves
     // the plan as it was.
-    const saved = { items: new Map(items), groups: new Map(groups), nextOrder: state.nextOrder };
+    const saved = {
+      items: new Map(items),
+      groups: new Map(groups),
+      nextOrder: state.nextOrder,
+      batches: state.batches,
+    };
     const results: Array<EditReply> = [];
     const adds: Array<ItemKey> = [];
     const targets: Array<Batch["targets"][number]> = [];
@@ -2241,26 +2437,33 @@ const decide = <Req extends ClipRequest>(
     };
     /**
      * What a new item or group in a lane that replaces does: it takes the place of the items
-     * waiting there, which stay as cover until it is Ready and then go as `replaced`.
+     * waiting there, which stay as cover until it, `by`, a group by its first part, is Ready and
+     * then go as `replaced`.
      */
-    const replaceWaiting = (lane: number): void => {
+    const replaceWaiting = (lane: number, by: ItemKey | undefined): void => {
       if (config.lanes[lane]?.conflict !== "replace") return;
       batched = true;
+      // An earlier add of this edit in the lane goes at once, so what it would have taken over
+      // waits for this one instead.
+      for (const [index, target] of targets.entries())
+        if (target.by !== undefined && items.get(target.by)?.spec.lane === lane)
+          targets[index] = { ...target, by };
       for (const other of items.values())
         if (
           other.spec.lane === lane &&
           (other.phase === "Accepted" ||
             other.phase === "Building" ||
             other.phase === "Ready" ||
-            other.phase === "Unknown")
+            other.phase === "Unknown") &&
+          !targets.some((target) => target.key === other.spec.key && target.by === by)
         )
-          targets.push({ key: other.spec.key, index: -1, reason: "replaced" });
+          targets.push({ key: other.spec.key, index: -1, reason: "replaced", by });
     };
     for (const [index, edit] of edits.entries()) {
       switch (edit._tag) {
         case "Submit": {
           if (!items.has(edit.spec.key)) {
-            replaceWaiting(edit.spec.lane);
+            replaceWaiting(edit.spec.lane, edit.spec.key);
             put(newItem(edit.spec));
           }
           results.push({ _tag: "Added", key: edit.spec.key });
@@ -2268,7 +2471,7 @@ const decide = <Req extends ClipRequest>(
         }
         case "SubmitGroup": {
           if (!groups.has(edit.key)) {
-            replaceWaiting(edit.lane);
+            replaceWaiting(edit.lane, edit.parts[0]?.key);
             groups.set(edit.key, {
               fingerprint: edit.fingerprint,
               parts: edit.parts.map((part) => part.key),
@@ -2329,19 +2532,21 @@ const decide = <Req extends ClipRequest>(
         case "Replace": {
           if (!items.has(edit.spec.key)) {
             const old = items.get(edit.key)!;
-            // A part's replacement takes its place's time, the group's: its part's start, window
-            // and the clip it follows, never its own. Any other takes its item's start, and the
-            // clip that item follows if it follows one.
+            // A replacement takes its place's time, never its own: its item's start, window and
+            // earliest start, so a firm item's replacement goes as late at the same deadline. A
+            // part's follows the clip its part follows, as a place has one time; any other the clip
+            // its item follows, if it follows one, else its own.
             const part = old.group !== undefined && !old.inserted;
-            const { window: _window, follows: _follows, ...untimed } = edit.spec;
+            const { window: _window, follows, ...untimed } = edit.spec;
+            const followed = old.spec.follows ?? (part ? undefined : follows);
             put(
               newItem(
                 {
-                  ...(part ? untimed : edit.spec),
+                  ...untimed,
                   lane: old.spec.lane,
                   start: old.spec.start,
-                  ...(part && old.spec.window !== undefined ? { window: old.spec.window } : {}),
-                  ...(old.spec.follows === undefined ? {} : { follows: old.spec.follows }),
+                  ...(old.spec.window === undefined ? {} : { window: old.spec.window }),
+                  ...(followed === undefined ? {} : { follows: followed }),
                 },
                 {
                   order: old.order,
@@ -2354,7 +2559,7 @@ const decide = <Req extends ClipRequest>(
                   behind: old.behind,
                   replaces: old.spec.key,
                   mode: old.mode,
-                  ...(part ? { notBefore: old.notBefore } : {}),
+                  notBefore: old.notBefore,
                   startBy: old.startBy,
                 },
               ),
@@ -2400,7 +2605,8 @@ const decide = <Req extends ClipRequest>(
       for (const [other, value] of saved.items) items.set(other, value);
       groups.clear();
       for (const [group, value] of saved.groups) groups.set(group, value);
-      state = { ...state, nextOrder: saved.nextOrder };
+      state = { ...state, nextOrder: saved.nextOrder, batches: saved.batches };
+      supersede();
     };
     // A member that waits for a member of its group seated after it to air, while that member
     // waits behind it, would never air, nor would that member.
@@ -2413,6 +2619,37 @@ const decide = <Req extends ClipRequest>(
         key,
         message: "follows waits for a member of its group placed after it",
       });
+    }
+    /**
+     * Whether an add goes to air on its own rather than wait for its batch: one due by a firm
+     * deadline, a group by its first part. A replacement takes a place that had a time already.
+     */
+    const firmAdd = (item: Item<Req>): boolean =>
+      item.replaces === undefined &&
+      (item.group === undefined || item.inserted || item.group.index === 0) &&
+      item.spec.window?.firm === true &&
+      item.startBy !== undefined;
+    // Deadlines are checked against the plan as the batch will run: it holds what it adds but its
+    // firm adds, ranks what it takes off behind the rest of its lane, and what nothing was built
+    // for, which goes once the edit is accepted, is gone already.
+    const pending = batched && (adds.length > 0 || targets.length > 0);
+    const registers = pending || targets.length > 0;
+    const later = targets.filter((target) => items.get(target.key)?.phase !== "Accepted");
+    if (registers) {
+      for (const key of adds) {
+        const item = items.get(key);
+        if (!pending || item === undefined) continue;
+        // An insert beside what its batch holds is held with it, or it would air before its anchor.
+        const anchor =
+          item.inserted && item.anchor !== undefined
+            ? (items.get(item.anchor.key) ?? firstOrLastPart(item.anchor.key, item.anchor.side))
+            : undefined;
+        if (!firmAdd(item) || anchor?.batch === id) set(key, { batch: id });
+      }
+      for (const target of targets)
+        if (!later.includes(target)) set(target.key, { withdraw: target.reason });
+      state = { ...state, batches: [...state.batches, { id, adds, targets: later }] };
+      supersede();
     }
     const deadlines = adds.flatMap((key) => {
       const item = items.get(key)!;
@@ -2434,17 +2671,20 @@ const decide = <Req extends ClipRequest>(
     const memo = emptyMemo();
     for (const key of adds) {
       const item = items.get(key)!;
+      // A replacement takes a place that had a time already: refusing it would refuse the edit,
+      // though the item it replaces would air as cover.
+      if (item.replaces !== undefined) continue;
+      // A group's later part has the group's time, none of its own; an insert beside it has its own.
+      if (item.group !== undefined && item.group.index > 0 && !item.inserted) continue;
+      // One its batch holds airs once the batch commits, which the run plays out, and a projection
+      // of its rank, behind everything while held, does not. The run leaves one that cuts or
+      // follows a clip to that projection, held or not.
+      const projected = item.batch === undefined || cuts(item) || item.spec.follows !== undefined;
       if (
         item.spec.window?.firm === true &&
         item.startBy !== undefined &&
-        item.group?.index !== undefined &&
-        item.group.index > 0
-      )
-        continue;
-      if (
-        item.spec.window?.firm === true &&
-        item.startBy !== undefined &&
-        (misses(item, item.startBy, memo) || !startsBefore(item, item.startBy, forwardRun))
+        ((projected && misses(item, item.startBy, memo)) ||
+          !startsBefore(item, item.startBy, forwardRun))
       ) {
         restore();
         return refuse({ _tag: "WouldMissDeadline", key });
@@ -2458,9 +2698,7 @@ const decide = <Req extends ClipRequest>(
         joins.set(`${String(id)}:${String(join.index)}`, { left: join.parts, outcomes: [] });
       state = { ...state, joins };
     }
-    const pending = batched && (adds.length > 0 || targets.length > 0);
     for (const key of adds) {
-      set(key, { batch: pending && batched ? id : undefined });
       // A clip it follows that was the last on air has aired; one that aired before that is gone,
       // and the sweep drops the item at once.
       const follows = items.get(key)?.spec.follows;
@@ -2469,18 +2707,15 @@ const decide = <Req extends ClipRequest>(
       asRun(key, { _tag: "Accepted" });
     }
     actions.push({ _tag: "Accepted", id, results });
-    if (pending || targets.length > 0) {
-      // What nothing was built for covers nothing, so it goes at once, and is answered once.
-      const later = targets.filter((target) => items.get(target.key)?.phase !== "Accepted");
-      for (const target of targets)
-        if (!later.includes(target))
-          withdraw(
-            target.key,
-            target.reason,
-            target.index >= 0 ? { id, index: target.index } : undefined,
-          );
-      state = { ...state, batches: [...state.batches, { id, adds, targets: later }] };
-    } else actions.push({ _tag: "Committed", id });
+    if (!registers) actions.push({ _tag: "Committed", id });
+    // What nothing was built for covers nothing, so it goes at once, and is answered once.
+    for (const target of targets)
+      if (!later.includes(target))
+        withdraw(
+          target.key,
+          target.reason,
+          target.index >= 0 ? { id, index: target.index } : undefined,
+        );
   };
   /** A group's first or last waiting part by place; a replacement shares its part's place. */
   function firstOrLastPart(key: ItemKey, side: "before" | "after"): Item<Req> | undefined {
@@ -3336,7 +3571,8 @@ const decide = <Req extends ClipRequest>(
         else settle(item.spec.key, { _tag: "Failed", reason: { _tag: "Closed" } });
       }
       for (const batch of state.batches)
-        actions.push({ _tag: "Refused", id: batch.id, refusal: { _tag: "PlayoutClosed" } });
+        if (batch.committed !== true)
+          actions.push({ _tag: "Refused", id: batch.id, refusal: { _tag: "PlayoutClosed" } });
       for (const drain of state.drains) actions.push({ _tag: "Drained", id: drain.id });
       state = { ...state, batches: [], drains: [] };
       break;
@@ -3396,22 +3632,50 @@ const decide = <Req extends ClipRequest>(
       if (member !== undefined) seatBesideReplaced(item, member, old);
     }
   }
-  // A batch takes effect once everything it adds is Ready or has settled.
+  // A batch takes effect once everything it adds is Ready or has settled, or as soon as any of it
+  // starts, or may have: what it takes off must not air after what it adds. What an add takes over
+  // in a lane that replaces stays as cover until that add is Ready, as on its own.
+  const tookOver = (key: ItemKey | undefined): boolean => {
+    const add = key === undefined ? undefined : items.get(key);
+    return (
+      add === undefined ||
+      add.phase === "Ready" ||
+      add.phase === "Started" ||
+      add.phase === "Settled"
+    );
+  };
   for (const batch of state.batches) {
-    const done = batch.adds.every((key) => {
-      const phase = items.get(key)?.phase;
-      return phase === undefined || phase === "Ready" || phase === "Started" || phase === "Settled";
-    });
-    if (!done) continue;
-    state = { ...state, batches: state.batches.filter((value) => value.id !== batch.id) };
-    for (const key of batch.adds) if (items.has(key)) set(key, { batch: undefined });
+    const committing = batch.committed !== true;
+    if (committing) {
+      const added = batch.adds.map((key) => items.get(key));
+      const done =
+        added.some((item) => item !== undefined && startedOrUnseen(item)) ||
+        added.every((item) => tookOver(item?.spec.key));
+      if (!done) continue;
+      for (const key of batch.adds) {
+        if (items.has(key)) set(key, { batch: undefined });
+        pendingAdds.delete(key);
+      }
+    }
+    const waiting = batch.targets.filter((target) => !tookOver(target.by));
+    if (!committing && waiting.length === batch.targets.length) continue;
+    state = {
+      ...state,
+      batches:
+        waiting.length === 0
+          ? state.batches.filter((value) => value.id !== batch.id)
+          : state.batches.map((value) =>
+              value.id === batch.id ? { ...batch, targets: waiting, committed: true } : value,
+            ),
+    };
     for (const target of batch.targets)
-      withdraw(
-        target.key,
-        target.reason,
-        target.index >= 0 ? { id: batch.id, index: target.index } : undefined,
-      );
-    actions.push({ _tag: "Committed", id: batch.id });
+      if (!waiting.includes(target))
+        withdraw(
+          target.key,
+          target.reason,
+          target.index >= 0 ? { id: batch.id, index: target.index } : undefined,
+        );
+    if (committing) actions.push({ _tag: "Committed", id: batch.id });
   }
 
   // An enqueue whose outcome stays unknown past the deadline makes its session indeterminate:
@@ -5057,7 +5321,7 @@ const decide = <Req extends ClipRequest>(
     // `place` and admission skip them themselves.
     const leftOut = (item: PlanItem): boolean => until._tag === "Placed" && cuts(item);
 
-    const pending: Array<PlanItem> = [...items.values()].filter(
+    let pending: Array<PlanItem> = [...items.values()].filter(
       (item) =>
         item.phase === "Accepted" &&
         item.withdraw === undefined &&
@@ -5284,14 +5548,31 @@ const decide = <Req extends ClipRequest>(
       done.has(item) ||
       gone.has(item) ||
       pool.some((clip) => clip.item === item && clip.readyAt <= time);
-    // A pending batch holds what it adds until all of it is Ready.
+    /** The batch not committed yet that adds each item, for the build order. */
+    const pendingBatchOf = new Map<ItemKey, Batch>();
+    for (const batch of state.batches)
+      if (batch.committed !== true) for (const key of batch.adds) pendingBatchOf.set(key, batch);
+    const batchOf = new Map(state.batches.map((batch) => [batch.id, batch]));
+    /** Each batch's targets naming an item, batch by batch, in the order the plan commits them. */
+    const targetsOf = new Map<
+      ItemKey,
+      Array<{ readonly batch: Batch; readonly target: Batch["targets"][number] }>
+    >();
+    for (const batch of state.batches)
+      for (const target of batch.targets)
+        targetsOf.set(target.key, [...(targetsOf.get(target.key) ?? []), { batch, target }]);
+    // As the plan commits a batch: it holds what it adds until all of it is Ready, or until any of
+    // it starts, before the run or in it.
     const open = (id: number | undefined, time: number): boolean => {
-      const batch = id === undefined ? undefined : state.batches.find((value) => value.id === id);
+      const batch = id === undefined ? undefined : batchOf.get(id);
+      if (batch?.committed === true) return false;
+      const added = (batch?.adds ?? []).flatMap((key) => {
+        const add = items.get(key);
+        return add === undefined ? [] : [add];
+      });
       return (
-        batch?.adds.some((key) => {
-          const add = items.get(key);
-          return add !== undefined && !readyBy(add, time);
-        }) === true
+        !added.some((add) => done.has(add) || startedOrUnseen(add)) &&
+        added.some((add) => !readyBy(add, time))
       );
     };
     // As `behindInGroup`: one that held it as the run started holds until it airs or goes.
@@ -5685,6 +5966,25 @@ const decide = <Req extends ClipRequest>(
       }
       // As the plan sweeps each step: what went late meanwhile no longer counts as air.
       purge(time);
+      // What was sent or went is never pending in the run again.
+      pending = pending.filter(pendingIn);
+      // As `buildOrder`, each batch as the run has it: an add still to build keeps its batch open
+      // until another of its adds airs, there or before it; once the batch commits there, its
+      // adds build as any other does. Nothing airs while the run dispatches, so each batch is
+      // read once.
+      const committed = new Map<Batch, boolean>();
+      const order = buildOrderBy((item) => {
+        const batch = item.batch === undefined ? pendingBatchOf.get(item.spec.key) : undefined;
+        if (batch === undefined) return false;
+        const known = committed.get(batch);
+        if (known !== undefined) return !known;
+        const value = batch.adds.some((key) => {
+          const add = items.get(key);
+          return add !== undefined && (done.has(add) || startedOrUnseen(add));
+        });
+        committed.set(batch, value);
+        return !value;
+      });
       for (let sent = 0; sent < 64; sent++) {
         const inFlight = pool.filter(
           (clip) =>
@@ -5694,7 +5994,13 @@ const decide = <Req extends ClipRequest>(
             (clip.item === undefined || !gone.has(clip.item)),
         ).length;
         if (inFlight >= config.maxBuildsInFlight) return;
-        const next = pending.filter((item) => eligibleAt(item, time)).sort(buildOrder)[0];
+        const next = pending.reduce<PlanItem | undefined>(
+          (first, item) =>
+            eligibleAt(item, time) && (first === undefined || order(item, first) < 0)
+              ? item
+              : first,
+          undefined,
+        );
         // What cannot air before the cap of the session on air waits for the replacement.
         if (next !== undefined && fitsAt(next.spec.seconds, time)) launch(next, time);
         else if (!refill(time)) return;
@@ -5709,26 +6015,24 @@ const decide = <Req extends ClipRequest>(
       return at > time && at < t ? at : undefined;
     };
     const nextDispatch = (time: number): number | undefined => {
-      const times = [
-        ...pool.flatMap((clip) =>
-          clip.item === undefined || gone.has(clip.item)
-            ? [clip.readyAt]
-            : [clip.readyAt, deadline(clip.item)],
-        ),
-        ...pending.flatMap((item) =>
-          pendingIn(item)
-            ? [
-                item.notBefore,
-                atMono(item),
-                item === hypothesis?.item ? hypothesis.submitAt : undefined,
-              ]
-            : [],
-        ),
-        refillAt(time),
-        state.filler.retryAt,
-        targetId === replacementId ? undefined : opensAt,
-      ].filter((at): at is number => at !== undefined && at > time && Number.isFinite(at));
-      return times.length === 0 ? undefined : Math.min(...times);
+      let soonest = Infinity;
+      const consider = (at: number | undefined): void => {
+        if (at !== undefined && at > time && at < soonest) soonest = at;
+      };
+      for (const clip of pool) {
+        consider(clip.readyAt);
+        if (clip.item !== undefined && !gone.has(clip.item)) consider(deadline(clip.item));
+      }
+      for (const item of pending)
+        if (pendingIn(item)) {
+          consider(item.notBefore);
+          consider(atMono(item));
+          if (item === hypothesis?.item) consider(hypothesis.submitAt);
+        }
+      consider(refillAt(time));
+      consider(state.filler.retryAt);
+      if (targetId !== replacementId) consider(opensAt);
+      return Number.isFinite(soonest) ? soonest : undefined;
     };
     const remove = (clip: Projected): void => {
       const index = pool.indexOf(clip);
@@ -5737,25 +6041,37 @@ const decide = <Req extends ClipRequest>(
     // What a deadline drops, a Ready replacement displaces, or a batch commit withdraws, in the
     // order the plan sweeps them, each for its own reason.
     const purge = (time: number): void => {
+      // The replacements Ready by `time`, by what each replaces: a sweep drops, but adds nothing.
+      const replacements = new Map<ItemKey, Array<PlanItem>>();
+      for (const clip of pool) {
+        const replaces = clip.item?.replaces;
+        if (clip.item === undefined || replaces === undefined || clip.readyAt > time) continue;
+        replacements.set(replaces, [...(replacements.get(replaces) ?? []), clip.item]);
+      }
       for (const clip of pool) {
         const item = clip.item;
         if (item === undefined || gone.has(item)) continue;
-        const batch = state.batches.find((value) =>
-          value.targets.some((entry) => entry.key === item.spec.key),
+        const replaced = (replacements.get(item.spec.key) ?? []).some(
+          (other) => !gone.has(other) && !open(other.batch, time),
         );
-        const target = batch?.targets.find((entry) => entry.key === item.spec.key);
-        const replaced = pool.some(
-          (other) =>
-            other.item !== undefined &&
-            !gone.has(other.item) &&
-            other.item.replaces === item.spec.key &&
-            other.readyAt <= time &&
-            !open(other.item.batch, time),
+        // What an add takes over in a lane that replaces goes once that add is Ready.
+        const takenOver = (key: ItemKey | undefined): boolean => {
+          const by = key === undefined ? undefined : items.get(key);
+          return (
+            by === undefined ||
+            !live(by) ||
+            by.phase === "Ready" ||
+            startedOrUnseen(by) ||
+            readyBy(by, time)
+          );
+        };
+        // The first committed batch whose target no longer waits takes the item off, for its reason.
+        const taken = (targetsOf.get(item.spec.key) ?? []).find(
+          ({ batch, target }) => !open(batch.id, time) && takenOver(target.by),
         );
         if (time >= deadline(item)) drop(item, "late", Math.min(time, deadline(item)));
         else if (replaced) drop(item, "replaced", time);
-        else if (batch !== undefined && target !== undefined && !open(batch.id, time))
-          drop(item, target.reason, time);
+        else if (taken !== undefined) drop(item, taken.target.reason, time);
       }
     };
     /** The next clip at the boundary `t`, or false once nothing more can air. */

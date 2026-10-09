@@ -13,6 +13,7 @@ import {
   item,
   key,
   measured,
+  renewing,
   source,
   spec,
 } from "./PlayoutPolicy.js";
@@ -2631,6 +2632,144 @@ describe("PlayoutPolicy, wakes", () => {
 describe("PlayoutPolicy, any script", () => {
   for (const script of counterexamples)
     it(`keeps every promise of the plan for ${script.join(", ")}`, () => check(script));
+  // The renewals property's counterexample, shrunk: an insert before a group whose build went out
+  // continuing from the group's first part sits behind that part, so when Close breaks the part's
+  // place it goes with the parts after it, withdrawn, though its own order comes first.
+  it("keeps every promise of the plan across renewals for an insert seated behind a part", () =>
+    check(
+      [
+        "withdraw",
+        "denied",
+        "insert",
+        "unknown",
+        "submit",
+        "withdraw",
+        "replace",
+        "replace",
+        "refused",
+        "start",
+        "batch",
+        "batch",
+        "submit",
+        "insert",
+        "refused",
+        "group",
+        "fail",
+        "open",
+        "withdraw",
+        "start",
+        "insert",
+        "done",
+        "open",
+        "ready",
+        "replace",
+        "refused",
+        "insert",
+        "insert",
+        "replace",
+        "submit",
+        "tick",
+        "wake",
+        "group",
+        "end",
+        "group",
+        "batch",
+        "submit",
+        "tick",
+        "urgent",
+        "urgent",
+        "lost",
+        "replace",
+        "done",
+        "lost",
+        "denied",
+        "insert",
+        "wake",
+        "wake",
+        "lost",
+        "urgent",
+        "unknown",
+        "unknown",
+        "refused",
+        "group",
+        "refused",
+        "fail",
+        "start",
+        "tick",
+        "insert",
+        "denied",
+      ],
+      renewing,
+    ));
+  // The renewals property's counterexample: a firm item sent to a session that was lost before
+  // building it, and then to another lost the same way, fails with that loss at the very step its
+  // `startBy` comes, rather than going late.
+  it("keeps every promise of the plan across renewals for a firm item failed by a loss at its deadline", () =>
+    check(
+      [
+        "wake",
+        "batch",
+        "wake",
+        "withdraw",
+        "fail",
+        "ready",
+        "insert",
+        "start",
+        "tick",
+        "wake",
+        "open",
+        "submit",
+        "refused",
+        "done",
+        "withdraw",
+        "open",
+        "wake",
+        "urgent",
+        "unknown",
+        "start",
+        "lost",
+        "open",
+        "lost",
+        "end",
+        "group",
+        "replace",
+        "group",
+        "group",
+        "batch",
+        "group",
+        "urgent",
+        "lost",
+        "batch",
+        "tick",
+        "open",
+        "group",
+        "batch",
+        "urgent",
+        "submit",
+        "fail",
+        "urgent",
+        "withdraw",
+        "denied",
+        "submit",
+        "submit",
+        "batch",
+        "done",
+        "insert",
+        "submit",
+        "urgent",
+        "refused",
+        "group",
+        "ready",
+        "denied",
+        "end",
+        "denied",
+        "wake",
+        "tick",
+        "denied",
+        "lost",
+      ],
+      renewing,
+    ));
 });
 
 // Claims from the critique's delegated pass, each checked here before any fix.
@@ -2775,6 +2914,286 @@ describe("PlayoutPolicy, edit claims", () => {
     policy.reply({ _tag: "Done", clipId: "c-c" });
     const moves = commands(policy.actions).filter((action) => action.command._tag === "Move");
     assert.deepStrictEqual(moves.at(-1)?.command, { _tag: "Move", clipId: "c-b", position: 0 });
+  });
+
+  // With nothing else Ready, the provider may start what a pending batch holds: what the batch
+  // withdraws must not air after it.
+  it("a batch commits when one of its adds starts before the rest are Ready", () => {
+    const policy = drive({ config: { ...config, maxBuildsInFlight: 3 } });
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("w"));
+    policy.reply({ _tag: "Done", clipId: "c-w" });
+    policy.observe({ building: [clip("c-w", item("w"))] });
+    policy.edit(
+      [
+        { _tag: "Withdraw", key: key("w") },
+        { _tag: "Submit", spec: spec("v") },
+        { _tag: "Submit", spec: spec("v2") },
+      ],
+      true,
+    );
+    assert.deepStrictEqual(enqueued(policy.actions), ["w", "v"]);
+    policy.reply({ _tag: "Done", clipId: "c-v" });
+    assert.deepStrictEqual(enqueued(policy.actions), ["w", "v", "v2"]);
+    policy.reply({ _tag: "Done", clipId: "c-v2" });
+    const v = clip("c-v", item("v"));
+    const building = [clip("c-w", item("w")), clip("c-v2", item("v2"))];
+    policy.observe({ ready: [v], building });
+    const started = policy.event({ _tag: "Started", clip: v });
+    assert.isTrue(started.actions.some((action) => action._tag === "Committed"));
+    policy.observe({ playing: v, building });
+    assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "c-w" });
+    policy.reply({ _tag: "Done" });
+    policy.observe({ playing: v, building: [clip("c-v2", item("v2"))] });
+    assert.deepStrictEqual(statuses(policy.actions, "w"), ["Accepted", "Building", "Dropped"]);
+  });
+
+  it("an insert may anchor on an item the same batch adds", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    const sent = policy.edit(
+      [
+        { _tag: "Submit", spec: spec("a") },
+        { _tag: "Insert", spec: spec("b"), anchor: key("a"), side: "after" },
+      ],
+      true,
+    );
+    assert.isTrue(sent.actions.some((action) => action._tag === "Accepted"));
+    const held = queues();
+    provide(policy, "s1", 8, held, []);
+    boundary(policy, "s1", held, policy.now() + 1);
+    boundary(policy, "s1", held, policy.now() + 5_000);
+    assert.deepStrictEqual(startOrder(policy.actions), ["a", "b"]);
+  });
+
+  it("a batch's replacement still builds ahead of a plain item waiting in its lane", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("y"));
+    policy.reply({ _tag: "Done", clipId: "c-y" });
+    policy.observe({ building: [clip("c-y", item("y"))] });
+    // z waits for the build slot y holds, and an edit of its own replaces y with y2.
+    policy.submit(spec("z"));
+    policy.edit([{ _tag: "Replace", key: key("y"), spec: spec("y2") }], true);
+    policy.observe({ ready: [clip("c-y", item("y"))] });
+    assert.deepStrictEqual(enqueued(policy.actions), ["y", "y2"]);
+  });
+
+  it("a firm item's replacement is dropped at the deadline it took over", () => {
+    const policy = drive({ from: measured });
+    policy.tick(0);
+    policy.open();
+    policy.submit({ ...spec("y"), window: { startByMs: 4_000, firm: true } }, 10);
+    policy.reply({ _tag: "Done", clipId: "c-y" });
+    policy.observe({ building: [clip("c-y", item("y"))] });
+    // y builds on, so its replacement is never built: y's deadline at 4,010 is the place's. It goes
+    // then and not before, though projected to miss it, since y would air as cover.
+    policy.edit([{ _tag: "Replace", key: key("y"), spec: spec("y2") }]);
+    policy.tick(4_009);
+    assert.deepStrictEqual(statuses(policy.actions, "y2"), ["Accepted"]);
+    const { actions } = policy.tick(4_010);
+    const due = actions.flatMap((action) =>
+      action._tag === "Emit" && action.event._tag === "AsRun" && action.event.event.key === "y2"
+        ? [action.event.event.status]
+        : [],
+    );
+    assert.deepStrictEqual(due, [{ _tag: "Dropped", reason: "late" }]);
+  });
+
+  /** The test config with a third lane, `low` or a `ticker` that replaces what waits in it. */
+  const withLane = (name: string, conflict: "queue" | "replace"): Policy.Config => ({
+    ...config,
+    lanes: [...config.lanes, { name, conflict, cut: false }],
+  });
+  /** `x`, `seconds` long in `lane`, built and on air on s1; when it ends. */
+  const onAir = (
+    policy: ReturnType<typeof drive>,
+    held: Queues,
+    log: Array<string>,
+    lane: number,
+    seconds: number,
+  ): number => {
+    policy.tick(0);
+    policy.open();
+    policy.submit(spec("x", lane, seconds));
+    provide(policy, "s1", 2, held, log);
+    boundary(policy, "s1", held, policy.now() + 1);
+    return (policy.state().items.get(key("x"))?.startedAt ?? Number.NaN) + seconds * 1_000;
+  };
+
+  // In a lane that replaces, what a new item takes over stays as cover until that item is Ready,
+  // though another add of its batch started and so committed it.
+  it("keeps a replacing lane's cover until its new item is Ready, once its batch committed", () => {
+    const policy = drive({ config: withLane("ticker", "replace"), from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    const end = onAir(policy, held, log, 1, 10);
+    policy.submit(spec("t1", 2, 5));
+    provide(policy, "s1", 2, held, log);
+    held.slow.add("n");
+    const window = { startByMs: end + 3_000 - policy.now(), firm: true };
+    policy.edit(
+      [
+        { _tag: "Submit", spec: { ...spec("f", 1, 5), window } },
+        { _tag: "Submit", spec: spec("n", 2, 5) },
+      ],
+      true,
+    );
+    provide(policy, "s1", 4, held, log);
+    boundary(policy, "s1", held, end);
+    provide(policy, "s1", 3, held, log);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "f"]);
+    assert.deepStrictEqual(statuses(policy.actions, "t1"), ["Accepted", "Building", "Ready"]);
+    // n is Ready: t1 goes as replaced.
+    held.ready = [...held.ready, ...held.building];
+    held.building = [];
+    shown(policy, "s1", held);
+    provide(policy, "s1", 3, held, log);
+    assert.deepStrictEqual(statuses(policy.actions, "t1"), [
+      "Accepted",
+      "Building",
+      "Ready",
+      "Dropped",
+    ]);
+  });
+
+  // A firm insert placed before an add its batch holds is held with it, and airs once the batch
+  // commits, ahead of a lower lane's Ready clip: neither admission nor the deadline sweep counts
+  // that clip ahead of it.
+  it("admits a firm insert held beside an add of its batch, and airs it in its slot", () => {
+    const policy = drive({ config: withLane("low", "queue"), from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    const end = onAir(policy, held, log, 1, 15);
+    policy.submit(spec("z", 2, 10));
+    provide(policy, "s1", 2, held, log);
+    const window = { startByMs: end + 3_000 - policy.now(), firm: true };
+    const sent = policy.edit(
+      [
+        { _tag: "Submit", spec: spec("h", 1, 5) },
+        {
+          _tag: "Insert",
+          spec: { ...spec("i", 1, 5), window },
+          anchor: key("h"),
+          side: "before",
+        },
+      ],
+      true,
+    );
+    assert.isTrue(sent.actions.some((action) => action._tag === "Accepted"));
+    provide(policy, "s1", 6, held, log);
+    boundary(policy, "s1", held, end);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "i"]);
+  });
+
+  // What it replaces had nothing built, so it went at once and covers nothing: the replacement is
+  // dropped once projected to miss the deadline it took over, as that item would have been.
+  it("drops an uncovered replacement once projected to miss the deadline it took over", () => {
+    const policy = drive({ config: withLane("low", "queue"), from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    const end = onAir(policy, held, log, 2, 15);
+    // q holds the one build slot.
+    held.slow.add("q");
+    policy.submit(spec("q", 2, 5));
+    provide(policy, "s1", 1, held, log);
+    const window = { startByMs: end + 3_000 - policy.now(), firm: true };
+    policy.submit({ ...spec("y", 1, 5), window });
+    policy.edit([{ _tag: "Replace", key: key("y"), spec: spec("r", 1, 5) }]);
+    assert.deepStrictEqual(statuses(policy.actions, "y"), ["Accepted", "Dropped"]);
+    assert.deepStrictEqual(statuses(policy.actions, "r"), ["Accepted"]);
+    // Ahead of r's place, u leaves it no time to make its deadline.
+    policy.submit({ ...spec("u", 1, 10), start: { _tag: "Asap" } });
+    assert.deepStrictEqual(statuses(policy.actions, "r"), ["Accepted", "Dropped"]);
+    assert.notInclude(enqueued(policy.actions), "r");
+  });
+
+  // The forward run leaves a firm item that follows a clip to the projection. Since 9ae46e7 one its
+  // batch held skipped the projection, so nothing checked it: the batch was accepted, and the
+  // insert dropped as late while its anchor aired alone.
+  it("refuses a batch whose held firm insert follows a clip and cannot make its deadline", () => {
+    const policy = drive({ from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    onAir(policy, held, log, 1, 15);
+    const follows = { _tag: "Item", key: key("h") } as const;
+    const refused = policy
+      .edit(
+        [
+          { _tag: "Submit", spec: spec("h", 1, 5) },
+          {
+            _tag: "Insert",
+            spec: { ...spec("i", 1, 5), window: { startByMs: 1_000, firm: true }, follows },
+            anchor: key("h"),
+            side: "after",
+          },
+        ],
+        true,
+      )
+      .actions.flatMap((action) => (action._tag === "Refused" ? [action.refusal._tag] : []));
+    assert.deepStrictEqual(refused, ["WouldMissDeadline"]);
+  });
+
+  // A batch that withdraws an item waiting in a lane that replaces, and adds to that lane, names
+  // the item twice. Since 5830107 the forward run read only the first, the cover waiting for the
+  // add, so the forecast aired the item the plan withdraws once the firm insert starts.
+  it("forecasts nothing of an item its batch withdraws from a lane it also replaces", () => {
+    const settings = withLane("ticker", "replace");
+    const policy = drive({ config: settings, from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    const end = onAir(policy, held, log, 1, 15);
+    policy.submit(spec("c", 2, 5));
+    provide(policy, "s1", 2, held, log);
+    held.slow.add("a");
+    const window = { startByMs: end + 3_000 - policy.now(), firm: true };
+    policy.edit(
+      [
+        { _tag: "Submit", spec: spec("a", 2, 60) },
+        { _tag: "Withdraw", key: key("c") },
+        { _tag: "Insert", spec: { ...spec("u", 1, 5), window }, anchor: key("x"), side: "after" },
+      ],
+      true,
+    );
+    provide(policy, "s1", 4, held, log);
+    const forecast = Policy.forecast(settings, policy.state(), {
+      mono: policy.now(),
+      wall: policy.now(),
+    });
+    const names = forecast.clips.map((entry) =>
+      entry.clip?._tag === "Item" ? String(entry.clip.key) : "other",
+    );
+    assert.notInclude(names, "c");
+  });
+
+  // A batch's second add to a lane that replaces takes its first add there off at once. Since
+  // 5830107 what waited in the lane named that first add as taking its place, so it went once the
+  // batch committed, with nothing Ready to cover it.
+  it("keeps a replacing lane's cover until the batch's last add there is Ready", () => {
+    const policy = drive({ config: withLane("ticker", "replace"), from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    const end = onAir(policy, held, log, 1, 10);
+    policy.submit(spec("t1", 2, 5));
+    provide(policy, "s1", 2, held, log);
+    held.slow.add("n2");
+    const window = { startByMs: end + 3_000 - policy.now(), firm: true };
+    policy.edit(
+      [
+        { _tag: "Submit", spec: { ...spec("f", 1, 5), window } },
+        { _tag: "Submit", spec: spec("n1", 2, 5) },
+        { _tag: "Submit", spec: spec("n2", 2, 5) },
+      ],
+      true,
+    );
+    provide(policy, "s1", 4, held, log);
+    boundary(policy, "s1", held, end);
+    provide(policy, "s1", 3, held, log);
+    assert.deepStrictEqual(startOrder(policy.actions), ["x", "f"]);
+    assert.deepStrictEqual(statuses(policy.actions, "t1"), ["Accepted", "Building", "Ready"]);
   });
 });
 
@@ -4335,7 +4754,7 @@ describe("PlayoutPolicy, groups", () => {
     );
   });
 
-  // k went in before i, an insert held unbuilt by its window, and i was replaced by ir: as nothing
+  // k went in before i, an insert its session refused unsent, and i was replaced by ir: as nothing
   // was built for i, ir took its place at once, before ir's build fell back to p2's clip and sat
   // behind p2. k, placed beside the item ir replaced, stayed at its own order.
   it("moves an insert beside a replaced item that was never built with the replacement's seat", () => {
@@ -4353,15 +4772,12 @@ describe("PlayoutPolicy, groups", () => {
     shown(policy, "s1", held, 13_001);
     policy.edit([group(1, ["p1", "p2"])], false, 13_100);
     provide(policy, "s1", 6, held, log);
-    const later = { notBeforeMs: 120_000, firm: false } as const;
-    policy.edit([
-      {
-        _tag: "Insert",
-        spec: { ...spec("i", 1, 3), window: later },
-        anchor: key("p1"),
-        side: "after",
-      },
-    ]);
+    policy.edit([{ _tag: "Insert", spec: spec("i", 1, 3), anchor: key("p1"), side: "after" }]);
+    // Refused unsent, i goes to its session again only once that session's availability changes,
+    // which a replacement of it does not wait for, as it would for i's window.
+    const sent = policy.busy();
+    assert.deepStrictEqual(sent?._tag === "Enqueue" ? sent.tag : sent, item("i"));
+    policy.reply(failed("not-submitted"));
     policy.edit([{ _tag: "Insert", spec: spec("k", 1, 3), anchor: key("i"), side: "before" }]);
     provide(policy, "s1", 4, held, log);
     readyIn(held, "k");

@@ -292,15 +292,34 @@ export const correct = Effect.fn("correct")(function* (
       },
     },
   ]);
-  // All it adds is Ready or settled; what it removes went at once.
+  // All it adds is Ready or settled, or some of it started; what it removes went at once.
   yield* batch.committed;
 });
 ```
 
-A batch holds what it adds behind the clips queued until all of it is Ready, though with nothing
-else to air H3 may start one first, and a replacement builds ahead of every other item waiting in
-its lane except an `Asap` one. Send an urgent insert alone, and a
-replacement meant to air after it as a second edit once the insert is `Building`.
+A batch is admitted all or nothing. It holds what it adds behind the clips queued until all of it
+is Ready or settled, or until any of it starts, as H3 may start a held clip with nothing else to
+air. It commits then: what it withdraws goes, while an item it replaces stays as cover until its
+replacement is Ready, and what waits in a lane that replaces until the item it adds there is. An
+item it submits or inserts, or a group's first part, due by a firm `startBy` is checked against
+the plan as the batch will run and is not held: it airs as soon as it can, and builds ahead of
+every other item waiting in its lane except an `Asap` one. So one edit can carry an insert due
+right after the clip on air, a replacement of the clip after it and the withdrawals that go with
+them. An insert may anchor on an item or group the same batch adds, and beside one the batch holds
+it is held too, whatever its window: a firm one is then checked as the batch will run, or as it
+would be alone if it follows a clip or cuts, and while held is dropped as `late` only at its
+`startBy`. A batch whose `Withdraw` or `Replace` names an
+item or group it adds is refused with `InvalidItem`. An insert placed before an add its batch does
+not hold, with no firm window of
+its own, is held like any other add, so it may air after that add: give it a firm window too, or
+send it as its own edit.
+
+A replacement builds ahead of every other item waiting in its lane except an `Asap` one and the
+adds a pending batch does not hold. It takes its item's start and window, `notBefore` and
+`startBy` measured from the item's own submission. A firm item's replacement is not refused for
+that deadline. While the item it replaces may still air as cover, it is not dropped for a projected
+miss of it either, only as `late` at the deadline it took over; once nothing covers the place, as
+when nothing was built for that item, it is dropped as soon as it is projected to miss it.
 
 In the two `show` runs on hosted H3, an edit batch took effect 0.91 s before its boundary
 (2026-09-28) and 1.05 s before it (2026-09-29), and the clip it withdrew never aired.
