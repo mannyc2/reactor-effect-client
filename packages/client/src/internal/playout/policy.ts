@@ -1411,6 +1411,29 @@ const compareRank = (a: Rank, b: Rank): number =>
 const justBehind = (rank: Rank): Rank => [rank[0], rank[1], rank[2], rank[3], rank[4] + 1];
 /** The later of two ranks. */
 const laterRank = (a: Rank, b: Rank): Rank => (compareRank(a, b) >= 0 ? a : b);
+/** Reads earlier holding places first without growing the call stack with the length of a line. */
+const rankEarlier = <I extends PlanItem>(
+  holders: ReadonlyArray<I>,
+  ranks: ReadonlyMap<PlanItem, Rank>,
+  earlier: (item: I) => ReadonlyArray<I>,
+  read: (item: I) => Rank,
+): void => {
+  const waiting = holders.slice().reverse();
+  while (waiting.length > 0) {
+    const item = waiting.at(-1);
+    if (item === undefined) break;
+    if (ranks.has(item)) {
+      waiting.pop();
+      continue;
+    }
+    const before = earlier(item).filter((other) => !ranks.has(other));
+    if (before.length > 0) waiting.push(...before.reverse());
+    else {
+      read(item);
+      waiting.pop();
+    }
+  }
+};
 /**
  * The later of `rank` and just behind each place of `holders`, the members a member waits behind,
  * a place, the items that share a seat, ranking at its earliest item among them: a replacement
@@ -1842,6 +1865,11 @@ const decide = <Req extends ClipRequest>(
   };
   /** Where a held item ranks: behind everything that airs. */
   const heldRank = (item: PlanItem): Rank => [lanes + 1, 1, item.order, item.generation, 0];
+  const holdersBefore = (item: PlanItem): ReadonlyArray<Item<Req>> =>
+    roster.holdingBefore(item).flatMap((key) => {
+      const other = items.get(key);
+      return other === undefined ? [] : [other];
+    });
   /**
    * Where an item airs: at its own rank, held or not; or, while it waits behind earlier members
    * of its group, just behind the last of their places to air, if that is later, each place at
@@ -1854,10 +1882,8 @@ const decide = <Req extends ClipRequest>(
     const known = ranks.get(item);
     if (known !== undefined) return known;
     const own = heldBack(item) ? heldRank(item) : airRank(item, ranks);
-    const holders = roster.holdingBefore(item).flatMap((key) => {
-      const other = items.get(key);
-      return other === undefined ? [] : [other];
-    });
+    const holders = holdersBefore(item);
+    rankEarlier(holders, ranks, holdersBefore, (other) => placeRank(other, ranks));
     const rank = behindPlaces(
       own,
       holders,
@@ -6042,6 +6068,16 @@ const decide = <Req extends ClipRequest>(
         0,
       ];
     };
+    const holdersIn = (item: PlanItem): ReadonlyArray<PlanItem> => {
+      const line = roster.lineOf(item);
+      return line === undefined
+        ? []
+        : previousPlace(
+            seatingIn(line),
+            seatIn(item),
+            (other) => mayHold(other) && !done.has(other) && !gone.has(other),
+          );
+    };
     /**
      * As `placeRank`: a member just behind the last to air of the places it waits behind in the
      * run, each at its earliest item.
@@ -6053,16 +6089,10 @@ const decide = <Req extends ClipRequest>(
     ): Rank => {
       const known = ranks.get(item);
       if (known !== undefined) return known;
-      const line = roster.lineOf(item);
-      const holders =
-        line === undefined
-          ? []
-          : previousPlace(
-              seatingIn(line),
-              seatIn(item),
-              (other) => mayHold(other) && !done.has(other) && !gone.has(other),
-            );
-      const rank = behindPlaces(airRankIn(item, sessionId, ranks), holders, seatIn, (other) =>
+      const holders = holdersIn(item);
+      const own = airRankIn(item, sessionId, ranks);
+      rankEarlier(holders, ranks, holdersIn, (other) => placeRankIn(other, other.sessionId, ranks));
+      const rank = behindPlaces(own, holders, seatIn, (other) =>
         placeRankIn(other, other.sessionId, ranks),
       );
       ranks.set(item, rank);
