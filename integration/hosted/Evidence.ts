@@ -166,6 +166,8 @@ export type Span = typeof Span.Type;
 /** A session the run allocated, and how it ended. */
 export const SessionRecord = Schema.Struct({
   id: Schema.String,
+  /** Actual allocation model; absent in earlier single-model evidence. */
+  model: Schema.optionalKey(Schema.String),
   allocatedMs: Ms,
   /** When the grant's cap ends it at the latest, ISO. */
   capEndsAt: Schema.optionalKey(Schema.String),
@@ -1585,6 +1587,16 @@ export const Evidence = Schema.Struct({
         per: Schema.Literals(["second", "minute"]),
       }),
     ),
+    /** Every physical allocation, independently priced before any token exists. */
+    allocations: Schema.Struct({
+      model: Schema.String,
+      seconds: Schema.Finite,
+      rate: Schema.Struct({
+        creditsPerSecond: Schema.Finite,
+        creditsPerDollar: Schema.Finite,
+        per: Schema.Literals(["second", "minute"]),
+      }),
+    }).pipe(Schema.Array, Schema.optionalKey),
     /** Recorded before any token exists: what the ledger reserves for this run. */
     worstCaseUsd: Schema.optionalKey(Usd),
     /** Allocation to confirmed end, every started unit of the published rate whole. */
@@ -1799,6 +1811,78 @@ export const Evidence = Schema.Struct({
   character: Schema.optionalKey(CharacterRecord),
   fasth3: Schema.optionalKey(FastH3Record),
   rejoin: Schema.optionalKey(RejoinRecord),
+  /** Candidate scheduling facts and decoded media, one phase for each actual model. */
+  candidate: Schema.optionalKey(
+    Schema.Struct({
+      phases: Schema.Array(
+        Schema.Struct({
+          model: Schema.String,
+          sessionId: Schema.String,
+          recordedBeforeConnect: Schema.Boolean,
+          forecastOrder: Schema.Array(Schema.String),
+          startOrder: Schema.Array(Schema.String),
+          items: Schema.Array(Item),
+          groups: Schema.Array(
+            Schema.Struct({
+              key: Schema.String,
+              outcome: Schema.Literals(["Aired", "NotAired", "Indeterminate"]),
+              played: Schema.Int,
+              parts: Schema.Array(Schema.String),
+              stoppedPart: Schema.optionalKey(Schema.Int),
+            }),
+          ),
+          media: Schema.Array(
+            Schema.Struct({
+              key: Schema.String,
+              startedMs: Ms,
+              firstFrameMs: Schema.optionalKey(Ms),
+              frames: Schema.Int,
+              live: Schema.Boolean,
+              reason: Schema.optionalKey(Schema.String),
+            }),
+          ),
+          video: VideoSummary,
+          firm: Schema.optionalKey(
+            Schema.Struct({
+              startedMs: Ms,
+              committedMs: Ms,
+              manualWasReady: Schema.Boolean,
+              manualBuildAfterMs: Ms,
+            }),
+          ),
+          readyBy: Schema.optionalKey(
+            Schema.Struct({
+              timeMs: Ms,
+              cutoffMs: Ms,
+              readyMs: Schema.optionalKey(Ms),
+              startedMs: Schema.optionalKey(Ms),
+              missed: Schema.String,
+              filler: Schema.Struct({
+                startedMs: Ms,
+                seconds: Schema.Finite,
+                predictedEndMs: Ms,
+              }),
+            }),
+          ),
+          uploads: Schema.Array(
+            Schema.Struct({
+              metadata: Schema.String,
+              hasReferenceAudio: Schema.optionalKey(Schema.Boolean),
+              hasStartingFrame: Schema.optionalKey(Schema.Boolean),
+              continued: Schema.Boolean,
+            }),
+          ),
+          endReads: Schema.Array(
+            Schema.Struct({
+              atMs: Ms,
+              state: Schema.Literals(["CLOSED", "other", "absent"]),
+            }),
+          ),
+          ledgerAfterClose: Schema.optionalKey(Schema.Int),
+        }),
+      ),
+    }),
+  ),
   verdict: Schema.optionalKey(Schema.Literals(["pass", "fail"])),
   reasons: Schema.Array(Schema.String),
   missing: Schema.Array(Schema.String),
@@ -1830,6 +1914,7 @@ const sections: Record<Check, ReadonlyArray<Section>> = {
   character: ["network", "character"],
   fasth3: ["server", "network", "fasth3"],
   rejoin: ["network", "rejoin"],
+  candidate: ["candidate"],
 };
 
 /** What the evidence lacks: a section its check needs, a session's close, or a paid run's reservation. */

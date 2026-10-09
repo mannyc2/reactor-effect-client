@@ -56,7 +56,7 @@ const round = (value: number) => Math.round(value * 10) / 10;
  * the Vidu S2-Avatar provider's.
  */
 const clientSpans =
-  /^(?:Reactor\.|Session\.|CoordinatorClient\.|H3\.(?:enqueue|reconcile)$|(?:H3Source|FastH3Source)\.(?:open|resume)$|ViduS2Avatar\.)/;
+  /^(?:Reactor\.|Session\.|CoordinatorClient\.|Ledger\.|H3\.(?:enqueue|reconcile)$|(?:H3Source|FastH3Source)\.(?:open|resume)$|ViduS2Avatar\.)/;
 
 export const make = Effect.fnUntraced(function* (initial: Evidence, file: string, model: Model) {
   const origin = yield* Clock.currentTimeMillis;

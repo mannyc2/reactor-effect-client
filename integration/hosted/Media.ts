@@ -159,11 +159,12 @@ export const videoLog = () => {
     get count() {
       return frames;
     },
-    firstAfter: (atMs: number) => seen.find((frame) => frame.atMs >= atMs)?.atMs,
+    firstAfter: (atMs: number, toMs = Number.POSITIVE_INFINITY) =>
+      seen.find((frame) => frame.atMs >= atMs && frame.atMs <= toMs)?.atMs,
     framesBetween: (fromMs: number, toMs: number) => within(fromMs, toMs).length,
     /** Frames that arrived at or after `atMs`: changing, lit, BGRA, and still moving at the end. */
-    live: (atMs: number): string | undefined => {
-      const since = seen.filter((frame) => frame.atMs >= atMs);
+    live: (atMs: number, toMs = Number.POSITIVE_INFINITY): string | undefined => {
+      const since = within(atMs, toMs);
       if (since.length < 2) return "fewer than two frames arrived";
       if (since.some((frame) => frame.format !== "BGRA")) return "a frame was not BGRA";
       if (!since.some((frame) => frame.lit)) return "every frame was black";

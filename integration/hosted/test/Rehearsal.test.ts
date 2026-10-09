@@ -96,7 +96,8 @@ const failed = (criterion: string) => (evidence: Evidence) => {
   );
 };
 
-for (const check of checks) rehearse(`${check} passes`, { check, judge: passes });
+for (const check of checks.filter((check) => check !== "candidate"))
+  rehearse(`${check} passes`, { check, judge: passes });
 
 for (const check of checks.filter((check) => {
   const plan: Plan = plans[check];

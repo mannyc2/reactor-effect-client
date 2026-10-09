@@ -33,6 +33,7 @@ import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import { adoption } from "./checks/Adoption.js";
 import { dropped } from "./checks/Dropped.js";
+import { candidate } from "./checks/Candidate.js";
 import { avatar } from "./checks/Avatar.js";
 import { character } from "./checks/Character.js";
 import { fastH3 } from "./checks/FastH3.js";
@@ -51,9 +52,9 @@ import { recorded, Run } from "./Run.js";
 import type { Check, ModelKey } from "./Spend.js";
 import {
   acceptGrant,
+  allocationsFor,
   billedUsd,
   provenGrant,
-  plans,
   sessionSeconds,
   tokenSecondsFor,
   workSecondsFor,
@@ -216,7 +217,12 @@ const mint = Effect.fnUntraced(function* (
   const run = yield* Run;
   const target = yield* Target;
   const coordinator = yield* CoordinatorClient.CoordinatorClient;
-  const cap = plans[check].seconds;
+  const cap = allocationsFor(
+    check,
+    run.model.name === Family.fastH3.modelName ? "fast-h3" : undefined,
+  ).find((allocation) => allocation.model.name === run.model.name)?.seconds;
+  if (cap === undefined)
+    return yield* ReactorError.fromCode("InvalidState", "the check cannot allocate this model");
   const grant = yield* coordinator.mintToken({
     apiKey: target.apiKey,
     modelName: run.model.name,
@@ -273,6 +279,7 @@ const holding = Effect.fnUntraced(function* (
   sessionId: string,
   allocatedAt: number,
   capEndsAt: number | undefined,
+  model?: string,
 ) {
   const run = yield* Run;
   yield* run.update((evidence) => ({
@@ -281,6 +288,7 @@ const holding = Effect.fnUntraced(function* (
       ...evidence.sessions,
       {
         id: sessionId,
+        ...(model === undefined ? {} : { model }),
         allocatedMs: allocatedAt - run.origin,
         ...(capEndsAt === undefined
           ? {}
@@ -296,9 +304,10 @@ const holding = Effect.fnUntraced(function* (
 const allocated = Effect.fnUntraced(function* (
   sessionId: string,
   grant: CoordinatorClient.TokenGrant,
+  model?: string,
 ) {
   const now = yield* Clock.currentTimeMillis;
-  const deadline = yield* holding(sessionId, now, now + capMs(grant));
+  const deadline = yield* holding(sessionId, now, now + capMs(grant), model);
   yield* (yield* Run).mark("allocated", sessionId);
   return deadline;
 });
@@ -449,8 +458,12 @@ const settle = Effect.fnUntraced(
     const evidence = yield* run.evidence;
     // Reactor bills from `ready` to the end. Counting from allocation, which precedes ready, to
     // the confirmed report or the first terminal read, every started unit whole, bills no less.
-    const rate = evidence.budget.rate;
     const spent = evidence.sessions.map((session) => {
+      const rate =
+        evidence.budget.allocations === undefined
+          ? evidence.budget.rate
+          : evidence.budget.allocations.find((allocation) => allocation.model === session.model)
+              ?.rate;
       const endedMs =
         session.close?.confirmed === true ? session.close.reportedMs : session.terminalMs;
       return rate === undefined || endedMs === undefined
@@ -2540,6 +2553,7 @@ const pieces = {
 export type Pieces = typeof pieces;
 
 const all = {
+  candidate: candidate(pieces),
   vertical: vertical("vertical"),
   turn: vertical("turn"),
   audio: vertical("audio"),

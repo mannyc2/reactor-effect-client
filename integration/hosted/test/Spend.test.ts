@@ -11,6 +11,19 @@ const refused = <A>(effect: Effect.Effect<A, Spend.Refused>) =>
   });
 
 describe("the spending gates", () => {
+  // The requested candidate seam must reserve both models before either can allocate.
+  it.effect("candidate reserves both session models at their independent rates", () =>
+    Effect.gen(function* () {
+      const check = yield* Schema.decodeEffect(Spend.Check)("candidate");
+      const authorization = { check, budgetUsd: 8.4, totalUsd: 8.4 };
+      const rates = [
+        { model: Spend.h3.name, rate },
+        { model: Spend.fastH3.name, rate: { ...rate, creditsPerSecond: 200 } },
+      ];
+      assert.strictEqual(yield* Spend.admit({ rates, authorization, reservedUsd: 0 }), 4.95);
+      yield* refused(Spend.admit({ rates: rates.slice(0, 1), authorization, reservedUsd: 0 }));
+    }),
+  );
   it.effect(
     "a budget above its check's ceiling, above the ledger's, or above the total refuses",
     () =>
@@ -33,12 +46,32 @@ describe("the spending gates", () => {
     () =>
       Effect.gen(function* () {
         const authorization = { check: "vertical", budgetUsd: 2.1, totalUsd: 6 } as const;
-        assert.strictEqual(yield* Spend.admit({ rate, authorization, reservedUsd: 0 }), 1.75);
-        assert.strictEqual(yield* Spend.admit({ rate, authorization, reservedUsd: 3.5 }), 1.75);
-        yield* refused(Spend.admit({ rate, authorization, reservedUsd: 5.25 }));
         assert.strictEqual(
           yield* Spend.admit({
-            rate,
+            rates: [{ model: Spend.modelFor(authorization.check).name, rate }],
+            authorization,
+            reservedUsd: 0,
+          }),
+          1.75,
+        );
+        assert.strictEqual(
+          yield* Spend.admit({
+            rates: [{ model: Spend.modelFor(authorization.check).name, rate }],
+            authorization,
+            reservedUsd: 3.5,
+          }),
+          1.75,
+        );
+        yield* refused(
+          Spend.admit({
+            rates: [{ model: Spend.modelFor(authorization.check).name, rate }],
+            authorization,
+            reservedUsd: 5.25,
+          }),
+        );
+        assert.strictEqual(
+          yield* Spend.admit({
+            rates: [{ model: Spend.h3.name, rate }],
             authorization: { check: "renewal", budgetUsd: 4.2, totalUsd: 6 },
             reservedUsd: 0,
           }),
@@ -52,14 +85,24 @@ describe("the spending gates", () => {
       const authorization = { check: "vertical", budgetUsd: 2.1, totalUsd: 8.4 } as const;
       const minute = perMinute;
       assert.strictEqual(
-        yield* Spend.admit({ rate: minute, authorization, reservedUsd: 2.1 + 2.1 + 2.1 }),
+        yield* Spend.admit({
+          rates: [{ model: Spend.h3.name, rate: minute }],
+          authorization,
+          reservedUsd: 2.1 + 2.1 + 2.1,
+        }),
         2.1,
       );
-      yield* refused(Spend.admit({ rate: minute, authorization, reservedUsd: 6.3001 }));
+      yield* refused(
+        Spend.admit({
+          rates: [{ model: Spend.h3.name, rate: minute }],
+          authorization,
+          reservedUsd: 6.3001,
+        }),
+      );
       // At a higher published rate the same budget no longer covers the minute.
       yield* refused(
         Spend.admit({
-          rate: { ...minute, creditsPerSecond: 351 },
+          rates: [{ model: Spend.h3.name, rate: { ...minute, creditsPerSecond: 351 } }],
           authorization,
           reservedUsd: 0,
         }),
@@ -77,10 +120,27 @@ describe("the spending gates", () => {
       assert.strictEqual(Spend.tokenSecondsFor("unconnected"), 215);
       const authorization = { check: "unconnected", budgetUsd: 10, totalUsd: 10 } as const;
       yield* Spend.authorize(authorization);
-      assert.strictEqual(yield* Spend.admit({ rate, authorization, reservedUsd: 0 }), 9.45);
-      yield* refused(Spend.admit({ rate: perMinute, authorization, reservedUsd: 0 }));
+      assert.strictEqual(
+        yield* Spend.admit({
+          rates: [{ model: Spend.modelFor(authorization.check).name, rate }],
+          authorization,
+          reservedUsd: 0,
+        }),
+        9.45,
+      );
       yield* refused(
-        Spend.admit({ rate, authorization: { ...authorization, budgetUsd: 9.44 }, reservedUsd: 0 }),
+        Spend.admit({
+          rates: [{ model: Spend.h3.name, rate: perMinute }],
+          authorization,
+          reservedUsd: 0,
+        }),
+      );
+      yield* refused(
+        Spend.admit({
+          rates: [{ model: Spend.modelFor(authorization.check).name, rate }],
+          authorization: { ...authorization, budgetUsd: 9.44 },
+          reservedUsd: 0,
+        }),
       );
       yield* refused(Spend.authorize({ check: "unconnected", budgetUsd: 10.5, totalUsd: 10.5 }));
       // The checks that end their sessions by the cap reserve as before.
@@ -101,13 +161,30 @@ describe("the spending gates", () => {
       const authorization = { check: "avatar", budgetUsd: 1.26, totalUsd: 2 } as const;
       yield* Spend.authorize(authorization);
       yield* refused(Spend.authorize({ ...authorization, budgetUsd: 1.27 }));
-      assert.strictEqual(yield* Spend.admit({ rate: vidu, authorization, reservedUsd: 0 }), 1.26);
       assert.strictEqual(
-        yield* Spend.admit({ rate: { ...vidu, per: "minute" }, authorization, reservedUsd: 0 }),
+        yield* Spend.admit({
+          rates: [{ model: Spend.plans.avatar.model.name, rate: vidu }],
+          authorization,
+          reservedUsd: 0,
+        }),
+        1.26,
+      );
+      assert.strictEqual(
+        yield* Spend.admit({
+          rates: [{ model: Spend.plans.avatar.model.name, rate: { ...vidu, per: "minute" } }],
+          authorization,
+          reservedUsd: 0,
+        }),
         1.26,
       );
       // Priced at H3's rate, the same session would cost five times its budget.
-      yield* refused(Spend.admit({ rate, authorization, reservedUsd: 0 }));
+      yield* refused(
+        Spend.admit({
+          rates: [{ model: Spend.modelFor(authorization.check).name, rate }],
+          authorization,
+          reservedUsd: 0,
+        }),
+      );
       assert.deepStrictEqual(
         [Spend.ceilingFor("vertical"), Spend.ceilingFor("tour"), Spend.ceilingFor("showreel")],
         [2.1, 4.2, 4.2],
@@ -160,11 +237,28 @@ describe("the spending gates", () => {
         [4.2, 140],
       );
       const authorization = { check: "dropped", budgetUsd: 2.8, totalUsd: 2.8 } as const;
-      assert.strictEqual(yield* Spend.admit({ rate, authorization, reservedUsd: 0 }), 2.8);
-      yield* refused(
-        Spend.admit({ rate, authorization: { ...authorization, budgetUsd: 2.79 }, reservedUsd: 0 }),
+      assert.strictEqual(
+        yield* Spend.admit({
+          rates: [{ model: Spend.modelFor(authorization.check).name, rate }],
+          authorization,
+          reservedUsd: 0,
+        }),
+        2.8,
       );
-      yield* refused(Spend.admit({ rate, authorization, reservedUsd: 0.0125 }));
+      yield* refused(
+        Spend.admit({
+          rates: [{ model: Spend.modelFor(authorization.check).name, rate }],
+          authorization: { ...authorization, budgetUsd: 2.79 },
+          reservedUsd: 0,
+        }),
+      );
+      yield* refused(
+        Spend.admit({
+          rates: [{ model: Spend.modelFor(authorization.check).name, rate }],
+          authorization,
+          reservedUsd: 0.0125,
+        }),
+      );
     }),
   );
 

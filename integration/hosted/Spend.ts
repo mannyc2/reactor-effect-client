@@ -44,6 +44,7 @@ export const checks = [
   "character",
   "fasth3",
   "rejoin",
+  "candidate",
 ] as const;
 export const Check = Schema.Literals(checks);
 export type Check = typeof Check.Type;
@@ -104,7 +105,16 @@ interface Uncapped {
   readonly holds: ReadonlyArray<number>;
 }
 
-export type Plan = (Capped | Uncapped) & {
+type Allocation = Capped | Uncapped;
+
+export type Plan = (
+  | Allocation
+  | {
+      /** The check's default family; its allocations each declare their actual model. */
+      readonly model: Model;
+      readonly allocations: ReadonlyArray<Allocation>;
+    }
+) & {
   /** The H3-family models this check permits; otherwise only its declared model. */
   readonly models?: ReadonlyArray<ModelKey>;
 };
@@ -154,6 +164,13 @@ export const plans = {
   // the first paid avatar's 26.7 s create and 13.2 s end. $0.84 at most at 70 credits a second,
   // and $0.84 by the started minute; the work ends 110 s in, before the 120 s cap.
   rejoin: { model: vidu, sessions: 1, seconds: 120 },
+  candidate: {
+    model: h3,
+    allocations: [
+      { model: h3, sessions: 1, seconds: 90 },
+      { model: fastH3, sessions: 1, seconds: 90 },
+    ],
+  },
 } satisfies { readonly [C in Check]: Plan };
 
 const allowedModels = (check: Check): ReadonlyArray<Model> => {
@@ -173,21 +190,53 @@ export const modelFor: {
       : plans[check].model,
 );
 
-/** How long each of a check's sessions may run: its cap, unless the check holds it longer. */
-export const holdsFor = (check: Check): ReadonlyArray<number> => {
-  const plan: Plan = plans[check];
+/** Every model and allocation this check may open. */
+export const allocationsFor: {
+  (key?: ModelKey): (check: Check) => ReadonlyArray<Allocation>;
+  (check: Check, key?: ModelKey): ReadonlyArray<Allocation>;
+} = dual(
+  (args) => Schema.is(Check)(args[0]),
+  (check: Check, key?: ModelKey) => {
+    const plan: Plan = plans[check];
+    return "allocations" in plan ? plan.allocations : [{ ...plan, model: modelFor(check, key) }];
+  },
+);
+
+const holds = (plan: Allocation): ReadonlyArray<number> => {
   if (plan.seconds === "unlimited") return plan.holds;
   const cap = plan.seconds;
   return plan.holds ?? Array.from({ length: plan.sessions }, () => cap);
 };
 
+/** Every physical session's model and reviewed hold, including heterogeneous checks. */
+export interface SessionBound {
+  readonly model: Model;
+  readonly seconds: number;
+}
+export const sessionBoundsFor: {
+  (key?: ModelKey): (check: Check) => ReadonlyArray<SessionBound>;
+  (check: Check, key?: ModelKey): ReadonlyArray<SessionBound>;
+} = dual(
+  (args) => Schema.is(Check)(args[0]),
+  (check: Check, key?: ModelKey) =>
+    allocationsFor(check, key).flatMap((plan) =>
+      holds(plan).map((seconds) => ({ model: plan.model, seconds })),
+    ),
+);
+
+/** How long each of a check's sessions may run: its cap, unless the check holds it longer. */
+export const holdsFor = (check: Check): ReadonlyArray<number> =>
+  sessionBoundsFor(check).map((bound) => bound.seconds);
+
 /** A check's tokens outlive its sessions by a minute, so cleanup still holds a valid one. */
 export const tokenSecondsFor = (check: Check): number => Math.max(...holdsFor(check)) + 60;
 /** A check's work ends this long after allocation, so a slow step fails it before the cap does. */
-export const workSecondsFor = (check: Check): number => {
-  const plan: Plan = plans[check];
-  return (plan.seconds === "unlimited" ? Math.max(...plan.holds) : plan.seconds) - 10;
-};
+export const workSecondsFor = (check: Check): number =>
+  Math.min(
+    ...allocationsFor(check).map((plan) =>
+      plan.seconds === "unlimited" ? Math.max(...plan.holds) : plan.seconds,
+    ),
+  ) - 10;
 
 /**
  * The most a check may spend: every started minute of each of its sessions,
@@ -203,8 +252,8 @@ export const ceilingFor: {
   (args) => Schema.is(Check)(args[0]),
   (check: Check, key?: ModelKey): number =>
     reservationUsd(
-      holdsFor(check).reduce(
-        (total, seconds) => total + billedUsd({ rate: modelFor(check, key).reviewed, seconds }),
+      sessionBoundsFor(check, key).reduce(
+        (total, bound) => total + billedUsd({ rate: bound.model.reviewed, seconds: bound.seconds }),
         0,
       ),
     ),
@@ -223,6 +272,12 @@ export interface Rate {
   readonly creditsPerDollar: number;
   /** The unit the pricing states the rate in. */
   readonly per: "second" | "minute";
+}
+
+/** A model's independently read live rate. */
+export interface ModelRate {
+  readonly model: string;
+  readonly rate: Rate;
 }
 
 /**
@@ -257,6 +312,8 @@ export interface Authorization {
 
 /** Refuses a budget outside the check's ceiling or the ledger's, or above the total it counts against. */
 export const authorize = (input: Authorization): Effect.Effect<Authorization, Refused> => {
+  if (input.check === "candidate" && input.model !== undefined)
+    return refuse("candidate runs one H3 and one FastH3 session; --model cannot change them");
   const allowed = allowedModels(input.check);
   if (input.model !== undefined && !allowed.includes(models[input.model])) {
     const names = allowed.map(
@@ -284,18 +341,22 @@ export const authorize = (input: Authorization): Effect.Effect<Authorization, Re
  * the total.
  */
 export const admit = (input: {
-  readonly rate: Rate;
+  readonly rates: ReadonlyArray<ModelRate>;
   readonly authorization: Authorization;
   readonly reservedUsd: number;
 }): Effect.Effect<number, Refused> => {
-  const { rate, authorization, reservedUsd } = input;
-  const holds = holdsFor(authorization.check);
-  const worst = reservationUsd(
-    holds.reduce((total, seconds) => total + billedUsd({ rate, seconds }), 0),
-  );
+  const { rates, authorization, reservedUsd } = input;
+  const bounds = sessionBoundsFor(authorization.check, authorization.model);
+  let amount = 0;
+  for (const bound of bounds) {
+    const rate = rates.find((entry) => entry.model === bound.model.name)?.rate;
+    if (rate === undefined) return refuse(`no live rate was read for ${bound.model.name}`);
+    amount += billedUsd({ rate, seconds: bound.seconds });
+  }
+  const worst = reservationUsd(amount);
   if (!(worst <= authorization.budgetUsd + 1e-9))
     return refuse(
-      `${holds.length} session(s) of up to ${[...new Set(holds)].join(" and ")} s bill up to $${worst.toFixed(4)}, over the $${authorization.budgetUsd} budget`,
+      `${bounds.length} session(s) of up to ${[...new Set(bounds.map((bound) => bound.seconds))].join(" and ")} s bill up to $${worst.toFixed(4)}, over the $${authorization.budgetUsd} budget`,
     );
   // A nanodollar of float slack, so four $2.10 runs still fit $8.40.
   if (!(reservedUsd + worst <= authorization.totalUsd + 1e-9))
@@ -387,13 +448,17 @@ export const provenBind = (input: {
 /** Refuses a token granting more than one session, or a longer one than a check may hold. */
 export const acceptGrant = (input: {
   readonly check: Check;
+  readonly model?: string;
   readonly granted: {
     readonly maxSessions: number;
     readonly maxSessionSeconds: number | "unlimited";
   };
 }): Effect.Effect<void, Refused> => {
   const { check, granted } = input;
-  const plan: Plan = plans[check];
+  const plan = allocationsFor(check).find(
+    (allocation) => input.model === undefined || allocation.model.name === input.model,
+  );
+  if (plan === undefined) return refuse("the grant names a model this check cannot allocate");
   if (plan.seconds === "unlimited")
     return granted.maxSessions === 1 && granted.maxSessionSeconds === "unlimited"
       ? Effect.void

@@ -50,7 +50,7 @@ export type UploadFacts =
       readonly reportedAudio: number | null;
       readonly hasReferenceAudio: boolean | null;
     }
-  | { readonly _tag: "Frame"; readonly hasStartingFrame: boolean };
+  | { readonly _tag: "Frame"; readonly hasStartingFrame: boolean; readonly continued: boolean };
 
 export interface Family<Req extends RequestInput, C extends H3.Clip> {
   readonly key: ModelKey;
@@ -179,6 +179,7 @@ export const fastH3 = {
   uploadsOf: (clip: FastH3.Clip): UploadFacts => ({
     _tag: "Frame",
     hasStartingFrame: clip.has_starting_frame,
+    continued: clip.continue_from_clip_id !== null,
   }),
   clip: FastH3.Clip,
   provider: FastH3.make,
