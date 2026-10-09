@@ -985,6 +985,10 @@ interface Roster {
   readonly lineOf: (item: PlanItem) => Line | undefined;
   /** The keys of the items of `line`. */
   readonly line: (line: Line) => ReadonlyArray<ItemKey>;
+  readonly seat: (item: PlanItem) => Seat;
+  readonly seating: (line: Line) => Seating;
+  /** The last earlier place that holds `item`: its rank carries every earlier holding place. */
+  readonly holdingBefore: (item: PlanItem) => ReadonlyArray<ItemKey>;
 }
 /**
  * A roster of `items` in lanes that `strict` says keep their order, indexed by group and by lane
@@ -993,9 +997,17 @@ interface Roster {
 const rosterOf = (
   items: ReadonlyMap<ItemKey, PlanItem>,
   strict: (lane: number) => boolean,
-): Roster & { readonly join: (item: PlanItem) => void } => {
+): Roster & { readonly join: (item: PlanItem) => void; readonly changed: () => void } => {
   let groups: Map<ItemKey, Array<ItemKey>> | undefined;
   let lanes: Map<number, Array<ItemKey>> | undefined;
+  const seats = new Map<PlanItem, Seat>();
+  const seatings = new Map<Line, Seating>();
+  const holding = new Map<Line, Seating>();
+  const changed = (): void => {
+    seats.clear();
+    seatings.clear();
+    holding.clear();
+  };
   const enter = <K>(into: Map<K, Array<ItemKey>>, key: K, item: PlanItem): void => {
     const keys = into.get(key);
     if (keys === undefined) into.set(key, [item.spec.key]);
@@ -1016,16 +1028,57 @@ const rosterOf = (
     lanes = built;
     return built;
   };
+  const lineOf = (item: PlanItem): Line | undefined =>
+    strict(item.spec.lane) ? item.spec.lane : item.group?.key;
+  const line = (line: Line): ReadonlyArray<ItemKey> =>
+    typeof line === "number" ? (byLane().get(line) ?? []) : (byGroup().get(line) ?? []);
+  const seat = (item: PlanItem): Seat => {
+    const known = seats.get(item);
+    if (known !== undefined) return known;
+    const ahead = item.behind === undefined ? undefined : items.get(item.behind);
+    const value = ahead === undefined ? [item.order] : [...seat(ahead), item.order];
+    seats.set(item, value);
+    return value;
+  };
+  const seating = (of: Line): Seating => {
+    const known = seatings.get(of);
+    if (known !== undefined) return known;
+    const value = seatingOf(
+      line(of).flatMap((key) => {
+        const item = items.get(key);
+        return item === undefined ? [] : [item];
+      }),
+      seat,
+    );
+    seatings.set(of, value);
+    return value;
+  };
   return {
     items,
     members: (key) => byGroup().get(key) ?? [],
-    lineOf: (item) => (strict(item.spec.lane) ? item.spec.lane : item.group?.key),
-    line: (line) =>
-      typeof line === "number" ? (byLane().get(line) ?? []) : (byGroup().get(line) ?? []),
+    lineOf,
+    line,
+    seat,
+    seating,
+    holdingBefore: (item) => {
+      const of = lineOf(item);
+      if (of === undefined) return [];
+      let places = holding.get(of);
+      if (places === undefined) {
+        places = seating(of).flatMap((place) => {
+          const holders = place.items.filter(mayHold);
+          return holders.length === 0 ? [] : [{ seat: place.seat, items: holders }];
+        });
+        holding.set(of, places);
+      }
+      return previousPlace(places, seat(item), () => true).map((other) => other.spec.key);
+    },
     join: (item) => {
       if (groups !== undefined && item.group !== undefined) enter(groups, item.group.key, item);
       if (lanes !== undefined) enter(lanes, item.spec.lane, item);
+      changed();
     },
+    changed,
   };
 };
 /** The keys of the items `item` keeps its order with: those of its line, if it has one. */
@@ -1063,10 +1116,7 @@ type Seat = ReadonlyArray<number>;
  * sits behind only one of a greater order, so the chain ends. Seats compare across a strict lane's
  * groups too, so the lane has one order.
  */
-const seatOf = (roster: Roster, item: PlanItem): Seat => {
-  const ahead = item.behind === undefined ? undefined : roster.items.get(item.behind);
-  return ahead === undefined ? [item.order] : [...seatOf(roster, ahead), item.order];
-};
+const seatOf = (roster: Roster, item: PlanItem): Seat => roster.seat(item);
 /** Seats in their line's order: a seat right behind an item comes after it, and before the next. */
 const compareSeat = (a: Seat, b: Seat): number => {
   for (let index = 0; index < Math.min(a.length, b.length); index++) {
@@ -1224,6 +1274,26 @@ const seatingOf = (members: ReadonlyArray<PlanItem>, seat: (item: PlanItem) => S
   }
   return places;
 };
+/** The last place before `seat` with an item that `holding` keeps. */
+const previousPlace = (
+  places: Seating,
+  seat: Seat,
+  holding: (item: PlanItem) => boolean,
+): ReadonlyArray<PlanItem> => {
+  let from = 0;
+  let until = places.length;
+  while (from < until) {
+    const middle = Math.floor((from + until) / 2);
+    const place = places[middle];
+    if (place !== undefined && compareSeat(place.seat, seat) < 0) from = middle + 1;
+    else until = middle;
+  }
+  for (let index = from - 1; index >= 0; index--) {
+    const holders = places[index]?.items.filter(holding) ?? [];
+    if (holders.length > 0) return holders;
+  }
+  return [];
+};
 /** How a walk of clips reads them, in the plan as it stands or in its forward run. */
 interface Walk<C> {
   readonly queued: (clip: C) => boolean;
@@ -1294,35 +1364,19 @@ const inTurnOf = (
   sessions: ReadonlyArray<Session<ClipRequest> | undefined>,
   queued: (clip: SourceClip) => boolean,
   holding: (item: PlanItem) => boolean = mayHold,
-): ReadonlyArray<ReadonlyArray<SourceClip>> => {
-  const seats = new Map<PlanItem, Seat>();
-  const seat = (item: PlanItem): Seat => {
-    const known = seats.get(item);
-    if (known !== undefined) return known;
-    const value = seatOf(roster, item);
-    seats.set(item, value);
-    return value;
-  };
-  return inTurnAmong(sessions.map(waitingOf), {
+): ReadonlyArray<ReadonlyArray<SourceClip>> =>
+  inTurnAmong(sessions.map(waitingOf), {
     queued,
     member: (clip) => {
       const item = clip.tag?._tag === "Item" ? roster.items.get(clip.tag.key) : undefined;
       const line = item === undefined ? undefined : roster.lineOf(item);
       return item === undefined || line === undefined ? undefined : { item, line };
     },
-    seat,
-    seating: (line) =>
-      seatingOf(
-        roster.line(line).flatMap((key) => {
-          const item = roster.items.get(key);
-          return item === undefined ? [] : [item];
-        }),
-        seat,
-      ),
+    seat: roster.seat,
+    seating: roster.seating,
     holding,
     began: startedOrUnseen,
   });
-};
 /** Seconds of `clips`. */
 const secondsOf = (clips: ReadonlyArray<SourceClip>): number =>
   clips.reduce((total, clip) => total + clip.seconds, 0);
@@ -1501,6 +1555,7 @@ const decide = <Req extends ClipRequest>(
   const set = (key: ItemKey, patch: Partial<Item<Req>>): Item<Req> => {
     const next = { ...items.get(key)!, ...patch };
     items.set(key, next);
+    roster.changed();
     return next;
   };
   const emit = (event: Event): void => {
@@ -1799,9 +1854,9 @@ const decide = <Req extends ClipRequest>(
     const known = ranks.get(item);
     if (known !== undefined) return known;
     const own = heldBack(item) ? heldRank(item) : airRank(item, ranks);
-    const holders = peersOf(roster, item).flatMap((key) => {
+    const holders = roster.holdingBefore(item).flatMap((key) => {
       const other = items.get(key);
-      return other !== undefined && holds(roster, other, item) ? [other] : [];
+      return other === undefined ? [] : [other];
     });
     const rank = behindPlaces(
       own,
@@ -1913,6 +1968,8 @@ const decide = <Req extends ClipRequest>(
   };
   /** The items whose rank is being worked out from the clip each follows. */
   const following = new Set<ItemKey>();
+  /** The items displaced by Ready replacements, worked out once per reading of ranks. */
+  const displacedIn = new WeakMap<Map<PlanItem, Rank>, ReadonlySet<ItemKey>>();
   /**
    * Where an item airs of its own, held by nothing: right behind the clip it follows, at once if
    * `Asap`, else by lane, standing and order.
@@ -1933,17 +1990,23 @@ const decide = <Req extends ClipRequest>(
       return [behind[0], behind[1], behind[2], behind[3] + 0.5, behind[4]];
     }
     if (item.mode === "asap") return [-0.5, 0, item.order, item.generation, 0];
-    const displaced = [...items.values()].some(
-      (other) =>
-        (other.phase === "Ready" || other.phase === "Started") &&
-        other.batch === undefined &&
-        replacedOf(other)?.spec.key === item.spec.key,
-    );
+    let displaced = displacedIn.get(ranks);
+    if (displaced === undefined) {
+      const keys = new Set<ItemKey>();
+      for (const other of items.values()) {
+        if ((other.phase !== "Ready" && other.phase !== "Started") || other.batch !== undefined)
+          continue;
+        const replaced = replacedOf(other);
+        if (replaced !== undefined) keys.add(replaced.spec.key);
+      }
+      displaced = keys;
+      displacedIn.set(ranks, displaced);
+    }
     return [
       item.spec.lane,
       superseded.has(item.spec.key) ? 2 : begun(item) ? 0 : 1,
       item.order,
-      displaced ? Infinity : item.generation,
+      displaced.has(item.spec.key) ? Infinity : item.generation,
       0,
     ];
   };
@@ -1982,19 +2045,8 @@ const decide = <Req extends ClipRequest>(
     // order may be another group's, or one seated behind a later item, waiting on this one.
     const line = item.inserted ? roster.lineOf(item) : undefined;
     if (line !== undefined) {
-      const seat = seatOf(roster, item);
-      const before = roster
-        .line(line)
-        .reduce<{ readonly item: PlanItem; readonly seat: Seat } | undefined>((latest, key) => {
-          const other = items.get(key);
-          if (!live(other) || other === item) return latest;
-          const at = seatOf(roster, other);
-          if (compareSeat(at, seat) >= 0) return latest;
-          return latest === undefined || compareSeat(at, latest.seat) > 0
-            ? { item: other, seat: at }
-            : latest;
-        }, undefined);
-      return before?.item.phase !== "Accepted";
+      const before = previousPlace(roster.seating(line), seatOf(roster, item), live)[0];
+      return before?.phase !== "Accepted";
     }
     if (item.inserted) {
       const before = [...items.values()]
@@ -2810,6 +2862,7 @@ const decide = <Req extends ClipRequest>(
     const restore = (): void => {
       items.clear();
       for (const [other, value] of saved.items) items.set(other, value);
+      roster.changed();
       groups.clear();
       for (const [group, value] of saved.groups) groups.set(group, value);
       state = { ...state, nextOrder: saved.nextOrder, batches: saved.batches };
@@ -4108,6 +4161,7 @@ const decide = <Req extends ClipRequest>(
   if (state.settled.length > config.maxHistory) {
     const drop = state.settled.slice(0, state.settled.length - config.maxHistory);
     for (const key of drop) items.delete(key);
+    roster.changed();
     const forgotten = [...groups].flatMap(([group, value]) =>
       value.parts.every((part) => !items.has(part)) ? [group] : [],
     );
@@ -5670,16 +5724,30 @@ const decide = <Req extends ClipRequest>(
         ? [...found, hypothesis.item]
         : found;
     };
+    // Seats and each line's seating as the run starts: neither changes in it.
+    const seatIn = (item: PlanItem): Seat => seatOf(roster, item);
+    const seatingsIn = new Map<Line, Seating>();
+    const seatingIn = (line: Line): Seating => {
+      const known = seatingsIn.get(line);
+      if (known !== undefined) return known;
+      const seating = seatingOf(lineIn(line), seatIn);
+      seatingsIn.set(line, seating);
+      return seating;
+    };
     // Who holds each item back as the run starts: the items of its line seated before it that may
-    // still air. Each holds until it airs or goes in the run.
+    // still air. Each line is walked once, and a place shares its earlier holders.
     const holdersOf = new Map<PlanItem, ReadonlyArray<PlanItem>>();
+    const indexed = new Set<Line>();
     for (const item of ordered) {
       const line = roster.lineOf(item);
-      if (line !== undefined)
-        holdersOf.set(
-          item,
-          lineIn(line).filter((other) => holds(roster, other, item)),
-        );
+      if (line === undefined || indexed.has(line)) continue;
+      indexed.add(line);
+      const holders: Array<PlanItem> = [];
+      for (const place of seatingIn(line)) {
+        const before = holders.slice();
+        for (const member of place.items) holdersOf.set(member, before);
+        holders.push(...place.items.filter(mayHold));
+      }
     }
     // What a run until placed airs or drops before it stops: each live item it can place.
     const unplaced = new Map<PlanItem, Unplaceable | undefined>();
@@ -5985,9 +6053,15 @@ const decide = <Req extends ClipRequest>(
     ): Rank => {
       const known = ranks.get(item);
       if (known !== undefined) return known;
-      const holders = (holdersOf.get(item) ?? []).filter(
-        (other) => !done.has(other) && !gone.has(other),
-      );
+      const line = roster.lineOf(item);
+      const holders =
+        line === undefined
+          ? []
+          : previousPlace(
+              seatingIn(line),
+              seatIn(item),
+              (other) => mayHold(other) && !done.has(other) && !gone.has(other),
+            );
       const rank = behindPlaces(airRankIn(item, sessionId, ranks), holders, seatIn, (other) =>
         placeRankIn(other, other.sessionId, ranks),
       );
@@ -6007,23 +6081,6 @@ const decide = <Req extends ClipRequest>(
         .map((clip) => ({ clip, rank: rankIn(clip, ranks) }))
         .sort((a, b) => compareRank(a.rank, b.rank))
         .map(({ clip }) => clip);
-    };
-    // Seats and each line's seating as the run starts: neither changes in it.
-    const seatsIn = new Map<PlanItem, Seat>();
-    const seatIn = (item: PlanItem): Seat => {
-      const known = seatsIn.get(item);
-      if (known !== undefined) return known;
-      const seat = seatOf(roster, item);
-      seatsIn.set(item, seat);
-      return seat;
-    };
-    const seatingsIn = new Map<Line, Seating>();
-    const seatingIn = (line: Line): Seating => {
-      const known = seatingsIn.get(line);
-      if (known !== undefined) return known;
-      const seating = seatingOf(lineIn(line), seatIn);
-      seatingsIn.set(line, seating);
-      return seating;
     };
     /**
      * As `inTurnOf`: the clips Ready by `time` on each of the sessions it walks for the one taking
@@ -6104,16 +6161,11 @@ const decide = <Req extends ClipRequest>(
     const admitted = (item: PlanItem): boolean => {
       const line = item.inserted ? roster.lineOf(item) : undefined;
       if (line !== undefined) {
-        const seat = seatIn(item);
-        const before = lineIn(line)
-          .filter(
-            (other) =>
-              other !== item &&
-              live(other) &&
-              !gone.has(other) &&
-              compareSeat(seatIn(other), seat) < 0,
-          )
-          .sort((a, b) => compareSeat(seatIn(b), seatIn(a)))[0];
+        const before = previousPlace(
+          seatingIn(line),
+          seatIn(item),
+          (other) => live(other) && !gone.has(other),
+        )[0];
         return before === undefined || !pendingIn(before);
       }
       if (item.inserted) {
@@ -6151,7 +6203,11 @@ const decide = <Req extends ClipRequest>(
         !readyBy(other, time)
       );
     };
-    const eligibleAt = (item: PlanItem, time: number): boolean => {
+    const eligibleAt = (
+      item: PlanItem,
+      time: number,
+      builtBehind: (item: PlanItem) => boolean,
+    ): boolean => {
       if (!pendingIn(item)) return false;
       if (item === hypothesis?.item && time < hypothesis.submitAt) return false;
       if ((item.notBefore ?? -Infinity) > time) return false;
@@ -6163,20 +6219,8 @@ const decide = <Req extends ClipRequest>(
       const at = atMono(item);
       if (at !== undefined && at > time && time + runwayAt(time) * 1000 < at) return false;
       if (held(item, time) && !coveredFor(item, time)) return false;
-      return admitted(item) && !followsUnbuilt(item, time) && builtBehindIn(item);
+      return admitted(item) && !followsUnbuilt(item, time) && builtBehind(item);
     };
-    // As `builtBehind`: each earlier member it waits behind has a clip built or building on the
-    // session taking new work, or on the session on air as the run starts.
-    const builtBehindIn = (item: PlanItem): boolean =>
-      (holdersOf.get(item) ?? []).every(
-        (other) =>
-          done.has(other) ||
-          gone.has(other) ||
-          pool.some(
-            (clip) =>
-              clip.item === other && (clip.sessionId === targetId || clip.sessionId === air.id),
-          ),
-      );
     /** When `tag` ends, as `followContinuation` projects it at `time`: on air, or Ready behind what airs first. */
     const endOf = (tag: ClipTag, time: number): number | undefined => {
       const onTarget = targetId === onAir && current;
@@ -6337,9 +6381,36 @@ const decide = <Req extends ClipRequest>(
             (clip.item === undefined || !gone.has(clip.item)),
         ).length;
         if (inFlight >= config.maxBuildsInFlight) return;
+        // Each line's first place still waiting on a build: everything seated after it waits.
+        // A sweep may drop a holder while it asks about later items, so the cursor moves on.
+        const built = new Set(
+          pool.flatMap((clip) =>
+            clip.item !== undefined && (clip.sessionId === targetId || clip.sessionId === air.id)
+              ? [clip.item]
+              : [],
+          ),
+        );
+        const builds = new Map<Line, { readonly places: Seating; next: number }>();
+        const builtBehind = (item: PlanItem): boolean => {
+          const line = roster.lineOf(item);
+          if (line === undefined) return true;
+          let progress = builds.get(line);
+          if (progress === undefined) {
+            progress = { places: seatingIn(line), next: 0 };
+            builds.set(line, progress);
+          }
+          while (
+            progress.places[progress.next]?.items.every(
+              (other) => !mayHold(other) || done.has(other) || gone.has(other) || built.has(other),
+            ) === true
+          )
+            progress.next++;
+          const first = progress.places[progress.next];
+          return first === undefined || compareSeat(first.seat, seatIn(item)) >= 0;
+        };
         const next = pending.reduce<PlanItem | undefined>(
           (first, item) =>
-            eligibleAt(item, time) && (first === undefined || order(item, first) < 0)
+            eligibleAt(item, time, builtBehind) && (first === undefined || order(item, first) < 0)
               ? item
               : first,
           undefined,
