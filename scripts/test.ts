@@ -6,7 +6,8 @@
  *   native      Vitest in packages/native against the staged library, on Node then Bun
  *   integration Node/Vitest in integration, spawning the real browser/native runner
  *
- * Each run has 180 seconds, and the first that fails ends the project with its exit status.
+ * Each run has 300 seconds, and the first that fails ends the project with its exit status. Two
+ * client suites side by side on a four-core CI runner have taken up to 174 s.
  */
 import { availableParallelism } from "node:os";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -23,7 +24,7 @@ class TestError extends Schema.TaggedError<TestError>("reactor-effect/scripts/te
   { message: Schema.String },
 ) {}
 
-const limit: Duration.Input = "180 seconds";
+const limit: Duration.Input = "300 seconds";
 
 const program = Effect.gen(function* () {
   const path = yield* Path.Path;
@@ -68,7 +69,7 @@ const program = Effect.gen(function* () {
             orElse: () =>
               Effect.fail(
                 TestError.make({
-                  message: `${step.command} ${step.args.join(" ")} did not finish within 180 seconds`,
+                  message: `${step.command} ${step.args.join(" ")} did not finish within 300 seconds`,
                 }),
               ),
           }),
