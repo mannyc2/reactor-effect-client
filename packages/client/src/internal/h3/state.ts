@@ -27,6 +27,11 @@ interface SnapshotBase<C extends Clip = Clip> {
   readonly sessionId: string;
   readonly transportGeneration: bigint;
   readonly revision: bigint;
+  /**
+   * Retained observations, not a session's full history. At the bound, the oldest terminal
+   * observations absent from the reported queues and playing state retire; clip operations
+   * keep their own lifetime evidence. Clips without an explicit end never retire this way.
+   */
   readonly clips: ReadonlyArray<ClipObservation<C>>;
 }
 
@@ -216,6 +221,24 @@ const overflow = (): ReactorError =>
     operation: "H3 observation",
   });
 
+const retain = <C extends Clip>(model: Model<C>): Result.Result<Model<C>, ReactorError> => {
+  if (model.clips.size <= model.maxClips) return Result.succeed(model);
+  const queue = model.queue ?? model.lastFacts?.queue;
+  const state = model.state ?? model.lastFacts?.state;
+  const live = new Set([
+    state?.playing_clip_id,
+    ...[...(queue?.generation ?? []), ...(queue?.playout ?? []), ...(queue?.history ?? [])].map(
+      (clip) => clip.clip_id,
+    ),
+  ]);
+  const clips = new Map(model.clips);
+  for (const [id, observation] of clips) {
+    if (rank(observation.lifecycle) === 3 && !live.has(id)) clips.delete(id);
+    if (clips.size <= model.maxClips) return Result.succeed({ ...model, clips });
+  }
+  return Result.fail(overflow());
+};
+
 const invalidate = <C extends Clip>(model: Model<C>, state: boolean, queue: boolean): Model<C> => ({
   ...remember(model),
   stateDirty: model.stateDirty || state,
@@ -233,7 +256,10 @@ export const apply = <C extends Clip>({
   readonly source: CommandReply;
 }): Result.Result<readonly [Disposition, Model<C>], ReactorError> => {
   const done = (next: Model<C>): Result.Result<readonly [Disposition, Model<C>], ReactorError> =>
-    Result.succeed(["applied", next.cause === undefined ? remember(next) : next]);
+    Result.map(retain(next), (retained) => [
+      "applied",
+      retained.cause === undefined ? remember(retained) : retained,
+    ]);
   if (message.type === "unknown") return done(model);
   if (message.type === "state_update")
     return done({ ...model, state: message.data, stateDirty: false });
@@ -246,13 +272,11 @@ export const apply = <C extends Clip>({
         source,
         lifecycle: clips.get(clip.clip_id)?.lifecycle ?? null,
       });
-    if (clips.size > model.maxClips) return Result.fail(overflow());
     return done({ ...model, queue: message.data, queueDirty: false, clips });
   }
   if (!("clip" in message.data)) return done(settingChanged(model, message));
   const clip = message.data.clip;
   const previous = model.clips.get(clip.clip_id);
-  if (previous === undefined && model.clips.size >= model.maxClips) return Result.fail(overflow());
   const put = (lifecycle: ClipObservation<C>["lifecycle"]): Model<C> => ({
     ...model,
     clips: new Map(model.clips).set(clip.clip_id, { clip, source, lifecycle }),
