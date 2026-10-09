@@ -69,9 +69,14 @@ Failure, an unknown dispatch or an unconfirmed end stops before the next allocat
 needs another explicit spend decision; the reservation is never refunded. The existing raw
 Tour/Queue, owner-adoption, token-expiry, renewal/recovery, cut and TURN checks remain available
 for their own questions. They are outside this candidate run's live scope, as are hosted
-browser and macOS qualification. Serial sessions do not establish renewal behavior. The
-rehearsal uses H3-derived simulated build timings for FastH3; passing it does not establish
-hosted timing headroom within the fixed deadline.
+browser and macOS qualification. Serial sessions do not establish renewal behavior.
+
+Filler before the readyBy clip asks for 10 s, which keeps it on air past the judgment 8 s after
+it starts. With each family's longest clip there, the paid FastH3 phase of October 9 closed past
+its deadline: its firm clip was Ready 14.87 s after submission, against H3's 9.63 s. The
+command's rehearsal uses H3's measured timing for both models. A rehearsal test also runs both
+phases at a timing fitted to that paid FastH3 phase, where FastH3's phase ends 2.6 s before its
+deadline. Neither establishes hosted headroom.
 
 ### Tour
 

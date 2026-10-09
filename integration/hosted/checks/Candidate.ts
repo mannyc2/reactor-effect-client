@@ -26,6 +26,12 @@ import { Target } from "../Target.js";
 
 type Phase = NonNullable<Evidence["candidate"]>["phases"][number];
 
+/**
+ * The readyBy judgment falls 8 s into the filler before it, which must still be on air then.
+ * The family's longest clip ran hosted FastH3's phase past its 80 s deadline.
+ */
+const fillerSeconds = 10;
+
 const phase = Effect.fnUntraced(function* <Req extends Family.RequestInput, C extends H3.Clip>(
   family: Family.Family<Req, C>,
   pieces: Pieces,
@@ -226,8 +232,8 @@ const phase = Effect.fnUntraced(function* <Req extends Family.RequestInput, C ex
     lanes: [{ name: "timed", strict: true }, { name: "line", strict: true }, { name: "manual" }],
     filler: {
       runway: { floor: "1 second", target: "1 second" },
-      lengths: { min: family.lengths.long, max: family.lengths.long },
-      clip: () => family.request({ prompt: Family.prompt, seconds: family.lengths.long }),
+      lengths: { min: fillerSeconds, max: fillerSeconds },
+      clip: () => family.request({ prompt: Family.prompt, seconds: fillerSeconds }),
       protect: "order",
     },
   });
