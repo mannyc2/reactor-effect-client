@@ -1,0 +1,144 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "8de09f45",
+  "check": "candidate",
+  "mode": "paid",
+  "startedAt": "2026-10-09T13:03:24.703Z",
+  "finishedAt": "2026-10-09T13:03:25.006Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "7944b74ec9693f1c3a544d590143366f5fea9daa",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.11.0",
+      "reactor-effect-native": "0.11.0",
+      "effect": "4.0.0",
+      "@effect/platform-node": "4.0.0"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "9390d1775d66cd0307c90b1db89c969d7adfd2592086ec1b07a5f7acdd614da4",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "Linux development host, native WebRTC",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 6.3,
+    "totalUsd": 6.3,
+    "reservedBeforeUsd": 0,
+    "allocations": [
+      {
+        "model": "reactor/h3-reference-to-video-turbo-realtime",
+        "seconds": 90,
+        "rate": {
+          "creditsPerSecond": 350,
+          "creditsPerDollar": 10000,
+          "per": "second"
+        }
+      },
+      {
+        "model": "reactor/fast-h3",
+        "seconds": 90,
+        "rate": {
+          "creditsPerSecond": 350,
+          "creditsPerDollar": 10000,
+          "per": "second"
+        }
+      }
+    ],
+    "worstCaseUsd": 6.3
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 90,
+      "expiresAt": 1791551154
+    }
+  ],
+  "sessions": [],
+  "milestones": [
+    {
+      "atMs": 2,
+      "step": "admitted",
+      "detail": "worst case $6.3000"
+    },
+    {
+      "atMs": 292,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [
+    "replied"
+  ],
+  "criteria": [
+    {
+      "name": "confirmed termination",
+      "passed": false,
+      "detail": "no session was recorded"
+    }
+  ],
+  "spans": [
+    {
+      "name": "CoordinatorClient.mintToken",
+      "startMs": 5.9,
+      "durationMs": 141.6,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Ledger.source",
+      "startMs": 147.8,
+      "durationMs": 143.6,
+      "status": "error",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3Source.open",
+      "startMs": 148.8,
+      "durationMs": 142.4,
+      "status": "error",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 149.1,
+      "durationMs": 142.2,
+      "status": "error",
+      "attributes": {
+        "reactor.model.name": "reactor/h3-reference-to-video-turbo-realtime"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.close",
+      "startMs": 289.8,
+      "durationMs": 1.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "none",
+        "reactor.termination.attempted": false,
+        "reactor.termination.confirmed": false
+      },
+      "events": []
+    }
+  ],
+  "verdict": "fail",
+  "reasons": [
+    "Http: create session: HTTP 402 (outcome replied)",
+    "confirmed termination: no session was recorded",
+    "incomplete evidence: sessions, candidate"
+  ],
+  "missing": [
+    "sessions",
+    "candidate"
+  ]
+}
