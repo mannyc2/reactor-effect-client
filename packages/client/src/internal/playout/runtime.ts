@@ -135,6 +135,7 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       name: lane.name,
       conflict: lane.conflict ?? "queue",
       cut: lane.cut ?? false,
+      strict: lane.strict ?? false,
     })),
     filler:
       options.filler === undefined
@@ -712,6 +713,21 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
     Effect.fromOption(ItemKey.makeOption(key)).pipe(
       Effect.mapError(() => InvalidItem.make({ key, message: "a key must be a nonempty string" })),
     );
+  /** An `At` start's lateness, its durations in milliseconds. */
+  const lateOf = (
+    late: Extract<Playout.Start, { readonly _tag: "At" }>["late"],
+    duration: (value: Duration.Input) => Effect.Effect<number | undefined, InvalidItem>,
+  ): Effect.Effect<Policy.Late, InvalidItem> => {
+    switch (late._tag) {
+      case "nextBoundary":
+      case "drop":
+        return Effect.succeed(late._tag);
+      case "skipIfLaterThan":
+        return Effect.map(duration(late.by), (skipAfterMs) => ({ skipAfterMs: skipAfterMs ?? 0 }));
+      case "readyBy":
+        return Effect.map(duration(late.by), (readyByMs) => ({ readyByMs: readyByMs ?? 0 }));
+    }
+  };
   const spec = (
     input: {
       readonly key: string;
@@ -740,12 +756,7 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
               }),
             );
       const start = input.start ?? { _tag: "Follow" };
-      const late: Policy.Late | undefined =
-        start._tag !== "At"
-          ? undefined
-          : start.late._tag === "skipIfLaterThan"
-            ? { skipAfterMs: (yield* duration(start.late.by)) ?? 0 }
-            : start.late._tag;
+      const late = start._tag === "At" ? yield* lateOf(start.late, duration) : undefined;
       const cues = yield* Effect.forEach(input.cues ?? [], (cue) =>
         Effect.map(duration(cue.at.offset), (offsetMs) => ({
           name: cue.name,
@@ -884,6 +895,37 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
             side: edit.insert.before === undefined ? "after" : "before",
           };
         }
+        case "InsertGroup": {
+          const insert = edit.insert;
+          const anchor = insert.before ?? insert.after;
+          if (anchor === undefined || (insert.before !== undefined && insert.after !== undefined))
+            return yield* InvalidItem.make({
+              key: insert.key,
+              message: "give exactly one of before and after",
+            });
+          // A part is its clip alone: the group's window is its first part's, and its start the
+          // anchor's.
+          const parts = yield* Effect.forEach(insert.parts, (part, partIndex) =>
+            spec(
+              {
+                key: part.key,
+                request: part.request,
+                cues: part.cues,
+                continuity: part.continuity,
+                ...(partIndex === 0 ? { window: insert.window } : {}),
+              },
+              0,
+            ),
+          );
+          return {
+            _tag: "InsertGroup",
+            key: yield* itemKey(insert.key),
+            parts,
+            fingerprint: fingerprint(parts.map((part) => part.fingerprint)),
+            anchor: yield* itemKey(anchor),
+            side: insert.before === undefined ? "after" : "before",
+          };
+        }
         case "Replace":
           return {
             _tag: "Replace",
@@ -971,6 +1013,13 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       return first?._tag === "Added"
         ? first.handle
         : yield* Effect.die("an insert returned no handle");
+    }),
+    insertGroup: Effect.fn("Playout.insertGroup")(function* (insert: Playout.InsertGroupSpec<Req>) {
+      const { results } = yield* edit([{ _tag: "InsertGroup", insert }], false);
+      const [first] = results;
+      return first?._tag === "AddedGroup"
+        ? first.handle
+        : yield* Effect.die("an inserted group returned no handle");
     }),
     replace: Effect.fn("Playout.replace")(function* (
       key: ItemKey,

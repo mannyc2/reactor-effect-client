@@ -60,9 +60,18 @@ export interface LaneSpec {
    * second. A clip is stopped at most once, and a stopped clip cannot resume.
    */
   readonly cut?: boolean | undefined;
+  /**
+   * Air this lane's items in the order of their places, submissions at the end and inserts beside
+   * their anchors: an item waits while one placed before it is live and not on air yet, unless
+   * that one was sent with its outcome never seen, or is being withdrawn. Later items wait behind
+   * a slow one, so give its items deadlines. `Asap` and `Manual` starts are refused here, since
+   * they would break the order. Keeping the order costs more per item waiting than in a lane that
+   * is not strict: keep the lane to tens of items waiting, not hundreds.
+   */
+  readonly strict?: boolean | undefined;
 }
 
-/** When an item may air. Only `Follow` keeps its lane's order. */
+/** When an item may air. Only `Follow` keeps its lane's order, and any start in a strict lane. */
 export type Start =
   /** The next boundary its lane reaches, in order: the default. */
   | { readonly _tag: "Follow" }
@@ -86,7 +95,18 @@ export type Start =
       readonly late:
         | { readonly _tag: "nextBoundary" }
         | { readonly _tag: "skipIfLaterThan"; readonly by: Duration.Input }
-        | { readonly _tag: "drop" };
+        | { readonly _tag: "drop" }
+        /**
+         * Judged once, at `time + by`: kept if it was Ready by then and nothing but filler airs
+         * before it (the clip on air, and the Ready clips ahead of it), so that it airs at the next
+         * boundary however late; otherwise dropped as `late` then. A clip Ready in time that waits
+         * out filler is on time; one not made by then, or waiting behind another item, is not. A
+         * firm window's `startBy` still applies. A replacement of a kept item is kept too. Items
+         * judged at the same moment are judged in the order they air, after what goes late by its
+         * own time then, so neither holds back one behind it; while a removal that breaks a group
+         * is in flight, the judgment waits for it to land.
+         */
+        | { readonly _tag: "readyBy"; readonly by: Duration.Input };
     };
 
 /** A secondary event on a clip, fired while it plays: from its observed start, or back from its end. */
@@ -368,7 +388,8 @@ export interface GroupSpec<Req extends ClipRequest = Request> {
  * `after` an item already playing airs at the next boundary; `before` one refuses.
  * It takes the anchor's lane, place, group and start. After an `At` anchor it
  * does not take the anchor's `late`: past the anchor's time it airs at the next
- * boundary.
+ * boundary. Before one, it does, unless the anchor was judged by `readyBy` and
+ * kept already: then it airs at the next boundary too.
  */
 export interface InsertSpec<Req extends ClipRequest = Request> extends ClipSpec<Req> {
   readonly before?: ItemKey | undefined;
@@ -407,11 +428,30 @@ export interface InsertSpec<Req extends ClipRequest = Request> extends ClipSpec<
 /** The clip that takes a queued item's place, under a key of its own. */
 export type ReplacementSpec<Req extends ClipRequest = Request> = ClipSpec<Req>;
 
+/**
+ * A group placed right before or after an anchor, as `insert` places a clip: give exactly one of
+ * `before` and `after`. Its parts form a group of their own, with its handle, `started` and
+ * `outcome`, in the anchor's lane between the anchor and its neighbour. The first part takes the
+ * anchor's start as an insert does, and `window`; the rest follow it. Only a strict lane keeps
+ * such a place, so it is refused with `InvalidItem` in any other. Its anchor and side are part of
+ * it: sent again under its key with another, it is refused with `KeyMismatch`.
+ */
+export type InsertGroupSpec<Req extends ClipRequest = Request> = {
+  readonly key: ItemKey;
+  readonly parts: readonly [GroupPart<Req>, ...ReadonlyArray<GroupPart<Req>>];
+  /** It applies to the first part. */
+  readonly window?: Window | undefined;
+} & (
+  | { readonly before: ItemKey; readonly after?: undefined }
+  | { readonly after: ItemKey; readonly before?: undefined }
+);
+
 /** One edit of a batch applied together. */
 export type Edit<Req extends ClipRequest = Request> =
   | { readonly _tag: "Submit"; readonly item: ItemSpec<Req> }
   | { readonly _tag: "SubmitGroup"; readonly group: GroupSpec<Req> }
   | { readonly _tag: "Insert"; readonly insert: InsertSpec<Req> }
+  | { readonly _tag: "InsertGroup"; readonly insert: InsertGroupSpec<Req> }
   | { readonly _tag: "Replace"; readonly key: ItemKey; readonly next: ReplacementSpec<Req> }
   | { readonly _tag: "Withdraw"; readonly key: ItemKey };
 
@@ -1017,6 +1057,8 @@ export interface Service<Req extends ClipRequest = Request> {
    */
   readonly submitGroup: (group: GroupSpec<Req>) => Effect.Effect<GroupHandle, SubmitError>;
   readonly insert: (spec: InsertSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
+  /** A group right before or after an anchor in a strict lane; see `InsertGroupSpec`. */
+  readonly insertGroup: (spec: InsertGroupSpec<Req>) => Effect.Effect<GroupHandle, SubmitError>;
   /**
    * Builds `next` for the item's place, lane, group position, start, window and
    * the clip it `follows`, the window's `notBefore` and `startBy` measured from
@@ -1042,9 +1084,9 @@ export interface Service<Req extends ClipRequest = Request> {
    * there is. An item it submits or inserts, or a group's first
    * part, due by a firm `startBy` is checked against the plan as the batch will
    * run and is not held: it airs as soon as it can, and builds ahead of every
-   * other item waiting in its lane except an `Asap` one. An insert may anchor on
-   * an item or group the batch adds, and beside one the batch holds it is held
-   * too, whatever its window: a firm one is then checked as the batch will run,
+   * other item waiting in its lane except an `Asap` one. An insert, or an
+   * inserted group, may anchor on an item or group the batch adds, and beside
+   * one the batch holds it is held too, whatever its window: a firm one is then checked as the batch will run,
    * or as it would be alone if it follows a clip or cuts, and while held is
    * dropped as `late` only at its `startBy`. A batch whose
    * `Withdraw` or `Replace` names an item or group it adds is refused with

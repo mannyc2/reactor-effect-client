@@ -296,6 +296,40 @@ layer(hosted)("group outcomes", (it) => {
       assert.deepStrictEqual(started, yield* replacement.started);
     }),
   );
+
+  it.effect("a group inserted between another group's parts airs there, in a strict lane", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start({
+        lanes: [
+          { name: "urgent", cut: true },
+          { name: "line", strict: true },
+        ],
+      });
+      const line = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      });
+      const answer = yield* playout.insertGroup({
+        key: key("answer"),
+        after: key("p1"),
+        parts: [
+          { key: key("a1"), request: clip("answer one") },
+          { key: key("a2"), request: clip("answer two") },
+        ],
+      });
+      assert.deepStrictEqual(
+        answer.parts.map((part) => part.key),
+        [key("a1"), key("a2")],
+      );
+      yield* line.outcome;
+      yield* answer.outcome;
+      assert.deepStrictEqual(yield* starts, ["p1", "a1", "a2", "p2"]);
+    }),
+  );
 });
 
 layer(hosted)("tracing queued items", (it) => {

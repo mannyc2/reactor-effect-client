@@ -1,7 +1,13 @@
 /** The playout's pure policy on its own: inputs in, actions and as-run out, no clock and no I/O. */
 import { assert, describe, it } from "@effect/vitest";
 import * as Policy from "../src/internal/playout/policy.js";
-import type { ClipTag, SourceClip, SourceEvent, SourceState } from "../src/Playout.js";
+import {
+  forecastFor,
+  type ClipTag,
+  type SourceClip,
+  type SourceEvent,
+  type SourceState,
+} from "../src/Playout.js";
 import { CommandFailure, ReactorError } from "../src/ReactorError.js";
 import {
   buildFailed,
@@ -16,6 +22,7 @@ import {
   renewing,
   source,
   spec,
+  strictLine,
 } from "./PlayoutPolicy.js";
 
 /** Runs inputs in order at one-millisecond steps and collects every action. */
@@ -2796,7 +2803,7 @@ describe("PlayoutPolicy, edit claims", () => {
     const policy = drive({
       config: {
         ...config,
-        lanes: [...config.lanes, { name: "news", conflict: "replace", cut: false }],
+        lanes: [...config.lanes, { name: "news", conflict: "replace", cut: false, strict: false }],
       },
     });
     policy.tick(0);
@@ -3006,7 +3013,7 @@ describe("PlayoutPolicy, edit claims", () => {
   /** The test config with a third lane, `low` or a `ticker` that replaces what waits in it. */
   const withLane = (name: string, conflict: "queue" | "replace"): Policy.Config => ({
     ...config,
-    lanes: [...config.lanes, { name, conflict, cut: false }],
+    lanes: [...config.lanes, { name, conflict, cut: false, strict: false }],
   });
   /** `x`, `seconds` long in `lane`, built and on air on s1; when it ends. */
   const onAir = (
@@ -3214,7 +3221,7 @@ describe("PlayoutPolicy, groups", () => {
   it("builds each part of a group in a pending batch once, while its first part is held", () => {
     const lanes: Policy.Config = {
       ...config,
-      lanes: [...config.lanes, { name: "news", conflict: "replace", cut: false }],
+      lanes: [...config.lanes, { name: "news", conflict: "replace", cut: false, strict: false }],
     };
     for (const [how, lane, batch] of [
       ["in a replace lane", 2, false],
@@ -4093,7 +4100,7 @@ describe("PlayoutPolicy, groups", () => {
   it("keeps a part behind an insert that continues from a lower lane's clip", () => {
     const lanes: Policy.Config = {
       ...config,
-      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false }],
+      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false, strict: false }],
     };
     const policy = drive({ config: lanes, from: measured });
     policy.tick(0);
@@ -4136,7 +4143,7 @@ describe("PlayoutPolicy, groups", () => {
   it("counts no part waiting behind a held part ahead of a clip a follower continues from", () => {
     const lanes: Policy.Config = {
       ...config,
-      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false }],
+      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false, strict: false }],
     };
     const policy = drive({ config: lanes, from: measured });
     policy.tick(0);
@@ -4187,7 +4194,7 @@ describe("PlayoutPolicy, groups", () => {
   it("keeps a part in turn behind a part whose replacement is still building", () => {
     const lanes: Policy.Config = {
       ...config,
-      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false }],
+      lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false, strict: false }],
     };
     const policy = drive({ config: lanes });
     policy.tick(0);
@@ -4273,7 +4280,7 @@ describe("PlayoutPolicy, groups", () => {
   /** A lane below the line, whose clips air after its parts. */
   const low: Policy.Config = {
     ...config,
-    lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false }],
+    lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false, strict: false }],
   };
   /** x airs from 3 s to 23 s on s1, and the group `parts` is submitted, with y behind it in `low`. */
   const lowBehind = (parts: ReadonlyArray<Policy.Spec>) => {
@@ -4790,5 +4797,293 @@ describe("PlayoutPolicy, groups", () => {
       provide(policy, "s1", 6, held, log);
     }
     assert.deepStrictEqual(startOrder(policy.actions), ["x", "p1", "p2", "k", "ir"]);
+  });
+});
+
+describe("PlayoutPolicy, strict lanes and readiness", () => {
+  /**
+   * Plays s1 as H3 with autoplay on, up to `until`: answers what the plan asks, starts the Ready
+   * head as soon as nothing plays, and ends each clip at its length.
+   */
+  const playOut = (
+    policy: ReturnType<typeof drive>,
+    held: Queues,
+    log: Array<string>,
+    until: number,
+  ): void => {
+    let ends = Infinity;
+    while (policy.now() < until) {
+      provide(policy, "s1", 4, held, log);
+      if (held.playing === undefined ? held.ready.length > 0 : policy.now() >= ends) {
+        const time = policy.now() + 1;
+        boundary(policy, "s1", held, time);
+        ends = time + 40 + (held.playing?.seconds ?? 0) * 1000;
+      } else policy.tick(policy.now() + 250);
+    }
+  };
+  /** An `At` item due at `time`, kept or dropped by whether it is Ready `byMs` after it. */
+  const readyBy = (name: string, time: number, byMs: number): Policy.Spec => ({
+    ...spec(name),
+    start: { _tag: "At", time, late: { readyByMs: byMs } },
+  });
+  /** A filler clip, `seconds` long, on air on s1 from 1 ms. */
+  const idleOnAir = (policy: ReturnType<typeof drive>, held: Queues, seconds: number): void => {
+    held.playing = clip("c-idle", { _tag: "Filler", index: 0 }, seconds);
+    policy.event({ _tag: "Started", clip: held.playing }, "s1", 1);
+    shown(policy, "s1", held, 2);
+  };
+  /** How `name` settled, if it did, with its reason. */
+  const dropped = (actions: ReadonlyArray<Policy.Action>, name: string) =>
+    actions.flatMap((action) =>
+      action._tag === "Emit" &&
+      action.event._tag === "AsRun" &&
+      action.event.event.key === name &&
+      action.event.event.status._tag === "Dropped"
+        ? [action.event.event.status]
+        : [],
+    );
+
+  it("a strict lane airs items in their places whatever their times", () => {
+    const starts = (settings: Policy.Config) => {
+      const policy = drive({ config: settings, from: measured });
+      const held = queues();
+      const log: Array<string> = [];
+      policy.tick(0);
+      policy.open();
+      // a, placed first, is due at 25 s, and b, placed after it, at 9 s.
+      const at = (time: number) => ({ _tag: "At", time, late: "nextBoundary" }) as const;
+      policy.submit({ ...spec("a"), start: at(25_000) }, 10);
+      policy.submit({ ...spec("b"), start: at(9_000) }, 20);
+      playOut(policy, held, log, 60_000);
+      return startOrder(policy.actions);
+    };
+    assert.deepStrictEqual(starts(strictLine), ["a", "b"]);
+    // In a lane that is not strict, b is due first and airs first.
+    assert.deepStrictEqual(starts(config), ["b", "a"]);
+  });
+
+  it("a readyBy item Ready in time waits out the filler and airs", () => {
+    const policy = drive({ from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    policy.tick(0);
+    policy.open();
+    idleOnAir(policy, held, 10);
+    // r is due at 2 s and judged at 5 s: Ready at about 2 s, it waits out the idle clip.
+    policy.submit(readyBy("r", 2_000, 3_000), 3);
+    provide(policy, "s1", 2, held, log);
+    readyIn(held, "r");
+    assert.strictEqual(policy.tick(2_100).wake, 5_000);
+    policy.tick(5_000);
+    boundary(policy, "s1", held, 10_001);
+    assert.deepStrictEqual(startOrder(policy.actions), ["r"]);
+    assert.deepStrictEqual(dropped(policy.actions, "r"), []);
+  });
+
+  it("a readyBy item not Ready by its bound is dropped late at it", () => {
+    const policy = drive({ from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    policy.tick(0);
+    policy.open();
+    idleOnAir(policy, held, 10);
+    held.slow.add("r");
+    policy.submit(readyBy("r", 2_000, 3_000), 3);
+    provide(policy, "s1", 2, held, log);
+    assert.deepStrictEqual(commands(policy.tick(4_999).actions), []);
+    const removal = commands(policy.tick(5_000).actions).map((action) => action.command);
+    assert.deepStrictEqual(removal, [{ _tag: "Remove", clipId: held.building[0]?.clipId ?? "" }]);
+    held.building = [];
+    provide(policy, "s1", 2, held, log);
+    assert.deepStrictEqual(dropped(policy.actions, "r"), [{ _tag: "Dropped", reason: "late" }]);
+  });
+
+  it("a readyBy item Ready but behind another item at its bound is dropped", () => {
+    const policy = drive({ from: measured });
+    const held = queues();
+    const log: Array<string> = [];
+    policy.tick(0);
+    policy.open();
+    idleOnAir(policy, held, 10);
+    // y, placed before r, is Ready ahead of it at r's bound: r would air only after y.
+    policy.submit(spec("y"), 3);
+    policy.submit(readyBy("r", 2_000, 3_000), 4);
+    provide(policy, "s1", 2, held, log);
+    readyIn(held, "y");
+    const r = readyIn(held, "r");
+    assert.deepStrictEqual(
+      commands(policy.tick(5_000).actions).map((action) => action.command),
+      [{ _tag: "Remove", clipId: r.clipId }],
+    );
+    provide(policy, "s1", 2, held, log);
+    assert.deepStrictEqual(dropped(policy.actions, "r"), [{ _tag: "Dropped", reason: "late" }]);
+  });
+
+  /** What the forecast at `time` says becomes of `name`: "Airs", or the reason it drops. */
+  const foreseen = (settings: Policy.Config, state: Policy.State, time: number, name: string) => {
+    const fate = forecastFor(
+      Policy.forecast(settings, state, { mono: time, wall: time }),
+      key(name),
+    );
+    return fate._tag === "Drops" ? fate.drop.reason : fate._tag;
+  };
+
+  // An insert before an `At` anchor took the anchor's start whole, so one placed before a kept
+  // readyBy item took a bound already past and was dropped late at the next look.
+  it("an insert, or a group inserted, before a kept readyBy item airs before it", () => {
+    const starts = (edit: Policy.EditInput) => {
+      const policy = drive({ config: strictLine, from: measured });
+      const held = queues();
+      const log: Array<string> = [];
+      policy.tick(0);
+      policy.open();
+      idleOnAir(policy, held, 10);
+      policy.submit(readyBy("r", 2_000, 3_000), 3);
+      provide(policy, "s1", 2, held, log);
+      policy.tick(5_000);
+      assert.isTrue(policy.state().items.get(key("r"))?.keptLate);
+      assert.deepStrictEqual(
+        policy.edit([edit], false, 6_000).actions.filter((action) => action._tag === "Refused"),
+        [],
+      );
+      provide(policy, "s1", 3, held, log);
+      for (const time of [10_001, 16_000, 22_000]) {
+        boundary(policy, "s1", held, time);
+        provide(policy, "s1", 3, held, log);
+      }
+      return startOrder(policy.actions);
+    };
+    assert.deepStrictEqual(
+      starts({ _tag: "Insert", spec: spec("i"), anchor: key("r"), side: "before" }),
+      ["i", "r"],
+    );
+    assert.deepStrictEqual(
+      starts({
+        _tag: "InsertGroup",
+        key: key("n"),
+        parts: [spec("n1"), spec("n2")],
+        fingerprint: "n",
+        anchor: key("r"),
+        side: "before",
+      }),
+      ["n1", "n2", "r"],
+    );
+  });
+
+  // Items judged at the same look were judged in the order the plan held them, and the forward
+  // run in the order of its pool: r2, Ready in time behind r1, which was not, aired when r1 was
+  // submitted first, went late when r1 was inserted before it, and the forecast said it went late.
+  it("readyBy items due at one look are judged as they air, whatever order they came in", () => {
+    const settings: Policy.Config = { ...strictLine, maxBuildsInFlight: 2 };
+    const run = (how: "submitted" | "inserted") => {
+      const policy = drive({ config: settings, from: measured });
+      const held = queues();
+      const log: Array<string> = [];
+      policy.tick(0);
+      policy.open();
+      idleOnAir(policy, held, 10);
+      // r1, 30 s long, cannot be built by the bound both share: the forecast can see it go.
+      held.slow.add("r1");
+      const r1 = { ...readyBy("r1", 2_000, 3_000), seconds: 30 };
+      if (how === "submitted") {
+        policy.submit(r1, 3);
+        policy.submit(readyBy("r2", 2_000, 3_000), 4);
+      } else {
+        policy.submit(readyBy("r2", 2_000, 3_000), 3);
+        policy.edit([{ _tag: "Insert", spec: r1, anchor: key("r2"), side: "before" }], false, 4);
+      }
+      provide(policy, "s1", 6, held, log);
+      policy.tick(4_000);
+      const foreseenR2 = foreseen(settings, policy.state(), 4_000, "r2");
+      policy.tick(5_000);
+      provide(policy, "s1", 4, held, log);
+      boundary(policy, "s1", held, 10_001);
+      return { foreseenR2, starts: startOrder(policy.actions), r1: dropped(policy.actions, "r1") };
+    };
+    for (const how of ["submitted", "inserted"] as const)
+      assert.deepStrictEqual(run(how), {
+        foreseenR2: "Airs",
+        starts: ["r2"],
+        r1: [{ _tag: "Dropped", reason: "late" }],
+      });
+  });
+
+  // The plan judged readiness before it dropped what went late by its own time at the same look,
+  // so x, ahead of r and going late at r's bound, still counted as air before it; the forecast
+  // dropped x first and kept r.
+  it("an item going late at a readyBy item's bound no longer counts ahead of it", () => {
+    for (const settings of [config, strictLine]) {
+      const policy = drive({ config: settings, from: measured });
+      const held = queues();
+      const log: Array<string> = [];
+      policy.tick(0);
+      policy.open();
+      idleOnAir(policy, held, 10);
+      // x is due at 1 s and goes late at 5 s; r is due at 2 s and judged at 5 s.
+      const at = { _tag: "At", time: 1_000, late: { skipAfterMs: 4_000 } } as const;
+      policy.submit({ ...spec("x"), start: at }, 3);
+      policy.submit(readyBy("r", 2_000, 3_000), 4);
+      provide(policy, "s1", 2, held, log);
+      policy.tick(4_500);
+      assert.strictEqual(foreseen(settings, policy.state(), 4_500, "r"), "Airs");
+      policy.tick(5_000);
+      provide(policy, "s1", 4, held, log);
+      boundary(policy, "s1", held, 10_001);
+      assert.deepStrictEqual(startOrder(policy.actions), ["r"]);
+      assert.deepStrictEqual(dropped(policy.actions, "x"), [{ _tag: "Dropped", reason: "late" }]);
+    }
+  });
+
+  // A group's later parts go once a removal of its broken place lands, so at the next line's bound
+  // a part of a line whose first part was being taken back still held that line, Ready in time, and
+  // it was dropped late. The forecast had the part go at once.
+  it("a line whose first part goes late holds the next line no more, its removal landed or not", () => {
+    const settings: Policy.Config = { ...strictLine, maxBuildsInFlight: 4 };
+    const line = (name: string, byMs: number): Policy.EditInput => ({
+      _tag: "SubmitGroup",
+      key: key(name),
+      lane: 1,
+      fingerprint: name,
+      parts: [readyBy(`${name}a`, 2_000, byMs), spec(`${name}b`)],
+    });
+    for (const landed of [true, false]) {
+      const policy = drive({ config: settings, from: measured });
+      const held = queues();
+      const log: Array<string> = [];
+      policy.tick(0);
+      policy.open();
+      idleOnAir(policy, held, 10);
+      held.slow.add("l1a");
+      policy.edit([line("l1", 3_000)], false, 3);
+      policy.edit([line("l2", 4_000)], false, 4);
+      provide(policy, "s1", 4, held, log, 100);
+      // At 5 s l1a, still building, goes late, and its removal is asked.
+      assert.deepStrictEqual(
+        commands(policy.tick(5_000).actions).map((action) => action.command),
+        [{ _tag: "Remove", clipId: held.building[0]?.clipId ?? "" }],
+      );
+      const land = (time: number) => {
+        policy.reply({ _tag: "Done" }, time);
+        held.building = [];
+        shown(policy, "s1", held, time + 10);
+      };
+      if (landed) land(5_050);
+      assert.strictEqual(foreseen(settings, policy.state(), policy.now(), "l2a"), "Airs");
+      assert.strictEqual(foreseen(settings, policy.state(), policy.now(), "l1b"), "withdrawn");
+      policy.tick(6_000);
+      // Its removal still in flight at l2a's bound, l2a is judged once it lands.
+      assert.strictEqual(policy.state().items.get(key("l2a"))?.keptLate, landed ? true : undefined);
+      if (!landed) land(6_050);
+      assert.isTrue(policy.state().items.get(key("l2a"))?.keptLate);
+      provide(policy, "s1", 4, held, log);
+      for (const time of [10_001, 15_100]) {
+        boundary(policy, "s1", held, time);
+        provide(policy, "s1", 2, held, log);
+      }
+      assert.deepStrictEqual(startOrder(policy.actions), ["l2a", "l2b"]);
+      assert.deepStrictEqual(dropped(policy.actions, "l1b"), [
+        { _tag: "Dropped", reason: "withdrawn" },
+      ]);
+    }
   });
 });
