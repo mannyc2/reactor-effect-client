@@ -237,6 +237,22 @@ const step = (seen: Seen, event: Playout.Event, now: number): Seen => {
   }
 };
 
+/** A clip up next, as the status lists it. */
+type Upcoming = ChannelStatus["upNext"][number];
+
+/** A clip's phase as up next shows it, from how far the forecast has it from air. */
+const phaseOf = (state: Playout.ForecastedClip["state"]): "Accepted" | "Building" | "Ready" => {
+  switch (state) {
+    case "playing":
+    case "ready":
+      return "Ready";
+    case "building":
+      return "Building";
+    case "queued":
+      return "Accepted";
+  }
+};
+
 /** The clip a start event names, when it names one. */
 const startOf = (
   event: Playout.Event,
@@ -431,24 +447,31 @@ export class Monitor extends Context.Service<
                 pictureAt: airing?.pictureAt ?? null,
               };
 
-        const lined = (
-          clip: Playout.ItemKey | "filler" | "other",
-          phase: "Accepted" | "Building" | "Ready",
-          afterSwitch: boolean,
-        ) => Effect.map(named(clip, null), (shown) => ({ ...shown, phase, afterSwitch }));
-        const ready = [
-          ...state.sessions
-            .filter((session) => session.role === "on-air")
-            .flatMap((session) => session.ready.map((clip) => lined(clip, "Ready", false))),
-          ...state.sessions
-            .filter((session) => session.role === "replacement")
-            .flatMap((session) => session.ready.map((clip) => lined(clip, "Ready", true))),
-        ];
-        const held = new Set(state.sessions.flatMap((session) => session.ready));
-        const waiting = state.lanes
-          .flatMap((lane) => lane.keys)
-          .filter((key) => key !== onAir?.key && !held.has(key))
-          .map((key) => lined(key, value.phases.get(key) ?? "Accepted", false));
+        // What the playout projects to air after the clip on air, each with its projected start,
+        // then the viewers' items it projects to go without airing.
+        const forecast = yield* playout.forecast;
+        const whose = (tag: Playout.ClipTag | null) => {
+          if (tag === null) return named("other", null);
+          return tag._tag === "Item" ? named(tag.key, null) : named("filler", tag.index);
+        };
+        const projected = forecast.clips
+          .filter((clip) => clip.state !== "playing")
+          .map((clip) =>
+            Effect.map(whose(clip.clip), (shown): Upcoming => ({
+              ...shown,
+              phase: phaseOf(clip.state),
+              afterSwitch: clip.session === "replacement",
+              startsAt: clip.startsAt,
+            })),
+          );
+        const dropping = forecast.drops.map((drop) =>
+          Effect.map(named(drop.key, null), (shown): Upcoming => ({
+            ...shown,
+            phase: value.phases.get(drop.key) ?? "Accepted",
+            afterSwitch: false,
+            startsAt: null,
+          })),
+        );
 
         return ChannelStatus.make({
           name,
@@ -457,7 +480,7 @@ export class Monitor extends Context.Service<
           offAir: value.offAir,
           viewers: value.viewers,
           playing,
-          upNext: yield* Effect.all([...ready, ...waiting]),
+          upNext: yield* Effect.all([...projected, ...dropping]),
           asRun: yield* Effect.forEach(value.asRun, entry),
           sessions: state.sessions.map(({ sessionId, role }) => {
             const opened = value.sessions.get(sessionId);

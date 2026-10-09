@@ -17,13 +17,12 @@ import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as Headers from "effect/http/Headers";
 import * as HttpClient from "effect/http/HttpClient";
 import type * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
-import type * as HttpClientResponse from "effect/http/HttpClientResponse";
+import { bodyWithin, checkedUrl } from "./internal/http.js";
 import * as Recording from "./internal/recording.js";
 import { IceCandidate, IceServer, Mapping, Track } from "./Peer.js";
 import type { ClipReady } from "./Session.js";
@@ -125,7 +124,8 @@ export interface Allocation {
 
 /**
  * A remote termination verdict. A DELETE response alone is never proof: an
- * independent read confirms the session is gone or terminal.
+ * independent read confirms the session terminal, and two in a row confirm it
+ * gone, since a coordinator can answer 404 for one read of a session that runs.
  */
 export const Termination = Schema.Struct({
   attempted: Schema.Boolean,
@@ -148,6 +148,15 @@ export const notTerminated: Termination = {
   deleteStatus: null,
   state: null,
 };
+
+/** A termination Reactor confirmed: the session read `CLOSED`, or was gone on two reads. */
+export const ConfirmedTermination = Schema.Struct({
+  ...Termination.fields,
+  confirmed: Schema.Literal(true),
+  evidence: Schema.Literals(["absent", "terminal"]),
+});
+export type ConfirmedTermination = typeof ConfirmedTermination.Type;
+const isConfirmed = Schema.is(ConfirmedTermination);
 
 /** A termination verdict as span attributes: a successful terminate says nothing about billing. */
 export const terminationAttributes = (termination: Termination): Record<string, unknown> => ({
@@ -486,7 +495,10 @@ export class CoordinatorClient extends Context.Service<
       },
     ) => Tokens;
     readonly inspect: (sessionId: string) => Effect.Effect<Inspection, ReactorError>;
-    /** Uncertainty stays in the report; supervisors choose their own failure policy. */
+    /**
+     * Ends the session once. Uncertainty stays in the report; supervisors choose their own
+     * failure policy, such as `terminateUntilConfirmed`.
+     */
     readonly terminate: (sessionId: string) => Effect.Effect<Termination>;
     readonly downloadClip: (
       clip: ClipReady,
@@ -534,58 +546,12 @@ interface Call {
   readonly onStatus?: (status: number) => Effect.Effect<void>;
 }
 
-const checkedUrl = (url: string, base?: string): Effect.Effect<URL, ReactorError> =>
-  Effect.try({
-    try: () => new URL(url, base),
-    catch: (cause) => ReactorError.fromCode("Protocol", "HTTP URL is malformed", { detail: cause }),
-  }).pipe(
-    Effect.filterOrFail(
-      (value) =>
-        (value.protocol === "https:" || value.protocol === "http:") &&
-        value.username === "" &&
-        value.password === "",
-      () =>
-        ReactorError.fromCode(
-          "Protocol",
-          "HTTP URL must use http(s) and contain no embedded credentials",
-        ),
-    ),
-  );
-
 /** A response's `Retry-After` when it names a delay in seconds; an HTTP date is not read. */
 const retryAfterOf = (headers: Headers.Headers): Duration.Duration | undefined => {
   const raw = headers["retry-after"];
   if (raw === undefined || !/^\s*(?:\d+(?:\.\d*)?|\.\d+)\s*$/.test(raw)) return undefined;
   const seconds = Number(raw);
   return Number.isFinite(seconds) ? Duration.seconds(seconds) : undefined;
-};
-
-/** The body within `maxBytes` and 16,384 chunks, since every chunk, even an empty one, costs memory. */
-const bodyWithin = (
-  response: HttpClientResponse.HttpClientResponse,
-  maxBytes: number,
-): Effect.Effect<Uint8Array, HttpClientError.HttpClientError | ReactorError> => {
-  const overflow = ReactorError.fromCode(
-    "Overflow",
-    `response exceeds its ${maxBytes} byte bound`,
-    {
-      outcome: "replied",
-    },
-  );
-  const refused: Stream.Stream<Uint8Array, HttpClientError.HttpClientError | ReactorError> =
-    Stream.fail(overflow);
-  return response.stream.pipe(
-    Stream.catchIf(
-      (error) => error.reason._tag === "EmptyBodyError",
-      () => Stream.empty,
-    ),
-    Stream.limitBytes(maxBytes, () => refused),
-    Stream.zipWithIndex,
-    Stream.mapEffect(([chunk, index]) =>
-      index < 16_384 ? Effect.succeed(chunk) : Effect.fail(overflow),
-    ),
-    Stream.mkUint8Array,
-  );
 };
 
 /** A transport failure once a request may have reached the server: its outcome is unknown. */
@@ -823,7 +789,7 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
           state: null,
           error: summarize(error),
         });
-        const confirmation = yield* Effect.result(
+        const read = Effect.result(
           request({
             operation: "terminate",
             request: HttpClientRequest.get(path),
@@ -831,19 +797,24 @@ export const make = Effect.fnUntraced(function* (options: Options = {}) {
             timeout: "3 seconds",
           }),
         );
+        const first = yield* read;
+        if (first._tag === "Failure") return failed(first.failure);
+        if (first.success.status === 404 && (deleteStatus === 401 || deleteStatus === 403))
+          return failed(
+            ReactorError.make({
+              reason: Http.make({
+                message: "remote termination could not be confirmed after authority refusal",
+                status: deleteStatus,
+              }),
+              context: { operation: "terminate", outcome: "replied" },
+            }),
+          );
+        // A coordinator can lose a running session for one read, so a session found missing is
+        // read again, and only a second 404 confirms it gone.
+        const confirmation = first.success.status === 404 ? yield* read : first;
         if (confirmation._tag === "Failure") return failed(confirmation.failure);
         if (confirmation.success.status === 404)
-          return deleteStatus === 401 || deleteStatus === 403
-            ? failed(
-                ReactorError.make({
-                  reason: Http.make({
-                    message: "remote termination could not be confirmed after authority refusal",
-                    status: deleteStatus,
-                  }),
-                  context: { operation: "terminate", outcome: "replied" },
-                }),
-              )
-            : { ...base, confirmed: true, evidence: "absent", state: null };
+          return { ...base, confirmed: true, evidence: "absent", state: null };
         const described = yield* Effect.result(
           decodeReply(
             TerminalState,
@@ -1271,3 +1242,52 @@ export const layerConfig: Layer.Layer<
     return yield* make({ apiUrl, ...(Option.isSome(apiKey) ? { apiKey: apiKey.value } : {}) });
   }),
 );
+
+/**
+ * How `terminateUntilConfirmed` asks again by default: 5 s after the first end, doubling to at
+ * most 5 minutes apart, jittered so that ends asked together spread out.
+ */
+const confirming: Schedule.Schedule<Duration.Duration> = Schedule.min([
+  Schedule.exponential("5 seconds"),
+  Schedule.spaced("5 minutes"),
+]).pipe(Schedule.jittered);
+
+/** A DELETE refused outright (401 or 403) fails the end: asking again would be refused again. */
+const refused = (sessionId: string) => (termination: Termination) => {
+  const status = termination.deleteStatus;
+  return status === 401 || status === 403
+    ? Effect.fail(
+        ReactorError.make({
+          reason: Http.make({ message: `terminate: HTTP ${String(status)}`, status }),
+          context: { operation: "terminate", sessionId, outcome: "replied" },
+        }),
+      )
+    : Effect.succeed(termination);
+};
+
+/**
+ * Ends `sessionId` with this client's credential, and asks again, waiting longer each time, until
+ * Reactor confirms it ended: 5 s, doubling, at most 5 minutes apart, for as long as it runs. It
+ * fails when the coordinator refuses the end outright (401 or 403), since asking again would be
+ * refused again, and when a `schedule` the caller passes ends with the end unconfirmed.
+ */
+export const terminateUntilConfirmed = Effect.fn("CoordinatorClient.terminateUntilConfirmed", {
+  kind: "client",
+})(function* (
+  sessionId: string,
+  options?: { readonly schedule?: Schedule.Schedule<unknown, Termination> | undefined },
+): Effect.fn.Return<ConfirmedTermination, ReactorError, CoordinatorClient> {
+  yield* Effect.annotateCurrentSpan("reactor.session.id", sessionId);
+  const client = yield* CoordinatorClient;
+  return yield* client.terminate(sessionId).pipe(
+    Effect.flatMap(refused(sessionId)),
+    Effect.repeat({ schedule: options?.schedule ?? confirming, until: isConfirmed }),
+    Effect.filterOrFail(isConfirmed, () =>
+      ReactorError.fromCode(
+        "Indeterminate",
+        "the end was not confirmed before the schedule ended",
+        { operation: "terminate", sessionId },
+      ),
+    ),
+  );
+});

@@ -7,42 +7,32 @@ import { Aside, CardGrid, LinkCard, Steps } from "@astrojs/starlight/components"
 
 A playout gets its sessions from an `open` effect, which it calls for the first session and for
 each replacement. `H3Source.open` opens a paid H3 session, and `LocalSource.open` renders clips
-in your own process. Both return a `Playout.Source`, so the same programme runs on either.
+in your own process. Both return a `Playout.Source`, so the same programme runs on either. A paid
+session opens through a [`Ledger`](#owner-records), which records it before it connects:
 
 ```ts
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect } from "effect";
 import {
   CoordinatorClient,
   H3,
   H3Source,
+  Ledger,
   Playout,
 } from "reactor-effect-client";
 
-const encodeOwner = Schema.encodeEffect(
-  Schema.fromJsonString(H3Source.Allocation),
-);
-
 export const recordedChannel = Effect.gen(function* () {
   const coordinator = yield* CoordinatorClient.CoordinatorClient;
-  const fs = yield* FileSystem.FileSystem;
+  const ledger = yield* Ledger.Ledger;
   return yield* Playout.make({
-    open: H3Source.open({
-      tokens: coordinator.tokens({
-        modelName: H3.modelName,
-        maxSessionDuration: "1 hour",
+    open: ledger.source(
+      H3Source.opener({
+        tokens: coordinator.tokens({
+          modelName: H3.modelName,
+          maxSessionDuration: "1 hour",
+        }),
+        canvas: "16:9",
       }),
-      canvas: "16:9",
-      // Runs before the session connects, so no session goes unrecorded.
-      onAllocated: ({ allocation }) =>
-        encodeOwner(allocation).pipe(
-          Effect.flatMap((json) =>
-            fs.writeFileString(
-              `owners/${allocation.sessionId}.json`,
-              json,
-            ),
-          ),
-        ),
-    }),
+    ),
     lanes: [{ name: "show" }],
   });
 });
@@ -72,9 +62,10 @@ export const recordedChannel = Effect.gen(function* () {
 | `provider`      | defaults   | The [H3 provider's options](/reactor-effect-client/concepts/h3/)    |
 | `create`        | none       | Other `reactor.create` options, such as `resumeTracks`               |
 
-An uncapped session has no end the playout can plan for: it is replaced only when it is lost. If
-`onAllocated` fails, the session is closed and `open` fails with an `AcquisitionFailure` carrying
-its close report, as any failure after allocation does.
+`H3Source.opener` takes the same options but `onAllocated`, which the ledger supplies, and
+resumes a recorded session with them. An uncapped session has no end the playout can plan for: it
+is replaced only when it is lost. If `onAllocated` fails, the session is closed and `open` fails
+with an `AcquisitionFailure` carrying its close report, as any failure after allocation does.
 
 The session reconnects a dropped connection itself. The source reports `Reconnecting`, then
 `Reconnected` with how long it took, and gives the session `recovery` to be ready again and H3 to
@@ -84,8 +75,33 @@ playout replaces it. The playout sends the session nothing meanwhile.
 
 ## Owner records
 
-`onAllocated` receives an `H3Source.Allocation`: the owner record of the session, without a
-token. It is a Schema, so it encodes to JSON and decodes back.
+A paid session must be on record before it connects, so whoever comes after a crash can find it.
+A `Ledger` keeps those records in a `Ledger.Store` the application provides, and
+`ledger.source(H3Source.opener({ tokens }))`, or `FastH3Source.opener` for FastH3, is a playout's
+`open`. Before it allocates, `source` settles every session recorded for its coordinator that the
+ledger does not hold: it resumes the one that ends last, while a minute of its cap remains, and
+ends the others, waiting until Reactor confirms each end. Then it opens a fresh session and
+records it before it connects. Closing the source ends the session and forgets it once Reactor
+confirms the end; an end Reactor does not confirm is marked `ending` and asked again until it is.
+
+```ts
+import { Layer } from "effect";
+import { CoordinatorClient, Ledger } from "reactor-effect-client";
+
+// Only the API key, here from REACTOR_API_KEY, ends a session whose owner died.
+export const LedgerLive = Ledger.layerFile("evidence/ledger.json").pipe(
+  Layer.provideMerge(CoordinatorClient.layerConfig),
+);
+```
+
+`Ledger.layerMemory()` keeps the entries in memory, for tests, and `Ledger.layer()` takes a store
+of your own, such as a database. One store belongs to one process and one Reactor account: two
+processes on one store would end each other's sessions as leftovers. `ledger.release` ends every
+recorded session the ledger does not hold, as a process does when it shuts its channel down.
+
+An application that records its sessions itself passes `onAllocated`, which receives an
+`H3Source.Allocation`: the owner record of the session, without a token. It is a Schema, so it
+encodes to JSON and decodes back.
 
 | Field       | What it is                                                                    |
 | ----------- | ----------------------------------------------------------------------------- |
@@ -96,21 +112,14 @@ token. It is a Schema, so it encodes to JSON and decodes back.
 
 The cap starts no earlier than the request, so the cap cannot end the session before `endsAt`.
 With the record, a process that takes over can find the session again, adopt it with a token
-bound to it, or end it with the API key:
+bound to it, or end it with the API key, asking until Reactor confirms the end:
 
 ```ts
-import { Effect } from "effect";
 import { CoordinatorClient } from "reactor-effect-client";
 import type { H3Source } from "reactor-effect-client";
 
-// Ends an orphaned session; true once a read confirmed the end.
-export const endOrphan = Effect.fn("endOrphan")(function* (
-  allocation: H3Source.Allocation,
-) {
-  const coordinator = yield* CoordinatorClient.CoordinatorClient;
-  const verdict = yield* coordinator.terminate(allocation.sessionId);
-  return verdict.confirmed;
-});
+export const endOrphan = (allocation: H3Source.Allocation) =>
+  CoordinatorClient.terminateUntilConfirmed(allocation.sessionId);
 ```
 
 ## `H3Source.resume`
@@ -207,23 +216,26 @@ export const announcer = Playout.make({
 | Option       | What it does                                                                    |
 | ------------ | ------------------------------------------------------------------------------- |
 | `model`      | The model the source runs, H3's by default; pass the same model to `Playout.make` |
-| `build`      | Makes a clip's value, and its built length when that differs (`seconds`)        |
+| `build`      | Makes a clip's value, and its built length when that differs from what its model builds (`seconds`) |
 | `present`    | Plays the value through the `sink`'s `video` and `audio`; without it, a clip plays for its length |
 | `lifetime`   | Caps the session, as a paid session's cap does, so the playout renews it; unending by default |
-| `buildRatio` | Without hooks: a stand-in whose clips build for this share of their length and play for their length |
+| `buildRatio` | Without hooks: a stand-in whose clips build for this share of their requested length and play for the length their model builds |
 
 `build` and `present` run in a scope the clip owns, which closes once the clip leaves the source,
 so a finalizer releases what they made. A hook that fails with your own error fails that clip
 alone: `Failed` with reason `Clip`, your error pretty-printed and `Redacted` in `provider`. A hook
 that dies stops the source, and the playout replaces its session. The playout checks every
 request against its model, H3's by default. A renderer with its own lengths passes the same
-`ClipModel` to `LocalSource.open` and `Playout.make`, so speech can air below H3's 5 s minimum:
+`ClipModel` to `LocalSource.open` and `Playout.make`, so speech can air below H3's 5 s minimum.
+Its `builtSeconds` is the length the model builds for a requested length, which the playout plans
+a clip not built yet at; speech builds what it is asked:
 
 ```ts
 import { Effect } from "effect";
 import { H3, LocalSource, Playout } from "reactor-effect-client";
 const speech: Playout.ClipModel<H3.Request> = {
-  name: "speech", lengths: { min: 0.5, max: 30 }, defaultSeconds: 2, check: () => [],
+  name: "speech", lengths: { min: 0.5, max: 30 }, defaultSeconds: 2,
+  builtSeconds: (seconds) => seconds, check: () => [],
 };
 export const spoken = Playout.make({
   model: speech,
@@ -234,7 +246,8 @@ export const spoken = Playout.make({
 
 <Aside>
 `LocalSource.open({ buildRatio: 0.4, lifetime: "1 minute" })` runs a whole programme, renewals
-included, without a renderer: a quick way to see what your schedule does.
+included, without a renderer: a quick way to see what your schedule does. Standing in for H3, it
+builds H3's lengths: a 7.3 s request airs 8 s.
 </Aside>
 
 ## Writing a source

@@ -1,4 +1,7 @@
-/** Placement must keep its predecessor even when the air ahead ends earlier than projected. */
+/**
+ * Placement must keep its predecessor even when the air ahead ends earlier than projected, and
+ * start when it said with a clip ahead at a length not asked for before.
+ */
 import { assert, layer } from "@effect/vitest";
 import { Deferred, Effect, Ref, Stream } from "effect";
 import { H3Source, LocalSource, Playout, ReactorTest } from "../src/index.js";
@@ -167,6 +170,54 @@ layer(simulated)("Playout placement", (it) => {
       });
       assert.deepStrictEqual(yield* after.outcome, { _tag: "Dropped", reason: "displaced" });
       assert.deepStrictEqual(yield* after.started, { _tag: "Dropped", reason: "displaced" });
+    }),
+  );
+
+  // H3 builds a 7.3 s request as 192 frames, 8 s, a length no clip measured so far asked for.
+  it.effect("place holds its startsAt with a clip ahead at a length not asked for before", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const playout = yield* Playout.make({
+        open: H3Source.open({ tokens: yield* tokens }),
+        lanes: [{ name: "line" }],
+      });
+      const building = yield* Deferred.make<void>();
+      yield* playout.events.pipe(
+        Stream.runForEach((event) =>
+          event._tag === "AsRun" &&
+          event.event.key === "ahead" &&
+          event.event.status._tag === "Building"
+            ? Deferred.succeed(building, undefined)
+            : Effect.void,
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      const submit = (name: string, seconds = 5) =>
+        playout.submit({ key: key(name), lane: "line", request: { prompt: name, seconds } });
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) => submit(name));
+      for (const handle of measured) yield* handle.outcome;
+      const long = yield* submit("long", 15);
+      yield* long.started;
+      // About 5 s of the long clip is left: the clip ahead is built within it, and the probe,
+      // built after it, could not be Ready before it ends.
+      yield* Effect.sleep("10 seconds");
+      yield* submit("ahead", 7.3);
+      yield* Deferred.await(building);
+      const placement = yield* playout.place({ key: key("probe") });
+      if (placement === null || placement.anchor === "next")
+        return yield* Effect.die("the clip ahead has no makeable boundary after it");
+      assert.deepStrictEqual(placement.after, { _tag: "Item", key: key("ahead") });
+      assert.strictEqual(placement.basis, "projected");
+      const probe = yield* playout.insert({
+        key: key("probe"),
+        request: { prompt: "probe", seconds: 5 },
+        after: placement.anchor,
+        follows: placement.after,
+      });
+      const started = yield* probe.started;
+      if (started._tag !== "Started") return yield* Effect.die(`the probe ${started._tag}`);
+      const errorMs = started.at - placement.startsAt;
+      assert.isAtMost(Math.abs(errorMs), 100, `started ${errorMs.toFixed(0)} ms off`);
     }),
   );
 });

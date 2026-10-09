@@ -46,6 +46,11 @@ type Handle = {
   readonly started: Deferred.Deferred<Effect.Success<Playout.ItemHandle["started"]>>;
   readonly outcome: Deferred.Deferred<Playout.Settled>;
 };
+/** What a group's handle waits on. */
+type GroupDeferreds = {
+  readonly started: Deferred.Deferred<Effect.Success<Playout.GroupHandle["started"]>>;
+  readonly outcome: Deferred.Deferred<Playout.GroupOutcome>;
+};
 type Reply =
   | { readonly _tag: "Accepted"; readonly results: ReadonlyArray<Policy.EditReply> }
   | { readonly _tag: "Refused"; readonly refusal: Policy.Refusal };
@@ -125,10 +130,12 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
 ) {
   const config: Policy.Config<Req> = {
     defaultSeconds: model.defaultSeconds,
+    builtSeconds: model.builtSeconds,
     lanes: options.lanes.map((lane) => ({
       name: lane.name,
       conflict: lane.conflict ?? "queue",
       cut: lane.cut ?? false,
+      strict: lane.strict ?? false,
     })),
     filler:
       options.filler === undefined
@@ -175,6 +182,7 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
     new Map<number, Deferred.Deferred<Playout.Placement | null>>(),
   );
   const handles = yield* Ref.make(new Map<ItemKey, Handle>());
+  const groupHandles = yield* Ref.make(new Map<ItemKey, GroupDeferreds>());
   const parents = yield* Ref.make(new Map<ItemKey, Tracer.ExternalSpan | undefined>());
   // Each live session's source, the scope it lives in, and its lane: the commands waiting there.
   const sources = yield* Ref.make(
@@ -188,6 +196,8 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
     >(),
   );
   const onAir = yield* SubscriptionRef.make<Playout.Source<Req> | undefined>(undefined);
+  // Counts the steps that changed the plan, so `forecasts` reads it again only after one.
+  const revision = yield* SubscriptionRef.make(0);
   // Why the playout stopped; it dies with a defect that stopped it.
   const failure = yield* Deferred.make<ReactorFailure | InvalidFiller>();
   /** Completes once the playout has stopped, however it stopped. */
@@ -224,6 +234,18 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       started: Deferred.await(value.started),
       outcome: Deferred.await(value.outcome),
     }));
+  /** A group's start and outcome, which the plan resolves as it decides them. */
+  const groupHandle = (key: ItemKey): Effect.Effect<GroupDeferreds> =>
+    Effect.gen(function* () {
+      const existing = (yield* Ref.get(groupHandles)).get(key);
+      if (existing !== undefined) return existing;
+      const created: GroupDeferreds = {
+        started: yield* Deferred.make<Effect.Success<Playout.GroupHandle["started"]>>(),
+        outcome: yield* Deferred.make<Playout.GroupOutcome>(),
+      };
+      yield* Ref.update(groupHandles, (all) => new Map(all).set(key, created));
+      return created;
+    });
   /** Registers `deferred` under `id` until it is taken, once, to be resolved. */
   const register = <K, D>(registry: Ref.Ref<Map<K, D>>, id: K, deferred: D) =>
     Ref.update(registry, (all) => new Map(all).set(id, deferred));
@@ -553,17 +575,23 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
           if (placed !== undefined) yield* Deferred.succeed(placed, action.placement);
           return;
         }
-        case "Forget":
-          yield* Ref.update(parents, (all) => {
+        // A forecast is read in a look of its own, never asked of the loop.
+        case "Forecasted":
+          return;
+        case "GroupStarted":
+          return yield* Deferred.succeed((yield* groupHandle(action.key)).started, action.started);
+        case "GroupSettled":
+          return yield* Deferred.succeed((yield* groupHandle(action.key)).outcome, action.outcome);
+        case "Forget": {
+          const forget = <V>(all: Map<ItemKey, V>): Map<ItemKey, V> => {
             const next = new Map(all);
             for (const key of action.keys) next.delete(key);
             return next;
-          });
-          return yield* Ref.update(handles, (all) => {
-            const next = new Map(all);
-            for (const key of action.keys) next.delete(key);
-            return next;
-          });
+          };
+          yield* Ref.update(parents, forget);
+          yield* Ref.update(groupHandles, forget);
+          return yield* Ref.update(handles, forget);
+        }
         case "Fail": {
           const why = yield* failureOf(action);
           yield* Result.isSuccess(why)
@@ -601,6 +629,12 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
           return next;
         });
       yield* Effect.forEach(result.actions, act, { discard: true });
+      // A wake that decided nothing, or a placement answered with nothing decided, leaves the plan
+      // as it was.
+      const changed =
+        (input._tag !== "Tick" && input._tag !== "Place") ||
+        result.actions.some((action) => action._tag !== "Placed");
+      if (changed) yield* SubscriptionRef.update(revision, (count) => count + 1);
       return result.wake;
     });
 
@@ -626,6 +660,10 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       for (const value of (yield* Ref.get(handles)).values()) {
         yield* Deferred.succeed(value.started, Policy.indeterminate);
         yield* Deferred.succeed(value.outcome, Policy.indeterminate);
+      }
+      for (const value of (yield* Ref.get(groupHandles)).values()) {
+        yield* Deferred.succeed(value.started, Policy.indeterminate);
+        yield* Deferred.succeed(value.outcome, { _tag: "Indeterminate" });
       }
       yield* Effect.forEach([...(yield* Ref.get(sources)).keys()], closeSource, { discard: true });
     });
@@ -675,6 +713,21 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
     Effect.fromOption(ItemKey.makeOption(key)).pipe(
       Effect.mapError(() => InvalidItem.make({ key, message: "a key must be a nonempty string" })),
     );
+  /** An `At` start's lateness, its durations in milliseconds. */
+  const lateOf = (
+    late: Extract<Playout.Start, { readonly _tag: "At" }>["late"],
+    duration: (value: Duration.Input) => Effect.Effect<number | undefined, InvalidItem>,
+  ): Effect.Effect<Policy.Late, InvalidItem> => {
+    switch (late._tag) {
+      case "nextBoundary":
+      case "drop":
+        return Effect.succeed(late._tag);
+      case "skipIfLaterThan":
+        return Effect.map(duration(late.by), (skipAfterMs) => ({ skipAfterMs: skipAfterMs ?? 0 }));
+      case "readyBy":
+        return Effect.map(duration(late.by), (readyByMs) => ({ readyByMs: readyByMs ?? 0 }));
+    }
+  };
   const spec = (
     input: {
       readonly key: string;
@@ -703,12 +756,7 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
               }),
             );
       const start = input.start ?? { _tag: "Follow" };
-      const late: Policy.Late | undefined =
-        start._tag !== "At"
-          ? undefined
-          : start.late._tag === "skipIfLaterThan"
-            ? { skipAfterMs: (yield* duration(start.late.by)) ?? 0 }
-            : start.late._tag;
+      const late = start._tag === "At" ? yield* lateOf(start.late, duration) : undefined;
       const cues = yield* Effect.forEach(input.cues ?? [], (cue) =>
         Effect.map(duration(cue.at.offset), (offsetMs) => ({
           name: cue.name,
@@ -808,13 +856,16 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
         }
         case "SubmitGroup": {
           const index = yield* lane(edit.group.key, edit.group.lane);
+          // A part is its clip alone: the group's start and window are its first part's, and the
+          // rest follow it.
           const parts = yield* Effect.forEach(edit.group.parts, (part, partIndex) =>
             spec(
               {
-                ...part,
-                ...(partIndex === 0 && edit.group.window !== undefined
-                  ? { window: edit.group.window }
-                  : {}),
+                key: part.key,
+                request: part.request,
+                cues: part.cues,
+                continuity: part.continuity,
+                ...(partIndex === 0 ? { start: edit.group.start, window: edit.group.window } : {}),
               },
               index,
             ),
@@ -844,6 +895,37 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
             side: edit.insert.before === undefined ? "after" : "before",
           };
         }
+        case "InsertGroup": {
+          const insert = edit.insert;
+          const anchor = insert.before ?? insert.after;
+          if (anchor === undefined || (insert.before !== undefined && insert.after !== undefined))
+            return yield* InvalidItem.make({
+              key: insert.key,
+              message: "give exactly one of before and after",
+            });
+          // A part is its clip alone: the group's window is its first part's, and its start the
+          // anchor's.
+          const parts = yield* Effect.forEach(insert.parts, (part, partIndex) =>
+            spec(
+              {
+                key: part.key,
+                request: part.request,
+                cues: part.cues,
+                continuity: part.continuity,
+                ...(partIndex === 0 ? { window: insert.window } : {}),
+              },
+              0,
+            ),
+          );
+          return {
+            _tag: "InsertGroup",
+            key: yield* itemKey(insert.key),
+            parts,
+            fingerprint: fingerprint(parts.map((part) => part.fingerprint)),
+            anchor: yield* itemKey(anchor),
+            side: insert.before === undefined ? "after" : "before",
+          };
+        }
         case "Replace":
           return {
             _tag: "Replace",
@@ -868,16 +950,21 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
                 handle: value,
               }));
             case "AddedGroup":
-              return Effect.map(Effect.forEach(result.parts, itemHandle), (parts) => ({
-                _tag: "AddedGroup",
-                handle: {
-                  key: result.key,
-                  parts: parts as unknown as readonly [
-                    Playout.ItemHandle,
-                    ...Array<Playout.ItemHandle>,
-                  ],
-                },
-              }));
+              return Effect.map(
+                Effect.all([Effect.forEach(result.parts, itemHandle), groupHandle(result.key)]),
+                ([parts, group]) => ({
+                  _tag: "AddedGroup",
+                  handle: {
+                    key: result.key,
+                    parts: parts as unknown as readonly [
+                      Playout.ItemHandle,
+                      ...Array<Playout.ItemHandle>,
+                    ],
+                    started: Deferred.await(group.started),
+                    outcome: Deferred.await(group.outcome),
+                  },
+                }),
+              );
             case "Withdrawal": {
               const outcome = outcomes.get(index);
               const key = edits[index]?._tag === "Withdraw" ? edits[index].key : undefined;
@@ -893,6 +980,17 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       );
       return { commit, results: mapped };
     });
+
+  /**
+   * The plan's forecast now, read as `state` is and never through the inbox. A playout that has
+   * stopped projects nothing, though its plan closes only at the step after.
+   */
+  const forecast: Effect.Effect<Playout.Forecast> = Effect.gen(function* () {
+    const value = yield* Ref.get(state);
+    const at = yield* now;
+    const stoppedAlready = yield* Deferred.isDone(failure);
+    return Policy.forecast(config, stoppedAlready ? { ...value, closed: true } : value, at);
+  });
 
   const service: Playout.Service<Req> = {
     submit: Effect.fn("Playout.submit")(function* (item: Playout.ItemSpec<Req>) {
@@ -915,6 +1013,13 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       return first?._tag === "Added"
         ? first.handle
         : yield* Effect.die("an insert returned no handle");
+    }),
+    insertGroup: Effect.fn("Playout.insertGroup")(function* (insert: Playout.InsertGroupSpec<Req>) {
+      const { results } = yield* edit([{ _tag: "InsertGroup", insert }], false);
+      const [first] = results;
+      return first?._tag === "AddedGroup"
+        ? first.handle
+        : yield* Effect.die("an inserted group returned no handle");
     }),
     replace: Effect.fn("Playout.replace")(function* (
       key: ItemKey,
@@ -983,6 +1088,13 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
         Effect.ensuring(claim(placements, id)),
       );
     }),
+    forecast,
+    // A slow reader skips to the newest revision, and reads the forecast once for it.
+    forecasts: SubscriptionRef.changes(revision).pipe(
+      Stream.buffer({ capacity: 1, strategy: "sliding" }),
+      Stream.mapEffect(() => forecast),
+      Stream.interruptWhen(stopped),
+    ),
     withdraw: Effect.fn("Playout.withdraw")(function* (key: ItemKey) {
       const none = Effect.succeed({ results: [] as ReadonlyArray<Playout.EditResult> });
       const { results } = yield* edit([{ _tag: "Withdraw", key }], false).pipe(

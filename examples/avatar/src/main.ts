@@ -4,7 +4,6 @@ import {
   Config,
   Console,
   Effect,
-  FileSystem,
   Layer,
   Option,
   Path,
@@ -14,7 +13,13 @@ import {
   Stream,
 } from "effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
-import { CoordinatorClient, Reactor, ReactorTest, ViduS2Avatar } from "reactor-effect-client";
+import {
+  CoordinatorClient,
+  Reactor,
+  ReactorTest,
+  References,
+  ViduS2Avatar,
+} from "reactor-effect-client";
 import { NativePeer } from "reactor-effect-native";
 
 const persona = "You are Tina, a guide at a sea-life museum. Answer in one short sentence.";
@@ -27,17 +32,21 @@ const imageTypes: Record<string, string> = {
   ".heic": "image/heic",
 };
 
-/** The photo in AVATAR_PHOTO, or a blank stand-in, which only the simulation takes. */
+/**
+ * The photo in AVATAR_PHOTO, or a blank stand-in, which only the simulation takes. Its type comes
+ * from its extension, since Vidu takes HEIC, which H3's validation does not read; its size is at
+ * most 16 MiB, the most a session uploads.
+ */
 const photo = Effect.gen(function* () {
   const file = yield* Config.option(Config.String("AVATAR_PHOTO"));
   if (Option.isNone(file))
     return { bytes: ReactorTest.pngBytes({ width: 64, height: 64 }), type: "image/png" } as const;
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const type = yield* Schema.decodeUnknownEffect(ViduS2Avatar.ImageType)(
     imageTypes[path.extname(file.value).toLowerCase()],
   );
-  return { bytes: yield* fs.readFile(file.value), type, name: path.basename(file.value) };
+  const bytes = yield* References.read(References.file(file.value));
+  return { bytes, type, name: path.basename(file.value) };
 });
 
 /** A character made from a photo, one call with it, and the session closed. */

@@ -14,6 +14,7 @@
 import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
+import { dual } from "effect/Function";
 import * as Layer from "effect/Layer";
 import type * as Redacted from "effect/Redacted";
 import type * as Scope from "effect/Scope";
@@ -59,9 +60,18 @@ export interface LaneSpec {
    * second. A clip is stopped at most once, and a stopped clip cannot resume.
    */
   readonly cut?: boolean | undefined;
+  /**
+   * Air this lane's items in the order of their places, submissions at the end and inserts beside
+   * their anchors: an item waits while one placed before it is live and not on air yet, unless
+   * that one was sent with its outcome never seen, or is being withdrawn. Later items wait behind
+   * a slow one, so give its items deadlines. `Asap` and `Manual` starts are refused here, since
+   * they would break the order. Keeping the order costs more per item waiting than in a lane that
+   * is not strict: keep the lane to tens of items waiting, not hundreds.
+   */
+  readonly strict?: boolean | undefined;
 }
 
-/** When an item may air. Only `Follow` keeps its lane's order. */
+/** When an item may air. Only `Follow` keeps its lane's order, and any start in a strict lane. */
 export type Start =
   /** The next boundary its lane reaches, in order: the default. */
   | { readonly _tag: "Follow" }
@@ -85,7 +95,18 @@ export type Start =
       readonly late:
         | { readonly _tag: "nextBoundary" }
         | { readonly _tag: "skipIfLaterThan"; readonly by: Duration.Input }
-        | { readonly _tag: "drop" };
+        | { readonly _tag: "drop" }
+        /**
+         * Judged once, at `time + by`: kept if it was Ready by then and nothing but filler airs
+         * before it (the clip on air, and the Ready clips ahead of it), so that it airs at the next
+         * boundary however late; otherwise dropped as `late` then. A clip Ready in time that waits
+         * out filler is on time; one not made by then, or waiting behind another item, is not. A
+         * firm window's `startBy` still applies. A replacement of a kept item is kept too. Items
+         * judged at the same moment are judged in the order they air, after what goes late by its
+         * own time then, so neither holds back one behind it; while a removal that breaks a group
+         * is in flight, the judgment waits for it to land.
+         */
+        | { readonly _tag: "readyBy"; readonly by: Duration.Input };
     };
 
 /** A secondary event on a clip, fired while it plays: from its observed start, or back from its end. */
@@ -146,14 +167,15 @@ export interface PlaceProbe {
 
 /**
  * Where a clip submitted to follow `after` would land. It projects the plan as
- * it is at the call, at the median build rates, and reserves nothing: a clip
- * submitted later may still come between the call and the clip, or after it.
+ * it is at the call, at the median build rates, each lane's and filler's own
+ * once three of their builds are measured, per second of the length their
+ * model builds, and reserves nothing: a clip submitted later may still come
+ * between the call and the clip, or after it.
  * A clip not built yet counts at the length the last clip that asked for as
- * much aired at, else at the median ratio of aired to requested length, so
- * `startsAt` may be off by up to a step of the provider's grid (0.7 s on H3)
- * for each clip ahead at a length not asked for before. While a `follows`
- * item waits on a session, that session starts its clips with a provider
- * command, whose latency is not projected.
+ * much aired at, else at the length its model builds (`ClipModel.builtSeconds`),
+ * scaled by the median ratio of the lengths clips aired at to those their model
+ * built. While a `follows` item waits on a session, that session starts its
+ * clips with a provider command, whose latency is not projected.
  */
 export interface Placement {
   /** The clip it would follow: pass it as `follows`. */
@@ -192,6 +214,125 @@ export interface Placement {
   readonly continues: boolean;
 }
 
+/** A clip a forecast projects to air. */
+export interface ForecastedClip {
+  /** An item, a filler clip, or null for a clip this playout did not enqueue. */
+  readonly clip: ClipTag | null;
+  /**
+   * The group it is a place of, and which; undefined for an item in no group, or one inserted
+   * beside a part.
+   */
+  readonly group: { readonly key: ItemKey; readonly part: number } | undefined;
+  /** When it is projected to start and to end, in epoch milliseconds. */
+  readonly startsAt: number;
+  readonly endsAt: number;
+  /** `playing` now; `ready` built; `building` sent and not built yet; `queued` not sent yet. */
+  readonly state: "playing" | "ready" | "building" | "queued";
+  /** The session it airs on: the one on air, or its replacement, open or still to open. */
+  readonly session: "on-air" | "replacement";
+}
+
+/** An item a forecast projects to go without airing. */
+export interface ForecastedDrop {
+  readonly key: ItemKey;
+  /** The group it is a place of, and which, as a clip's. */
+  readonly group?: { readonly key: ItemKey; readonly part: number } | undefined;
+  /**
+   * `late` past its deadline; `displaced` from the clip it follows; `withdrawn` by an edit, a
+   * group's break, or its old item airing first; `replaced` by its Ready replacement.
+   */
+  readonly reason: "late" | "displaced" | "withdrawn" | "replaced";
+  /** When the projection drops it, in epoch milliseconds; now for a withdrawal already asked. */
+  readonly at: number;
+}
+
+/** An item a forecast cannot place, and why. */
+export interface Unplaced {
+  readonly key: ItemKey;
+  /**
+   * `held` until released; `unknown`, sent with its outcome never seen; `cut`, waiting to cut a
+   * lower lane, which the projection does not model; `blocked` behind one of these: a member of
+   * its group, the item whose clip it follows, or another add of its pending batch; `beyond` what
+   * it projects: past the ten minutes it looks ahead, past the looks its run takes, or with no
+   * session on air yet.
+   */
+  readonly why: "held" | "unknown" | "cut" | "blocked" | "beyond";
+}
+
+/**
+ * What the plan projects to air from now, at the build rates it has measured: a projection, not a
+ * promise. It changes as builds are measured and items arrive, and ages between changes: a build
+ * running longer than projected shows once it ends. It looks ten minutes ahead and projects one
+ * renewal at most. Between a renewal's lead and the replacement opening, it puts new work on the
+ * replacement, but the plan keeps sending what fits to the session on air, where such a clip may
+ * air a few hundred milliseconds early. A build projected Ready right at a boundary's readiness
+ * margin can flip which clip airs first there, and the forecast is then a whole clip off.
+ */
+export interface Forecast {
+  /** When it was taken, in epoch milliseconds. */
+  readonly at: number;
+  /** In the order they air, from the clip on air, up to the last item it places. */
+  readonly clips: ReadonlyArray<ForecastedClip>;
+  /** In the order they go. */
+  readonly drops: ReadonlyArray<ForecastedDrop>;
+  /** Every item still to air that it neither airs nor drops. */
+  readonly unplaced: ReadonlyArray<Unplaced>;
+  /** When the last item it projects to air ends, in epoch milliseconds; null when none does. */
+  readonly drainsAt: number | null;
+  /** `unmeasured` before three builds were measured, when every build counts as instant. */
+  readonly basis: "measured" | "unmeasured";
+}
+
+/** Where a forecast puts an item. */
+export type ForecastedItem =
+  | { readonly _tag: "Airs"; readonly clip: ForecastedClip }
+  | { readonly _tag: "Drops"; readonly drop: ForecastedDrop }
+  | { readonly _tag: "Unplaced"; readonly why: Unplaced["why"] }
+  /** Not in it: settled already, or never submitted. */
+  | { readonly _tag: "Absent" };
+
+/** Where `forecast` puts the item `key`. */
+export const forecastFor: {
+  (key: ItemKey): (forecast: Forecast) => ForecastedItem;
+  (forecast: Forecast, key: ItemKey): ForecastedItem;
+} = dual(2, (forecast: Forecast, key: ItemKey): ForecastedItem => {
+  const clip = forecast.clips.find(
+    (entry) => entry.clip?._tag === "Item" && entry.clip.key === key,
+  );
+  if (clip !== undefined) return { _tag: "Airs", clip };
+  const drop = forecast.drops.find((entry) => entry.key === key);
+  if (drop !== undefined) return { _tag: "Drops", drop };
+  const unplaced = forecast.unplaced.find((entry) => entry.key === key);
+  return unplaced === undefined ? { _tag: "Absent" } : { _tag: "Unplaced", why: unplaced.why };
+});
+
+/**
+ * A group's places as a forecast projects them: from the start of the first it airs to the end of
+ * the last, and the places it drops. Items inserted beside its parts are not among them.
+ */
+export interface ForecastedGroup {
+  readonly startsAt: number;
+  readonly endsAt: number;
+  readonly parts: ReadonlyArray<ForecastedClip>;
+  readonly drops: ReadonlyArray<ForecastedDrop>;
+}
+
+/**
+ * Where `forecast` puts the places of the group `key`. Undefined when it airs none of them: the
+ * places it drops then appear only in `forecast.drops`.
+ */
+export const forecastGroup: {
+  (key: ItemKey): (forecast: Forecast) => ForecastedGroup | undefined;
+  (forecast: Forecast, key: ItemKey): ForecastedGroup | undefined;
+} = dual(2, (forecast: Forecast, key: ItemKey): ForecastedGroup | undefined => {
+  const parts = forecast.clips.filter((clip) => clip.group?.key === key);
+  const [first] = parts;
+  const last = parts.at(-1);
+  if (first === undefined || last === undefined) return undefined;
+  const drops = forecast.drops.filter((drop) => drop.group?.key === key);
+  return { startsAt: first.startsAt, endsAt: last.endsAt, parts, drops };
+});
+
 export interface ItemSpec<Req extends ClipRequest = Request> extends ClipSpec<Req> {
   readonly lane: string;
   readonly window?: Window | undefined;
@@ -228,8 +369,16 @@ export type GroupPart<Req extends ClipRequest = Request> = ClipSpec<Req>;
 export interface GroupSpec<Req extends ClipRequest = Request> {
   readonly key: ItemKey;
   readonly lane: string;
-  /** Built in order and aired back to back; a higher lane may still go between parts. */
+  /**
+   * Built in order and aired in order, each place once the one before it has started; a higher
+   * lane may still go between.
+   */
   readonly parts: readonly [GroupPart<Req>, ...ReadonlyArray<GroupPart<Req>>];
+  /**
+   * When the first part may air, as an item's `start`; the rest follow it, with no time of their
+   * own. `Follow` by default.
+   */
+  readonly start?: Start | undefined;
   /** It applies to the first part. */
   readonly window?: Window | undefined;
 }
@@ -239,7 +388,8 @@ export interface GroupSpec<Req extends ClipRequest = Request> {
  * `after` an item already playing airs at the next boundary; `before` one refuses.
  * It takes the anchor's lane, place, group and start. After an `At` anchor it
  * does not take the anchor's `late`: past the anchor's time it airs at the next
- * boundary.
+ * boundary. Before one, it does, unless the anchor was judged by `readyBy` and
+ * kept already: then it airs at the next boundary too.
  */
 export interface InsertSpec<Req extends ClipRequest = Request> extends ClipSpec<Req> {
   readonly before?: ItemKey | undefined;
@@ -267,7 +417,10 @@ export interface InsertSpec<Req extends ClipRequest = Request> extends ClipSpec<
    * it behind everything queued, so it is likely refused. It is refused with
    * `InvalidItem` in a cutting lane, naming the item's own key or a group key,
    * or naming filler on a playout without filler or by an index that is not a
-   * whole number.
+   * whole number. Placed in a group, it is refused with `InvalidItem` when it
+   * would wait for a member of that group after it, which waits behind it:
+   * naming that member, or an item that waits for one in turn, by the clip it
+   * follows or behind the members of its own group before it.
    */
   readonly follows?: ClipTag | undefined;
 }
@@ -275,11 +428,30 @@ export interface InsertSpec<Req extends ClipRequest = Request> extends ClipSpec<
 /** The clip that takes a queued item's place, under a key of its own. */
 export type ReplacementSpec<Req extends ClipRequest = Request> = ClipSpec<Req>;
 
+/**
+ * A group placed right before or after an anchor, as `insert` places a clip: give exactly one of
+ * `before` and `after`. Its parts form a group of their own, with its handle, `started` and
+ * `outcome`, in the anchor's lane between the anchor and its neighbour. The first part takes the
+ * anchor's start as an insert does, and `window`; the rest follow it. Only a strict lane keeps
+ * such a place, so it is refused with `InvalidItem` in any other. Its anchor and side are part of
+ * it: sent again under its key with another, it is refused with `KeyMismatch`.
+ */
+export type InsertGroupSpec<Req extends ClipRequest = Request> = {
+  readonly key: ItemKey;
+  readonly parts: readonly [GroupPart<Req>, ...ReadonlyArray<GroupPart<Req>>];
+  /** It applies to the first part. */
+  readonly window?: Window | undefined;
+} & (
+  | { readonly before: ItemKey; readonly after?: undefined }
+  | { readonly after: ItemKey; readonly before?: undefined }
+);
+
 /** One edit of a batch applied together. */
 export type Edit<Req extends ClipRequest = Request> =
   | { readonly _tag: "Submit"; readonly item: ItemSpec<Req> }
   | { readonly _tag: "SubmitGroup"; readonly group: GroupSpec<Req> }
   | { readonly _tag: "Insert"; readonly insert: InsertSpec<Req> }
+  | { readonly _tag: "InsertGroup"; readonly insert: InsertGroupSpec<Req> }
   | { readonly _tag: "Replace"; readonly key: ItemKey; readonly next: ReplacementSpec<Req> }
   | { readonly _tag: "Withdraw"; readonly key: ItemKey };
 
@@ -380,7 +552,44 @@ export interface ItemHandle {
 export interface GroupHandle {
   readonly key: ItemKey;
   readonly parts: readonly [ItemHandle, ...ReadonlyArray<ItemHandle>];
+  /** The first place's start, or how the group settled without one. */
+  readonly started: Effect.Effect<Extract<AsRunStatus, { readonly _tag: "Started" }> | NotStarted>;
+  /** How the group settled, once every place has. */
+  readonly outcome: Effect.Effect<GroupOutcome>;
 }
+
+/**
+ * How a group settled. A place is a part with the replacements that took its place: its outcome
+ * is that of its item that started, if one did, else that of its newest. Items inserted beside
+ * parts are no places.
+ */
+export type GroupOutcome =
+  /** Its first place never started: dropped, failed, or sent with its outcome never known. */
+  | {
+      readonly _tag: "NotAired";
+      readonly first: Exclude<NotStarted, { readonly _tag: "Unobserved" }>;
+    }
+  /** Its first place started, or may have (`Unobserved`). */
+  | {
+      readonly _tag: "Aired";
+      /**
+       * How many places played out, in order, before the first that did not: `Ended` as
+       * `finished`, or `Unobserved`.
+       */
+      readonly played: number;
+      /**
+       * The first place that did not play out, and how it settled; undefined when every place
+       * played out.
+       */
+      readonly stopped: { readonly part: number; readonly outcome: Settled } | undefined;
+      /** Each place's outcome, in order. */
+      readonly parts: readonly [Settled, ...ReadonlyArray<Settled>];
+    }
+  /**
+   * The playout died and could not settle the group as it closed: what aired is not known. A
+   * playout that closes settles each place it had not, so its groups are `Aired` or `NotAired`.
+   */
+  | { readonly _tag: "Indeterminate" };
 
 export type EditResult =
   | { readonly _tag: "Added"; readonly handle: ItemHandle }
@@ -390,8 +599,11 @@ export type EditResult =
 export interface EditHandle {
   readonly results: ReadonlyArray<EditResult>;
   /**
-   * The batch took effect together: every clip it adds is Ready or settled,
-   * and what it withdraws or replaces went at once.
+   * The batch took effect together: every clip it adds is Ready or settled, or
+   * one of them started, and what it withdraws went at once. An item it
+   * replaces stays as cover until its replacement is Ready, and airs instead if
+   * it starts first; what waits in a lane that replaces stays as cover until the
+   * item the batch adds there is Ready.
    */
   readonly committed: Effect.Effect<void, PlayoutClosed>;
 }
@@ -506,10 +718,27 @@ export interface State {
    * longer; and an item's actual over requested length.
    */
   readonly estimates: {
-    readonly build: { readonly median: number; readonly p95: number } | undefined;
-    readonly continuedBuild: { readonly median: number; readonly p95: number } | undefined;
+    readonly build: BuildSpread | undefined;
+    readonly continuedBuild: BuildSpread | undefined;
     readonly length: number;
+    /**
+     * Each lane's own builds, per requested second, once three were measured;
+     * the playout projects a lane's items with them.
+     */
+    readonly lanes: ReadonlyArray<{
+      readonly name: string;
+      readonly build: BuildSpread | undefined;
+      readonly continuedBuild: BuildSpread | undefined;
+    }>;
+    /** Filler's own builds, per requested second; the floor covers one of filler's slow builds. */
+    readonly filler: { readonly build: BuildSpread | undefined };
   };
+}
+
+/** Build seconds per second of clip over measured builds: their median and their p95. */
+export interface BuildSpread {
+  readonly median: number;
+  readonly p95: number;
 }
 
 /** Identifies what a clip was enqueued for, read back from the provider's clip metadata. */
@@ -606,6 +835,12 @@ export interface ClipModel<Req extends ClipRequest = Request> {
   /** The length a request without `seconds` is sent and planned at. */
   readonly defaultSeconds: number;
   /**
+   * The length the model builds for a request of `seconds` within `lengths`: H3 and FastH3 align
+   * it up to their frame grid. The playout counts a clip not built yet at this length and measures
+   * its build per second of it; a renderer that builds what it is asked answers `seconds`.
+   */
+  readonly builtSeconds: (seconds: number) => number;
+  /**
    * Where a request for the clip `tag` falls outside the model's limits: one
    * entry per field, naming the field and the limit, never the value, which may
    * be a prompt. Empty when the request is within them.
@@ -633,13 +868,18 @@ export interface ClipModel<Req extends ClipRequest = Request> {
  *   effect dies is, and whether its command applied is taken as unknown. An
  *   `enqueue` is never sent again, and unless a read of the session's queues
  *   shows its clip within `unknownTimeout`, a replacement takes over. A
- *   `remove` is asked again once the session's queues change, and a `move` a
- *   second later. After such a `setAutoplay` the session's autoplay is
- *   unknown, and the value the playout wants goes again: a second later if it
- *   is the one that died, and at once if not. Until its autoplay is as wanted,
- *   a session is sent nothing else but, as it retires, the removal of its
- *   filler once its replacement has an item Ready. A `stop` or `play` ends its
- *   cut, and the cutter airs at the next boundary.
+ *   `remove` is asked again once the session's queues change, or at once
+ *   while autoplay would start its clip next, and a `move` a second later.
+ *   After such a `setAutoplay` the session's autoplay is unknown, and the
+ *   value the playout wants goes again: a second later if it is the one that
+ *   died, and at once if not. Until its autoplay is as wanted, a session is
+ *   sent nothing else but, as it retires, the removal of its filler once its
+ *   replacement has an item Ready, and, before autoplay comes on, the removal
+ *   of a clip the playout withdrew or took off to build again. Removals that
+ *   do not apply one after another, refused or with their outcome unknown,
+ *   hold autoplay off for a second at most: then it comes on as wanted, and
+ *   the removal is still asked. A `stop` or `play` ends its cut, and the
+ *   cutter airs at the next boundary.
  * - `play` also starts clips outside a cut: while a `follows` item fences a
  *   session's autoplay, the playout starts that session's Ready head itself.
  *   One that fails or dies is asked again once the session's queues change or
@@ -697,8 +937,8 @@ export interface FillContext {
    * (`filler.protect`), as long as that takes; otherwise the shortest, which
    * keeps boundaries, and so reactions, frequent. The playout plans with this
    * length: the tiling before an `At` anchor and `place`'s `startsAt` count a
-   * filler clip not yet sent at it, so a request for another length moves them
-   * by the difference.
+   * filler clip not yet sent at the length its model builds for it, so a request
+   * for another length moves them by the difference.
    */
   readonly seconds: number;
 }
@@ -808,12 +1048,28 @@ export interface Cleanup {
 
 export interface Service<Req extends ClipRequest = Request> {
   readonly submit: (item: ItemSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
+  /**
+   * Parts that air in order, each place, a part and any replacement of it, once the one before it
+   * has started. A place that fails, on air too, is dropped, or is sent with its outcome never
+   * known ends the group: every part and insert after it goes as `withdrawn`. One that may have
+   * aired unseen (`Unobserved`) does not. The handle's `outcome` says how many places played and
+   * where the group stopped.
+   */
   readonly submitGroup: (group: GroupSpec<Req>) => Effect.Effect<GroupHandle, SubmitError>;
   readonly insert: (spec: InsertSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
+  /** A group right before or after an anchor in a strict lane; see `InsertGroupSpec`. */
+  readonly insertGroup: (spec: InsertGroupSpec<Req>) => Effect.Effect<GroupHandle, SubmitError>;
   /**
-   * Builds `next` for the item's place, lane, group position and the clip it
-   * `follows`. Once `next` is Ready the item goes as `replaced`; if the item
-   * starts first, `next` is dropped as `withdrawn`.
+   * Builds `next` for the item's place, lane, group position, start, window and
+   * the clip it `follows`, the window's `notBefore` and `startBy` measured from
+   * the item's own submission: a place has one time. A firm item's replacement
+   * is not checked against that `startBy` when admitted. While the item may
+   * still air as cover, it is not dropped for a projected miss of it, only as
+   * `late` at that deadline; once nothing covers the place, it is dropped as
+   * soon as it is projected to miss it. Once `next` is Ready the item goes as
+   * `replaced`; if the item starts first, `next` is dropped as `withdrawn`.
+   * `next` builds ahead of every other item waiting in its lane except an
+   * `Asap` one and the adds a pending batch does not hold.
    */
   readonly replace: (
     key: ItemKey,
@@ -821,11 +1077,28 @@ export interface Service<Req extends ClipRequest = Request> {
   ) => Effect.Effect<ItemHandle, SubmitError>;
   /**
    * Several edits as one make-before-break change: all are checked before any
-   * takes effect, and what the batch withdraws or replaces stays as cover
-   * until everything it adds is Ready or settled.
+   * takes effect. The batch holds what it adds from the air until all of it is
+   * Ready or settled, or until any of it starts, and what it withdraws stays as
+   * cover until then; an item it replaces stays on until its replacement is
+   * Ready, and what waits in a lane that replaces until the item the batch adds
+   * there is. An item it submits or inserts, or a group's first
+   * part, due by a firm `startBy` is checked against the plan as the batch will
+   * run and is not held: it airs as soon as it can, and builds ahead of every
+   * other item waiting in its lane except an `Asap` one. An insert, or an
+   * inserted group, may anchor on an item or group the batch adds, and beside
+   * one the batch holds it is held too, whatever its window: a firm one is then checked as the batch will run,
+   * or as it would be alone if it follows a clip or cuts, and while held is
+   * dropped as `late` only at its `startBy`. A batch whose
+   * `Withdraw` or `Replace` names an item or group it adds is refused with
+   * `InvalidItem`. An insert before an add the batch does not
+   * hold, with no firm window of its own, is held, so it may air after that
+   * add: give it a firm window too, or send it as its own edit.
    */
   readonly edit: (edits: ReadonlyArray<Edit<Req>>) => Effect.Effect<EditHandle, SubmitError>;
-  /** Releases a held `Manual` item to air at the next boundary. */
+  /**
+   * Releases a held `Manual` item to air at the next boundary. A group key releases the group's
+   * held first part, and any replacement of it; the rest follow it.
+   */
   readonly release: (key: ItemKey) => Effect.Effect<void, InvalidItem>;
   /**
    * Where a clip like `probe` would land: at the first boundary of the
@@ -841,6 +1114,16 @@ export interface Service<Req extends ClipRequest = Request> {
    * or when no boundary is makeable, as before anything has aired.
    */
   readonly place: (probe: PlaceProbe) => Effect.Effect<Placement | null, InvalidItem>;
+  /**
+   * The plan's projection of what airs from now; see `Forecast`. Once the playout has stopped it
+   * projects nothing: a forecast with no clips, taken at the call.
+   */
+  readonly forecast: Effect.Effect<Forecast>;
+  /**
+   * A forecast now, then a new one each time the plan changes; a slow reader skips to the newest.
+   * It ends when the playout stops.
+   */
+  readonly forecasts: Stream.Stream<Forecast>;
   /**
    * A group key withdraws its unstarted parts, and answers `withdrawn` if any
    * part was, else `already-started` if any started; a part key withdraws that

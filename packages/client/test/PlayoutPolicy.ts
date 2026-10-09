@@ -8,9 +8,11 @@ import { CommandFailure, ReactorError } from "../src/ReactorError.js";
 
 const config: Policy.Config = {
   defaultSeconds: 5,
+  // The scripted provider builds what is asked.
+  builtSeconds: (seconds) => seconds,
   lanes: [
-    { name: "urgent", conflict: "queue", cut: true },
-    { name: "line", conflict: "queue", cut: false },
+    { name: "urgent", conflict: "queue", cut: true, strict: false },
+    { name: "line", conflict: "queue", cut: false, strict: false },
   ],
   filler: undefined,
   maxBuildsInFlight: 1,
@@ -71,10 +73,20 @@ const buildFailed = (value: SourceClip): SourceEvent => ({
   provider: Redacted.make("the provider's words"),
 });
 
-/** Three builds measured at 0.4 s per requested second: a continued one is projected at 1 s. */
+/**
+ * Three builds of the line's items measured at 0.4 s per second, built or requested alike: every
+ * lane and filler project with them, and a continued build is projected at 1 s a second.
+ */
+const lineBuild = { lane: 1, perBuilt: 0.4, perRequested: 0.4 };
 const measured: Policy.State = {
   ...Policy.initial,
-  samples: { build: [0.4, 0.4, 0.4], continued: [], length: [], aired: [] },
+  samples: {
+    build: [lineBuild, lineBuild, lineBuild],
+    continued: [],
+    length: [],
+    overBuilt: [],
+    aired: [],
+  },
 };
 /**
  * A provider for the property below: it answers the command in flight as the
@@ -119,9 +131,20 @@ interface Lifetimes {
 const lasting: Lifetimes = { lifetimeMs: 120_000, leadMs: 30_000 };
 const renewing: Lifetimes = { lifetimeMs: 20_000, leadMs: 10_000 };
 
-const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = lasting) => {
+/** The test config with its line lane strict. */
+const strictLine: Policy.Config = {
+  ...config,
+  lanes: config.lanes.map((lane) => (lane.name === "line" ? { ...lane, strict: true } : lane)),
+};
+
+const simulate = (
+  script: Script,
+  from: Policy.State,
+  lifetimes: Lifetimes = lasting,
+  base: Policy.Config = config,
+) => {
   const settings: Policy.Config = {
-    ...config,
+    ...base,
     leadMs: lifetimes.leadMs,
     filler: {
       floor: 5,
@@ -141,7 +164,13 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
   const inputs: Array<Policy.Input> = [];
   const sessions = new Map<
     string,
-    { building: Array<SourceClip>; ready: Array<SourceClip>; playing: SourceClip | undefined }
+    {
+      building: Array<SourceClip>;
+      ready: Array<SourceClip>;
+      playing: SourceClip | undefined;
+      /** Autoplay as the plan last set it, once a change applied; unset before. */
+      autoplay?: boolean;
+    }
   >();
   const lanes = new Map<string, number>();
   const edits = new Map<
@@ -189,6 +218,29 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
   /** Keys submitted to follow a clip, and the clip each follows. */
   const paired = new Map<string, ClipTag>();
   /**
+   * Each group member's group and its order in the lane as the plan admitted it: a part's and its
+   * replacements' order is their place's, and an insert's falls between the places around it.
+   */
+  const members = new Map<string, { readonly group: string; readonly order: number }>();
+  /**
+   * Each group member's seat as the plan kept it, from the end of each step it changed in, by the
+   * number of actions then: its order, right behind the later member it sits behind, if any.
+   */
+  const seats = new Map<
+    string,
+    Array<{ readonly at: number; readonly seat: ReadonlyArray<number> }>
+  >();
+  const seatOf = (item: {
+    readonly order: number;
+    readonly behind?: string | undefined;
+  }): ReadonlyArray<number> => {
+    const ahead =
+      item.behind === undefined ? undefined : state.items.get(ItemKey.make(item.behind));
+    return ahead === undefined ? [item.order] : [...seatOf(ahead), item.order];
+  };
+  /** For each action, the input it answered, by its index in `inputs`. */
+  const inputOf: Array<number> = [];
+  /**
    * Each clip that started, the clip its item was accepted to follow, and whether the plan had
    * asked for its removal by then.
    */
@@ -197,22 +249,164 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     readonly follows: ClipTag | undefined;
     readonly removalAsked: boolean;
   }> = [];
+  /** Firm items whose first step at or after their startBy has been taken, by key and order. */
+  const due = new Set<string>();
+  /**
+   * The first step at or after a firm item's startBy withdraws it as late, unless it started, or
+   * may have, or a start of it is under way: a play of its clip in flight, or one that succeeded
+   * whose start is still to be seen. A withdrawal that came first keeps its reason, as can one the
+   * step's own input makes, an edit or a drain, or a break of the item's group, or one of an item
+   * that follows a clip; and a loss or a failed command in that step may fail it instead. An item
+   * whose enqueue outcome is unknown may hold a clip the plan cannot name, so it is checked at the
+   * first step it is known again, as a read adopts it, unless it settles as unknown: it may have
+   * aired unseen. The scripted provider starts clips when the script says, so only the plan's
+   * decision is checked, not start times.
+   */
+  const decideLate = (before: Policy.State, input: Policy.Input) => {
+    if (state.closed) return;
+    for (const item of state.items.values()) {
+      if (item.spec.window?.firm !== true || item.startBy === undefined || clock < item.startBy)
+        continue;
+      if (item.phase === "Unknown") continue;
+      const id = `${item.spec.key}@${String(item.order)}`;
+      if (due.has(id)) continue;
+      due.add(id);
+      if (item.phase === "Started" || item.startedAt !== undefined) continue;
+      const settled = item.phase === "Settled" ? item.status?._tag : undefined;
+      if (settled === "Unobserved" || settled === "Unknown") continue;
+      const lane = state.sessions.find((value) => value.id === item.sessionId);
+      const command = lane?.busy?.command;
+      if (
+        item.clipId !== undefined &&
+        ((command?._tag === "Play" && command.clipId === item.clipId) ||
+          lane?.played?.clipId === item.clipId)
+      )
+        continue;
+      // Why it went or is going: the reason it was dropped or is withdrawn, or how it settled.
+      const status = item.status;
+      let reason: string | undefined = item.withdraw;
+      if (item.phase === "Settled")
+        reason = status?._tag === "Dropped" ? status.reason : status?._tag;
+      if (reason === undefined) {
+        problems.push(
+          `${item.spec.key}, firm and due by ${String(item.startBy)}, was kept at ${String(clock)}, ${item.phase}`,
+        );
+        continue;
+      }
+      const was = before.items.get(item.spec.key);
+      const fresh =
+        was !== undefined &&
+        was.order === item.order &&
+        was.phase !== "Settled" &&
+        was.withdraw === undefined;
+      if (
+        fresh &&
+        reason !== "late" &&
+        item.group === undefined &&
+        item.spec.follows === undefined &&
+        input._tag !== "Edit" &&
+        input._tag !== "Drain" &&
+        !(reason === "Failed" && (input._tag === "Lost" || input._tag === "Result"))
+      )
+        problems.push(
+          `${item.spec.key}, firm and due by ${String(item.startBy)}, went at ${String(clock)} as ${reason}`,
+        );
+    }
+  };
+  /** Whether `lane` keeps its items in the order of their places. */
+  const strictLane = (lane: number): boolean => settings.lanes[lane]?.strict === true;
+  /** Each item's identity: its key, and its order, which a key used afresh does not share. */
+  const idOf = (item: { readonly spec: { readonly key: string }; readonly order: number }) =>
+    `${item.spec.key}@${String(item.order)}`;
+  /** When a clip of each item was first Ready on the provider, by `idOf`. */
+  const readied = new Map<string, number>();
+  const readyNow = (value: SourceClip): void => {
+    const owner = value.tag?._tag === "Item" ? state.items.get(value.tag.key) : undefined;
+    if (owner !== undefined && !readied.has(idOf(owner))) readied.set(idOf(owner), clock);
+  };
+  /** Items whose first step at or after their readiness bound has been taken, by `idOf`. */
+  const judged = new Set<string>();
+  /** Keys of the items that were kept at that step: a replacement of one is kept with it. */
+  const kept = new Set<string>();
+  /**
+   * The first step at or after a `readyBy` item's bound keeps it only if a clip of it was Ready on
+   * the provider by then, unless it replaces an item kept there. An item whose enqueue outcome is
+   * unknown is judged at the first step it is known again; one with a play of its clip in flight,
+   * or a start still to be seen, at the step after that.
+   */
+  const decideReadyBy = () => {
+    if (state.closed) return;
+    for (const item of state.items.values()) {
+      const start = item.spec.start;
+      if (start._tag !== "At" || typeof start.late !== "object" || !("readyByMs" in start.late))
+        continue;
+      const bound = start.time + start.late.readyByMs;
+      if (clock < bound || item.phase === "Unknown" || judged.has(idOf(item))) continue;
+      const lane = state.sessions.find((value) => value.id === item.sessionId);
+      const command = lane?.busy?.command;
+      if (
+        item.clipId !== undefined &&
+        ((command?._tag === "Play" && command.clipId === item.clipId) ||
+          lane?.played?.clipId === item.clipId)
+      )
+        continue;
+      judged.add(idOf(item));
+      if (
+        item.phase === "Started" ||
+        item.phase === "Settled" ||
+        item.startedAt !== undefined ||
+        item.withdraw !== undefined
+      )
+        continue;
+      kept.add(item.spec.key);
+      let old = replaced.get(item.spec.key);
+      while (old !== undefined && !kept.has(old)) old = replaced.get(old);
+      const ready = readied.get(idOf(item));
+      if (old === undefined && (ready === undefined || ready > bound))
+        problems.push(
+          `${item.spec.key}, judged by its readiness at ${String(bound)}, was kept at ${String(clock)} though not Ready by then`,
+        );
+    }
+  };
 
   const send = (input: Policy.Input, at = clock + 7) => {
     clock = at;
     inputs.push(input);
     if (input._tag === "Source" && input.event._tag === "Started") {
       const { clipId, tag } = input.event.clip;
+      const removalAsked = actions.some(
+        (action) =>
+          action._tag === "Command" &&
+          action.command._tag === "Remove" &&
+          action.command.clipId === clipId,
+      );
       starts.push({
         tag,
         follows: tag?._tag === "Item" ? state.items.get(tag.key)?.spec.follows : undefined,
-        removalAsked: actions.some(
-          (action) =>
-            action._tag === "Command" &&
-            action.command._tag === "Remove" &&
-            action.command.clipId === clipId,
-        ),
+        removalAsked,
       });
+      // In a strict lane an item starts only once each placed before it there has started, or
+      // holds nothing: settled, sent with its outcome unknown, or being withdrawn. Inserts, which
+      // sit beside their anchors, are left out, as a start the plan asked to remove is.
+      const starting = tag?._tag === "Item" ? state.items.get(tag.key) : undefined;
+      if (
+        starting !== undefined &&
+        strictLane(starting.spec.lane) &&
+        starting.anchor === undefined &&
+        starting.startedAt === undefined &&
+        !removalAsked
+      )
+        for (const other of state.items.values())
+          if (
+            other.spec.lane === starting.spec.lane &&
+            other.anchor === undefined &&
+            other.order < starting.order &&
+            (other.phase === "Accepted" || other.phase === "Building" || other.phase === "Ready") &&
+            other.withdraw === undefined
+          )
+            problems.push(
+              `${starting.spec.key} started at ${String(at)} while ${other.spec.key}, placed before it in its strict lane, waited ${other.phase}`,
+            );
     }
     if (input._tag === "OpenFailed") {
       if (input.retryAfterMs !== undefined) retryAfter = { at, until: at + input.retryAfterMs };
@@ -238,9 +432,32 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           new Set([...(applied.get(filler.index) ?? [])].filter((id) => id !== filler.sessionId)),
         );
     }
+    const before = state;
     const result = Policy.step(settings, state, input, { mono: clock, wall: clock });
     state = result.state;
     wake = result.wake;
+    decideLate(before, input);
+    decideReadyBy();
+    // A `readyBy` item goes as late only once its bound has come; a firm one may go as late before,
+    // once projected to miss its startBy.
+    for (const action of result.actions) {
+      if (action._tag !== "Emit" || action.event._tag !== "AsRun") continue;
+      const status = action.event.event.status;
+      const item = state.items.get(action.event.event.key);
+      const start = item?.spec.start;
+      if (
+        status._tag === "Dropped" &&
+        status.reason === "late" &&
+        start?._tag === "At" &&
+        typeof start.late === "object" &&
+        "readyByMs" in start.late &&
+        clock < start.time + start.late.readyByMs &&
+        item?.spec.window?.firm !== true
+      )
+        problems.push(
+          `${action.event.event.key} went late at ${String(clock)}, before its readiness bound at ${String(start.time + start.late.readyByMs)}`,
+        );
+    }
     // Nothing falls due before the wake: a Tick at any instant before it does nothing, and wakes
     // at the same time. It is sampled just after the input, halfway, and just before the wake.
     const gap = result.wake === undefined ? 3_600_000 : result.wake - clock;
@@ -257,8 +474,17 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
             `gave ${quiet.actions.map((action) => (action._tag === "Command" ? action.command._tag : action._tag === "Emit" ? action.event._tag : action._tag)).join(", ") || "nothing"} and a wake at ${String(quiet.wake)}`,
         );
     }
+    for (const item of state.items.values()) {
+      if (item.group === undefined) continue;
+      const seat = seatOf(item);
+      const kept = seats.get(item.spec.key) ?? [];
+      const last = kept.at(-1)?.seat;
+      if (last === undefined || last.join() !== seat.join())
+        seats.set(item.spec.key, [...kept, { at: actions.length + result.actions.length, seat }]);
+    }
     for (const action of result.actions) {
       actions.push(action);
+      inputOf.push(inputs.length - 1);
       if (action._tag === "Command") {
         const command = action.command;
         if (closed.has(action.sessionId))
@@ -383,7 +609,10 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
         }
         replacing.push({ key: value.spec.key, group: joins ? part.group : undefined });
       }
-      if (value._tag === "SubmitGroup" && !groups.has(value.key)) {
+      if (
+        (value._tag === "SubmitGroup" || value._tag === "InsertGroup") &&
+        !groups.has(value.key)
+      ) {
         fresh.push(value.key);
         groups.set(
           value.key,
@@ -400,15 +629,21 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     const before = actions.length;
     send({ _tag: "Edit", id, edits: list, batch });
     // An item takes its lane when accepted, a replacement its item's and an insert its anchor's;
-    // a key the plan holds already keeps the one it has.
+    // a key the plan holds already keeps the one it has. A replacement or an insert joins its
+    // item's or its anchor's group, if it has one.
     for (const action of actions.slice(before))
       if (
         action._tag === "Emit" &&
         action.event._tag === "AsRun" &&
         action.event.event.status._tag === "Accepted"
       ) {
-        const lane = state.items.get(action.event.event.key)?.spec.lane;
-        if (lane !== undefined) lanes.set(action.event.event.key, lane);
+        const admitted = state.items.get(action.event.event.key);
+        if (admitted !== undefined) lanes.set(action.event.event.key, admitted.spec.lane);
+        if (admitted?.group !== undefined)
+          members.set(action.event.event.key, {
+            group: admitted.group.key,
+            order: admitted.order,
+          });
       }
     // A group or a replacement the plan refused is none: its key may yet name an item of its own.
     if (actions.some((action) => action._tag === "Refused" && action.id === id)) {
@@ -427,16 +662,24 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
       }
     }
   };
-  const lates: ReadonlyArray<Policy.Late> = ["nextBoundary", "drop", { skipAfterMs: 1_000 }];
+  const lates: ReadonlyArray<Policy.Late> = [
+    "nextBoundary",
+    "drop",
+    { skipAfterMs: 1_000 },
+    { readyByMs: 2_000 },
+  ];
   // Some items start at an instant, some within a window, and some are held and never released:
-  // each brings deadlines of its own.
-  const timing = (index: number): Pick<Policy.Spec, "start"> | Pick<Policy.Spec, "window"> =>
+  // each brings deadlines of its own. A strict lane refuses a held one, which follows instead.
+  const timing = (
+    index: number,
+    lane: number,
+  ): Pick<Policy.Spec, "start"> | Pick<Policy.Spec, "window"> =>
     index % 5 === 1
       ? {
           start: {
             _tag: "At",
             time: clock + 2_000 + (index % 3) * 3_000,
-            late: Array.getUnsafe(lates, index % 3),
+            late: Array.getUnsafe(lates, index % lates.length),
           },
         }
       : index % 5 === 2
@@ -447,15 +690,34 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
               ...(index % 2 === 0 ? { notBeforeMs: 1_000 } : {}),
             },
           }
-        : index % 7 === 6
+        : index % 7 === 6 && !strictLane(lane)
           ? { start: { _tag: "Manual" } }
           : { start: { _tag: "Follow" } };
   const cued = (name: string, lane: number, index: number): Policy.Spec => ({
     ...spec(name, lane, 5 + (index % 3) * 5),
     cues: index % 2 === 0 ? [{ name: "cue", from: "end", offsetMs: 500 }] : [],
     continuity: index % 4 === 3,
-    ...timing(index),
+    ...timing(index, lane),
   });
+
+  /** A group of two placed `side` of `anchor`, its first part `first`, as `insertGroup` sends it. */
+  const besideGroup = (
+    name: string,
+    first: Policy.Spec,
+    index: number,
+    anchor: ItemKey,
+    side: "before" | "after",
+  ): Policy.EditInput => {
+    const { window: _window, ...later } = cued(`${name}b`, 1, index + 1);
+    return {
+      _tag: "InsertGroup",
+      key: key(name),
+      parts: [first, { ...later, start: { _tag: "Follow" } }],
+      fingerprint: name,
+      anchor,
+      side,
+    };
+  };
 
   /** The provider carries out the command in flight on a lane, and answers it. */
   const complete = (busy: {
@@ -467,6 +729,7 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     const command = busy.command;
     let clipId: string | undefined;
     let refused = false;
+    let armed = false;
     if (value !== undefined)
       switch (command._tag) {
         case "Enqueue":
@@ -517,6 +780,9 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           break;
         }
         case "Autoplay":
+          value.autoplay = command.enabled;
+          // As autoplay comes on with nothing playing, H3 arms its Ready head at once.
+          armed = command.enabled && value.playing === undefined && value.ready.length > 0;
           break;
       }
     send({
@@ -524,6 +790,11 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
       id: busy.id,
       result: refused ? failed("replied") : { _tag: "Done", clipId },
     });
+    if (armed && value !== undefined) {
+      const next = Array.getUnsafe(value.ready.splice(0, 1), 0);
+      value.playing = next;
+      send({ _tag: "Source", sessionId: busy.sessionId, event: { _tag: "Started", clip: next } });
+    }
     observe(busy.sessionId);
   };
   /** The provider opens the session the plan asked for. */
@@ -559,7 +830,8 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
         return edit(index, [{ _tag: "Submit", spec: cued(name, 1, index) }]);
       case "urgent": {
         // Some wait to air right after the next filler clip, or the one after it, submitted as
-        // `place` answers after filler: `Asap`, in the lowest lane.
+        // `place` answers after filler: `Asap`, in the lowest lane, or in turn if that lane is
+        // strict, which refuses an `Asap` start.
         if (index % 4 === 0) {
           const follows: ClipTag = {
             _tag: "Filler",
@@ -568,7 +840,10 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           const urgent = cued(`u${String(index)}`, 1, index);
           paired.set(urgent.key, follows);
           return edit(index, [
-            { _tag: "Submit", spec: { ...urgent, start: { _tag: "Asap" }, follows } },
+            {
+              _tag: "Submit",
+              spec: { ...urgent, start: { _tag: strictLane(1) ? "Follow" : "Asap" }, follows },
+            },
           ]);
         }
         return edit(index, [{ _tag: "Submit", spec: cued(`u${String(index)}`, 0, index) }]);
@@ -583,6 +858,17 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
         return edit(index, [{ _tag: "Replace", key: key(name), spec: replacement }]);
       }
       case "insert": {
+        // In a strict lane some insert a group of two.
+        if (strictLane(1) && index % 3 === 2)
+          return edit(index, [
+            besideGroup(
+              `n${String(index)}`,
+              cued(`n${String(index)}a`, 1, index),
+              index,
+              key(name),
+              index % 2 === 0 ? "after" : "before",
+            ),
+          ]);
         // Some inserts after an item must air right after it.
         const inserted = cued(`i${String(index)}`, 1, index);
         const pair = index % 2 === 0 && index % 3 === 0;
@@ -601,25 +887,67 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
           },
         ]);
       }
-      case "batch":
+      case "batch": {
+        // Some batches add an item due by a firm deadline, which the batch does not hold; some an
+        // insert beside what the batch adds, firm or not; and some replace an item still waiting.
+        const firm = { window: { startByMs: 4_000 + (index % 3) * 4_000, firm: true } };
+        const added = { ...cued(`b${String(index)}`, 1, index), ...(index % 3 === 1 ? firm : {}) };
+        const inserted = {
+          ...cued(`b${String(index)}i`, 1, index + 1),
+          ...(index % 4 === 1 ? firm : {}),
+        };
+        const waiting = [...state.items.values()].filter(
+          (item) => item.phase !== "Settled" && item.phase !== "Started" && item.spec.key !== name,
+        );
+        const target = index % 5 < 2 ? waiting[index % Math.max(1, waiting.length)] : undefined;
+        const replacement = cued(`b${String(index)}r`, 1, index);
+        // A replacement follows what the item it replaces follows.
+        const follows = target === undefined ? undefined : paired.get(target.spec.key);
+        if (follows !== undefined) paired.set(replacement.key, follows);
         return edit(
           index,
           [
             { _tag: "Withdraw", key: key(name) },
-            { _tag: "Submit", spec: cued(`b${String(index)}`, 1, index) },
+            { _tag: "Submit", spec: added },
+            ...(index % 2 === 1
+              ? [
+                  // In a strict lane some insert a group of two instead.
+                  strictLane(1) && index % 3 === 0
+                    ? besideGroup(
+                        `b${String(index)}n`,
+                        { ...inserted, key: key(`b${String(index)}na`) },
+                        index,
+                        added.key,
+                        index % 8 < 4 ? "after" : "before",
+                      )
+                    : ({
+                        _tag: "Insert",
+                        spec: inserted,
+                        anchor: added.key,
+                        side: index % 8 < 4 ? "after" : "before",
+                      } as const),
+                ]
+              : []),
+            ...(target === undefined
+              ? []
+              : [{ _tag: "Replace", key: target.spec.key, spec: replacement } as const]),
           ],
           true,
         );
-      case "group":
+      }
+      case "group": {
+        // The group's timing is its first part's, as the runtime builds it; the rest follow it.
+        const { window: _window, ...later } = cued(`g${String(index)}b`, 1, index + 1);
         return edit(index, [
           {
             _tag: "SubmitGroup",
             key: key(`g${String(index)}`),
             lane: 1,
-            parts: [cued(`g${String(index)}a`, 1, index), cued(`g${String(index)}b`, 1, index + 1)],
+            parts: [cued(`g${String(index)}a`, 1, index), { ...later, start: { _tag: "Follow" } }],
             fingerprint: `g${String(index)}`,
           },
         ]);
+      }
       case "drain":
         drains.push(100 + index);
         return send({
@@ -650,13 +978,16 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
       case "ready": {
         const [sessionId, value] = builder() ?? [];
         if (sessionId === undefined || value === undefined) return send({ _tag: "Tick" });
-        value.ready.push(Array.getUnsafe(value.building.splice(0, 1), 0));
+        const built = Array.getUnsafe(value.building.splice(0, 1), 0);
+        value.ready.push(built);
+        readyNow(built);
         return observe(sessionId);
       }
       case "start": {
         // The provider brings the air to a clip: it opens the session the plan asked for and,
         // with nothing there to play, carries out the autoplay and enqueue asked of it and
-        // finishes the clip it builds first.
+        // finishes the clip it builds first. With autoplay off it starts nothing, as H3 starts
+        // nothing then: only a play does.
         if (onAir() === undefined && wanted > 0) open();
         for (let asked = 0; asked < 2 && onAir()?.building.length === 0; asked++) {
           const air = state.sessions.find((value) => value.id === state.air);
@@ -671,9 +1002,12 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
         const pending = state.sessions.find((other) => other.id === state.air)?.busy;
         if (pending?.command._tag === "Remove") complete({ ...pending, sessionId: airId() });
         if (value.ready.length === 0 && value.building.length > 0) {
-          value.ready.push(Array.getUnsafe(value.building.splice(0, 1), 0));
+          const built = Array.getUnsafe(value.building.splice(0, 1), 0);
+          value.ready.push(built);
+          readyNow(built);
           observe(airId());
         }
+        if (value.autoplay === false) return send({ _tag: "Tick" });
         const next = value.ready.shift();
         if (next === undefined) return send({ _tag: "Tick" });
         value.playing = next;
@@ -729,7 +1063,21 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
     }
   });
   send({ _tag: "Close" });
-  return { actions, inputs, edits, drains, problems, groups, named, replaced, paired, starts };
+  return {
+    actions,
+    inputs,
+    inputOf,
+    edits,
+    drains,
+    problems,
+    groups,
+    members,
+    seats,
+    named,
+    replaced,
+    paired,
+    starts,
+  };
 };
 
 /**
@@ -739,8 +1087,12 @@ const simulate = (script: Script, from: Policy.State, lifetimes: Lifetimes = las
  */
 // Test fixtures are called directly rather than composed as a public pipeable API.
 // @effect-diagnostics-next-line missingPipeableSignature:off
-const check = (script: Script, lifetimes: Lifetimes = lasting): void => {
-  for (const from of [Policy.initial, measured]) keeps(script, from, lifetimes);
+const check = (
+  script: Script,
+  lifetimes: Lifetimes = lasting,
+  base: Policy.Config = config,
+): void => {
+  for (const from of [Policy.initial, measured]) keeps(script, from, lifetimes, base);
 };
 /**
  * What a script keeps as it runs, from each start `check` runs it from: nothing falls due before
@@ -750,20 +1102,39 @@ const check = (script: Script, lifetimes: Lifetimes = lasting): void => {
  */
 // Test fixtures are called directly rather than composed as a public pipeable API.
 // @effect-diagnostics-next-line missingPipeableSignature:off
-const wakes = (script: Script, lifetimes: Lifetimes = lasting): void => {
+const wakes = (
+  script: Script,
+  lifetimes: Lifetimes = lasting,
+  base: Policy.Config = config,
+): void => {
   for (const from of [Policy.initial, measured]) {
-    const { problems } = simulate(script, from, lifetimes);
+    const { problems } = simulate(script, from, lifetimes, base);
     assert.deepStrictEqual(problems, [], problems.join("; "));
   }
 };
-const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lasting): void => {
-  const { actions, edits, drains, problems, groups, named, replaced, paired, starts } = simulate(
-    script,
-    from,
-    lifetimes,
-  );
+const keeps = (
+  script: Script,
+  from: Policy.State,
+  lifetimes: Lifetimes = lasting,
+  base: Policy.Config = config,
+): void => {
+  const {
+    actions,
+    inputs,
+    inputOf,
+    edits,
+    drains,
+    problems,
+    groups,
+    members,
+    seats,
+    named,
+    replaced,
+    paired,
+    starts,
+  } = simulate(script, from, lifetimes, base);
   // What `wakes` checks as the script runs: a refusal is then always attributable.
-  assert.deepStrictEqual(problems, []);
+  assert.deepStrictEqual(problems, [], problems.join("; "));
   const history = new Map<string, Array<Policy.Action & { readonly _tag: "Emit" }>>();
   for (const action of actions)
     if (action._tag === "Emit" && action.event._tag === "AsRun")
@@ -870,32 +1241,129 @@ const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lastin
       if (action.outcome === "not-found")
         assert.notInclude(statuses, "Started", `${name} not found: ${statuses.join(",")}`);
     }
-  // An item is dropped as withdrawn only when a withdrawal or a drain named it, an earlier
-  // part of its group failed or was dropped (a replaced part keeps those after it), or it is
-  // a replacement whose item started first, as 0.7.0 withdrew it.
-  if (drains.length === 0) {
-    const reasons = (name: string) =>
-      (history.get(name) ?? []).flatMap((action) =>
-        action.event._tag === "AsRun" && action.event.event.status._tag === "Dropped"
-          ? [action.event.event.status.reason]
-          : [],
-      );
-    const allowed = new Set(named);
-    for (const parts of groups.values()) {
-      const broken = parts.filter(
-        (part) =>
-          tags(part.key).includes("Failed") ||
-          reasons(part.key).some((reason) => reason !== "replaced"),
-      );
-      const from = Math.min(...broken.map((part) => part.place));
-      for (const part of parts) if (part.place > from) allowed.add(part.key);
+  // A group's places are its parts, each with the replacements that took its place. A place is
+  // broken once none of its items has started or settled Unobserved, which may have aired, and
+  // each failed, was dropped or emitted Unknown, so it can no longer air in order; or once an
+  // item of it started and then failed, as a part lost with its session on air does. Each status
+  // counts from the action that carries it.
+  const asRuns = actions.flatMap((action, index) =>
+    action._tag === "Emit" && action.event._tag === "AsRun"
+      ? [{ index, key: String(action.event.event.key), status: action.event.event.status }]
+      : [],
+  );
+  /** `name`'s as-run statuses among the actions before `end`. */
+  const statusesBefore = (name: string, end: number): ReadonlyArray<string> =>
+    asRuns.flatMap((entry) => (entry.key === name && entry.index < end ? [entry.status._tag] : []));
+  /** A group's places, each by the keys of its items and its order in the lane. */
+  const placesOf = (
+    group: string,
+  ): ReadonlyArray<{ readonly keys: ReadonlyArray<string>; readonly order: number }> => {
+    const byPlace = new Map<number, Array<string>>();
+    for (const part of groups.get(group) ?? [])
+      byPlace.set(part.place, [...(byPlace.get(part.place) ?? []), part.key]);
+    return [...byPlace.values()].flatMap((keys) => {
+      const order = keys.map((key) => members.get(key)?.order).find((value) => value !== undefined);
+      return order === undefined ? [] : [{ keys, order }];
+    });
+  };
+  /** Whether a place is broken by the action at `end`, among the items it had by then. */
+  const brokenBy = (keys: ReadonlyArray<string>, end: number): boolean => {
+    const had = keys.map((key) => statusesBefore(key, end)).filter((so) => so.includes("Accepted"));
+    if (had.some((so) => so.includes("Started") && so.includes("Failed"))) return true;
+    return (
+      had.length > 0 &&
+      !had.some((so) => so.includes("Started") || so.includes("Unobserved")) &&
+      had.every((so) =>
+        so.some((status) => status === "Failed" || status === "Dropped" || status === "Unknown"),
+      )
+    );
+  };
+  /** The index just past the last action of the step that took the action at `index`. */
+  const stepEnd = (index: number): number => {
+    let end = index + 1;
+    while (end < actions.length && inputOf[end] === inputOf[index]) end++;
+    return end;
+  };
+  /** A member's seat when the action at `index` was taken: as the plan kept it at that step's end. */
+  const seatAt = (name: string, order: number, index: number): ReadonlyArray<number> => {
+    const end = stepEnd(index);
+    return (seats.get(name) ?? []).findLast((entry) => entry.at <= end)?.seat ?? [order];
+  };
+  /** Seats in their group's order: a seat right behind a member comes after it, and before the next. */
+  const compareSeat = (a: ReadonlyArray<number>, b: ReadonlyArray<number>): number => {
+    for (let index = 0; index < Math.min(a.length, b.length); index++) {
+      const order = (a[index] ?? 0) - (b[index] ?? 0);
+      if (order !== 0) return order;
     }
-    for (const next of replaced.keys())
-      for (let old = replaced.get(next); old !== undefined; old = replaced.get(old))
-        if (tags(old).includes("Started")) allowed.add(next);
-    for (const name of history.keys())
-      if (reasons(name).includes("withdrawn"))
-        assert.isTrue(allowed.has(name), `${name} was dropped though nothing withdrew it`);
+    return a.length - b.length;
+  };
+  // An item is dropped as withdrawn only when a withdrawal or a drain named it, a place of its
+  // group ahead of its seat is broken, then or once the script ends (a withdrawal still landing
+  // may drop the item that breaks it later), or it is a replacement whose item started first, as
+  // 0.7.0 withdrew it. An insert whose build went out continuing from a later member's clip sits
+  // right behind that member, so that member's place is ahead of it.
+  if (drains.length === 0) {
+    const allowed = (name: string, index: number): boolean => {
+      if (named.has(name)) return true;
+      for (let old = replaced.get(name); old !== undefined; old = replaced.get(old))
+        if (tags(old).includes("Started")) return true;
+      const member = members.get(name);
+      if (member === undefined) return false;
+      const seat = seatAt(name, member.order, index);
+      return placesOf(member.group).some(
+        (place) =>
+          compareSeat([place.order], seat) < 0 &&
+          (brokenBy(place.keys, index) || brokenBy(place.keys, Infinity)),
+      );
+    };
+    for (const entry of asRuns)
+      if (entry.status._tag === "Dropped" && entry.status.reason === "withdrawn")
+        assert.isTrue(
+          allowed(entry.key, entry.index),
+          `${entry.key} was dropped though nothing withdrew it`,
+        );
+  }
+  // A group's members start in order, and none starts once a place ahead of it is broken: each
+  // place ahead had started first, or was broken by the end of the step that started the member,
+  // since one read of a session's queues names a clip playing before the one that left them
+  // unseen settles. A start the plan had asked to remove is excused, as a follower's is below.
+  /** Whether the clip whose start the action at `index` records had been asked to go first. */
+  const removalAsked = (index: number): boolean => {
+    const input = inputs[inputOf[index] ?? -1];
+    const event = input?._tag === "Source" ? input.event : undefined;
+    const clipId =
+      event?._tag === "Started"
+        ? event.clip.clipId
+        : event?._tag === "State"
+          ? event.state.playing?.clipId
+          : undefined;
+    return actions
+      .slice(0, index)
+      .some(
+        (action) =>
+          action._tag === "Command" &&
+          action.command._tag === "Remove" &&
+          action.command.clipId === clipId,
+      );
+  };
+  for (const entry of asRuns) {
+    const member = members.get(entry.key);
+    if (entry.status._tag !== "Started" || member === undefined || removalAsked(entry.index))
+      continue;
+    const settled = stepEnd(entry.index);
+    for (const place of placesOf(member.group)) {
+      if (place.order >= member.order) continue;
+      const first = place.keys.some((key) => statusesBefore(key, entry.index).includes("Started"));
+      const unseen = place.keys.some((key) => statusesBefore(key, settled).includes("Unobserved"));
+      assert.isTrue(
+        first || unseen || brokenBy(place.keys, settled),
+        `${entry.key} started before ${place.keys.join(" or ")}, ahead of it in its group`,
+      );
+      assert.isFalse(
+        brokenBy(place.keys, entry.index),
+        `${entry.key} started after ${place.keys.join(" or ")}, ahead of it in its group, broke`,
+      );
+    }
   }
   // Only an item that follows a clip is dropped as displaced.
   for (const name of history.keys()) {
@@ -908,8 +1376,9 @@ const keeps = (script: Script, from: Policy.State, lifetimes: Lifetimes = lastin
     if (displaced) assert.isTrue(paired.has(name), `${name} was displaced but follows nothing`);
   }
   // An item that follows a clip starts right after it. The simulated provider ends a clip whenever
-  // the script says and starts the next at once, where H3 waits out a seam that no removal lands
-  // within: a start the plan had asked to remove is excused. The Playout tests own that race.
+  // the script says and, with autoplay on, starts the next at once, where H3 waits out a seam that
+  // no removal lands within: a start the plan had asked to remove is excused. With autoplay off it
+  // starts nothing, as H3 doesn't. The Playout tests own that race.
   for (const [index, start] of starts.entries()) {
     const follows = start.follows;
     if (follows === undefined || start.removalAsked) continue;
@@ -1081,10 +1550,31 @@ const counterexamples: ReadonlyArray<Script> = [
     "lost",
     "batch",
   ],
+  // A follower waiting Ready at its session's head, fenced, aired after the wrong clip: the
+  // scripted provider started it after an early end, with autoplay off there and the lane busy
+  // with another enqueue, where H3 starts nothing and the plan sent no play.
+  ["urgent", "insert", "start", "urgent", "start", "ready", "end", "start"],
+  // A replacement whose item started first aired too: its removal, refused once the item had left
+  // the air, went again only as its build ended, when the provider started it.
+  [
+    "open",
+    "unknown",
+    "batch",
+    "wake",
+    "done",
+    "replace",
+    "start",
+    "start",
+    "end",
+    "refused",
+    "start",
+  ],
 ];
 
 export {
   config,
+  strictLine,
+  lasting,
   key,
   spec,
   clip,

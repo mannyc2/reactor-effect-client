@@ -5,7 +5,7 @@
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Console, Effect, FileSystem, Layer, Option, Redacted, Stream } from "effect";
+import { Config, Console, Effect, Layer, Option, Redacted, Stream } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import {
@@ -14,6 +14,7 @@ import {
   Reactor,
   ReactorError,
   ReactorTest,
+  References,
   Session,
 } from "reactor-effect-client";
 import { NativePeer } from "reactor-effect-native";
@@ -210,15 +211,11 @@ const terminal = Command.make(
     ),
   },
   Effect.fn(function* ({ prompts, reference }) {
-    const fs = yield* FileSystem.FileSystem;
-    // An image H3 would refuse is refused here, before a session is allocated and billed.
+    // An image H3 would refuse, or one larger than a session uploads, is refused here, before a
+    // session is allocated and billed.
     const references = yield* Option.match(reference, {
       onNone: () => Effect.succeed([]),
-      onSome: (path) =>
-        fs.readFile(path).pipe(
-          Effect.flatMap((bytes) => H3.validateReference({ _tag: "Bytes", bytes })),
-          Effect.map((validated) => [validated]),
-        ),
+      onSome: (path) => Effect.map(References.image(References.file(path)), (image) => [image]),
     });
     yield* watch(prompts.length > 0 ? prompts : playlist, references);
   }),

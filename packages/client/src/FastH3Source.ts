@@ -13,6 +13,7 @@ import type * as Scope from "effect/Scope";
 import type { Tokens } from "./CoordinatorClient.js";
 import * as FastH3 from "./FastH3.js";
 import type { Allocation, Allocated } from "./H3Source.js";
+import type { Opener } from "./Ledger.js";
 import type { ClipModel, Source } from "./Playout.js";
 import type { Reactor, CreateOptions } from "./Reactor.js";
 import type { AcquisitionFailure, CommandFailure } from "./ReactorError.js";
@@ -136,3 +137,33 @@ export const resume = (
   AcquisitionFailure,
   Reactor | Crypto.Crypto | Scope.Scope
 > => Source_.resume(fastH3)(options);
+
+/**
+ * A ledger opener for FastH3 sessions: `ledger.source(FastH3Source.opener({ tokens }))`. It
+ * opens with `open`, recording each session before it connects, and resumes an entry with
+ * `resume`, the same options and tokens bound to its session.
+ */
+export const opener = (
+  options: Omit<OpenOptions, "onAllocated">,
+): Opener<FastH3.Request, Reactor | Crypto.Crypto> => ({
+  model: FastH3.modelName,
+  open: (record) =>
+    open({
+      ...options,
+      onAllocated: ({ allocation }) =>
+        record({ sessionId: allocation.sessionId, endsAt: allocation.endsAt }),
+    }),
+  resume: (entry) =>
+    resume({
+      holdLastFrame: options.holdLastFrame,
+      provider: options.provider,
+      recovery: options.recovery,
+      tokens: options.tokens,
+      allocation: {
+        sessionId: entry.sessionId,
+        ownership: "owned",
+        model: entry.model,
+        ...(entry.endsAt === undefined ? {} : { endsAt: entry.endsAt }),
+      },
+    }),
+});

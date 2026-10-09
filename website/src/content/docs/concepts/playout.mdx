@@ -86,10 +86,11 @@ A submission is refused before anything is sent with one of these tagged errors:
 | `WouldMissDeadline` | The plan cannot start the item before its firm `startBy`                |
 | `PlayoutClosed`     | The playout is draining or closed                                       |
 
-An item whose request omits `seconds` is sent at its model's `defaultSeconds` (5 s for H3),
-the length the plan counts it at.
+An item whose request omits `seconds` is sent at its model's `defaultSeconds` (5 s for H3).
 A filler request without `seconds` is sent at the length passed to its `clip` callback in
-`FillContext.seconds`. A request that names its length is sent unchanged.
+`FillContext.seconds`. A request that names its length is sent unchanged. The plan counts a clip
+not built yet at the length its model builds for the request (`ClipModel.builtSeconds`): H3
+aligns 5 s up to its frame grid, 124 frames or 5.167 s.
 
 ## Lanes
 
@@ -105,6 +106,8 @@ export const lanes: ReadonlyArray<Playout.LaneSpec> = [
   { name: "viewer", conflict: "skip" },
   // A new item replaces the one waiting.
   { name: "ticker", conflict: "replace" },
+  // Airs its items in the order of their places, whatever their times.
+  { name: "line", strict: true },
   // Waits behind its lane's items: the default.
   { name: "show" },
 ];
@@ -116,6 +119,14 @@ export const lanes: ReadonlyArray<Playout.LaneSpec> = [
 - **`skip`**: a new item is refused with `LaneBusy` while the lane has one waiting or playing.
 - **`cut: true`**: once its own item is Ready, the lane stops a playing clip of a strictly lower
   lane, or filler, unless that clip ends within a second. A clip is stopped at most once.
+- **`strict: true`**: the lane airs its items in the order of their places, submissions at the end
+  and inserts beside their anchors, whatever their starts: an item waits while one placed before it
+  is live and not on air yet, unless that one was sent with its outcome never seen, or is being
+  withdrawn. A slow item holds up those after it until it airs or its own deadline drops it, so
+  give the lane's items deadlines. `Asap` and `Manual` starts are refused there with
+  `InvalidItem`. Keeping the order costs more per waiting item: on one machine, admitting 200
+  items into one strict lane took 2.4 s in all, against 0.4 s in a lane that is not strict, and
+  600 items took about 190 s. Keep a strict lane to tens of items waiting.
 
 On hosted H3, `stop` names no clip and lands after its reply, so a cut goes a step at a time: the
 playout turns autoplay off, stops the clip if it still plays, waits for H3 to report it ended,
@@ -131,8 +142,8 @@ whenever the air it has secured runs low. The air secured, `state.runwaySeconds`
 and the Ready clips that will air after it, on the session on air and then on its replacement.
 
 - `runway: { floor, target }`: below `floor`, filler refills up to `target`. Once three builds
-  are measured, the floor covers at least one slow (p95) build, so a refill started there is
-  Ready in time.
+  are measured, the floor covers at least one of filler's slow (p95) builds, so a refill started
+  there is Ready in time.
 - `clip(context)`: called once per filler clip, with its `index`, the `runwaySeconds` and the
   `seconds` to ask for. Keep it pure. A request outside its model's limits fails the playout with
   `InvalidFiller`, since asking again would get the same request.
@@ -141,8 +152,8 @@ and the Ready clips that will air after it, on the session on air and then on it
   the playout asks for the longest clip that airs before it, if `lengths.min` fits.
   H3 aligns each up to its frame grid, so the `At` item
   may air up to 0.7 s late for each tile. The plan counts a filler clip not yet sent at the
-  `seconds` it asks `clip` for, so a callback that returns another length moves the tiling, and
-  `place`'s `startsAt`, by the difference.
+  length its model builds for the `seconds` it asks `clip` for, so a callback that returns another
+  length moves the tiling, and `place`'s `startsAt`, by the difference.
 - `protect`: what goes first when an item's build would outlast the air secured. With `"air"`, the
   default, once three builds are measured, such an item waits for one filler clip that builds
   sooner and covers the rest. An item with a time to meet (an `At` start, a `startBy`, an `Asap`
@@ -151,7 +162,8 @@ and the Ready clips that will air after it, on the session on air and then on it
 
 ## Starts and windows
 
-An item's `start` says when it may air. Only `Follow` keeps its lane's order.
+An item's `start` says when it may air. Only `Follow` keeps its lane's order, and any start in a
+strict lane.
 
 | `start`             | Airs                                                                                                                       |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------- |
@@ -161,11 +173,21 @@ An item's `start` says when it may air. Only `Follow` keeps its lane's order.
 | `At { time, late }` | At the first boundary after `time` (epoch milliseconds, wall clock)                                                        |
 
 `late` says what to do when that boundary comes late: `nextBoundary`, `skipIfLaterThan` a
-duration, or `drop`. A `window` adds `notBefore` and `startBy`, measured from submission on the
-monotonic clock. A `firm` item is dropped at `startBy` with reason `late`, and refused up front
-with `WouldMissDeadline` when the plan cannot make it; a soft one may still air, with
-`lateByMillis` on its start. A start already under way at a deadline, a clip H3 holds armed for
-its seam or a `play` of it in flight, may still land, up to a command's round trip past it.
+duration, `drop`, or `readyBy` a duration. `readyBy` judges the item once, that long after its
+time: it is kept if it was Ready by then and nothing but filler airs before it, the clip on air and
+the Ready clips ahead of it, and then airs at the next boundary however late; otherwise it is
+dropped as `late` then. So a clip made in time may wait out an idle clip that cannot be cut short,
+while one not made by then, or waiting behind another item, goes. A firm `startBy` still applies,
+and a replacement of a kept item is kept too. Items judged at the same moment are judged in the
+order they air, after what goes late by its own time then, so an item that goes then holds back
+none of them, whatever order they were sent in. While a removal that breaks a group is in flight,
+the judgment waits for it to land, since the group's later parts go with it.
+
+A `window` adds `notBefore` and `startBy`, measured from submission on the monotonic clock. A `firm`
+item is dropped at `startBy` with reason `late`, and refused up front with `WouldMissDeadline` when
+the plan cannot make it; a soft one may still air, with `lateByMillis` on its start. A start already
+under way at a deadline, a clip H3 holds armed for its seam or a `play` of it in flight, may still
+land, up to a command's round trip past it.
 
 ```ts
 import { Clock, Effect } from "effect";
@@ -262,12 +284,13 @@ replaces it is Ready.
 
 | Method               | What it does                                                                                                                                       |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `submitGroup(group)` | Parts built in order and aired back to back; a higher lane may go between                                                                          |
+| `submitGroup(group)` | Parts aired in order, each once the one before it started; a higher lane may go between. See [Groups](#groups)                                     |
 | `insert(spec)`       | A clip right `before` or `after` an item, taking its lane, place, group and start                                                                  |
+| `insertGroup(spec)`  | A group right `before` or `after` an item in a strict lane, its first part taking the item's start as an insert does. See [Lines](#lines)          |
 | `replace(key, next)` | A new clip for a queued item's place; if the item starts first, `next` is dropped as `withdrawn`                                                   |
 | `edit(edits)`        | Several of these, checked together and applied as one change                                                                                       |
 | `withdraw(key)`      | Answers `withdrawn`, `already-started` or `not-found`                                                                                              |
-| `release(key)`       | Airs a held `Manual` item at the next boundary                                                                                                     |
+| `release(key)`       | Airs a held `Manual` item at the next boundary; a group's key releases its first part                                                              |
 | `drain({ finish })`  | Admits nothing more. `playing`, the default, withdraws what has not started; `accepted` airs everything accepted first, except held `Manual` items |
 
 ```ts
@@ -291,18 +314,173 @@ export const correct = Effect.fn("correct")(function* (
       },
     },
   ]);
-  // All it adds is Ready or settled; what it removes went at once.
+  // All it adds is Ready or settled, or some of it started; what it removes went at once.
   yield* batch.committed;
 });
 ```
 
-A batch holds what it adds behind the clips queued until all of it is Ready, though with nothing
-else to air H3 may start one first, and a replacement builds ahead of every other item waiting in
-its lane except an `Asap` one. Send an urgent insert alone, and a
-replacement meant to air after it as a second edit once the insert is `Building`.
+A batch is admitted all or nothing. It holds what it adds behind the clips queued until all of it
+is Ready or settled, or until any of it starts, as H3 may start a held clip with nothing else to
+air. It commits then: what it withdraws goes, while an item it replaces stays as cover until its
+replacement is Ready, and what waits in a lane that replaces until the item it adds there is. An
+item it submits or inserts, or a group's first part, due by a firm `startBy` is checked against
+the plan as the batch will run and is not held: it airs as soon as it can, and builds ahead of
+every other item waiting in its lane except an `Asap` one. So one edit can carry an insert due
+right after the clip on air, a replacement of the clip after it and the withdrawals that go with
+them. An insert may anchor on an item or group the same batch adds, and beside one the batch holds
+it is held too, whatever its window: a firm one is then checked as the batch will run, or as it
+would be alone if it follows a clip or cuts, and while held is dropped as `late` only at its
+`startBy`. A batch whose `Withdraw` or `Replace` names an
+item or group it adds is refused with `InvalidItem`. An insert placed before an add its batch does
+not hold, with no firm window of
+its own, is held like any other add, so it may air after that add: give it a firm window too, or
+send it as its own edit.
+
+A replacement builds ahead of every other item waiting in its lane except an `Asap` one and the
+adds a pending batch does not hold. It takes its item's start and window, `notBefore` and
+`startBy` measured from the item's own submission. A firm item's replacement is not refused for
+that deadline. While the item it replaces may still air as cover, it is not dropped for a projected
+miss of it either, only as `late` at the deadline it took over; once nothing covers the place, as
+when nothing was built for that item, it is dropped as soon as it is projected to miss it.
 
 In the two `show` runs on hosted H3, an edit batch took effect 0.91 s before its boundary
 (2026-09-28) and 1.05 s before it (2026-09-29), and the clip it withdrew never aired.
+
+## Groups
+
+A group is material that must air in order, such as a host's line of several beats. Each of its
+places, a part and any replacement of it, airs once the one before it has started; a higher lane
+may still go between, and a clip inserted beside a part keeps its place among them. A place that
+fails, on air too as when its session is lost, is dropped, or is sent with its outcome never known
+ends the group: every part and insert after it goes as `withdrawn`. A place that may have aired
+unseen (`Unobserved`) does not end it. An insert with `continuity` whose build would be Ready only
+after the clip before it ends continues, as anywhere, from the clip playing by then, and when that
+is a later part of its group, it airs right behind that part from then on, as do its replacements
+and the inserts placed right before or after it. The group's `start` is any `Start` for its first
+part, `Follow` by default, and the rest follow it; `release` takes the group's key. The handle's
+`started` resolves with the first place's start, and `outcome` with how many places played out in
+order and where the group stopped.
+
+```ts
+import { Clock, Effect } from "effect";
+import { Playout } from "reactor-effect-client";
+
+export const answer = Effect.fn("answer")(function* (
+  playout: Playout.Playout["Service"],
+) {
+  const now = yield* Clock.currentTimeMillis;
+  // Its first beat at the moment it answers, the second right behind it.
+  const line = yield* playout.submitGroup({
+    key: Playout.ItemKey.make("answer-3"),
+    lane: "show",
+    start: { _tag: "At", time: now + 10_000, late: { _tag: "nextBoundary" } },
+    parts: [
+      {
+        key: Playout.ItemKey.make("answer-3a"),
+        request: { prompt: "The host leans in and smiles", seconds: 5 },
+      },
+      {
+        key: Playout.ItemKey.make("answer-3b"),
+        request: { prompt: "The host turns to the window", seconds: 5 },
+      },
+    ],
+  });
+  const outcome = yield* line.outcome;
+  switch (outcome._tag) {
+    case "Aired": {
+      const { played, stopped } = outcome;
+      if (stopped === undefined) return `all ${played} beats played`;
+      return `${played} played, then beat ${stopped.part}: ${stopped.outcome._tag}`;
+    }
+    case "NotAired":
+      return `never aired: ${outcome.first._tag}`;
+    case "Indeterminate":
+      return "the playout died before it could settle the group";
+  }
+});
+```
+
+After a session is lost unplanned, the next session takes a part that would air there before
+the part ahead of it off before its autoplay comes on; if that removal fails, the part may air
+once out of order, and the as-run shows it. Group order has run only on the simulated Reactor and
+in the policy's property checks, not on hosted H3.
+
+### Lines
+
+A stream of groups that answer moments on air, such as a host's lines, goes in a strict lane, so
+that the lines air first in, first out: one written late for an older moment never overtakes the
+line before it. Each line is a group whose `At` start is its moment, judged by `readyBy`: made in
+time, it may wait out the idle clip playing then; not made, it goes, and the lines after it move
+up. An acknowledgement of something on air is a group inserted beside a line, sent with the
+replacement it calls for in one `edit`.
+
+```ts
+import { Clock, Effect } from "effect";
+import { Playout } from "reactor-effect-client";
+
+export const say = Effect.fn("say")(function* (
+  playout: Playout.Playout["Service"],
+  moment: number,
+) {
+  // The line airs at its moment, or behind the line before it, if made within 4 s of it.
+  yield* playout.submitGroup({
+    key: Playout.ItemKey.make(`line-${moment}`),
+    lane: "line",
+    start: { _tag: "At", time: moment, late: { _tag: "readyBy", by: "4 seconds" } },
+    parts: [
+      {
+        key: Playout.ItemKey.make(`line-${moment}-a`),
+        request: { prompt: "The host looks up from the desk", seconds: 5 },
+      },
+      {
+        key: Playout.ItemKey.make(`line-${moment}-b`),
+        request: { prompt: "The host answers, smiling", seconds: 5 },
+      },
+    ],
+  });
+});
+
+export const acknowledge = Effect.fn("acknowledge")(function* (
+  playout: Playout.Playout["Service"],
+  moment: number,
+) {
+  const now = yield* Clock.currentTimeMillis;
+  // A nod right after the line's first beat, and its second beat rewritten to follow it.
+  const batch = yield* playout.edit([
+    {
+      _tag: "InsertGroup",
+      insert: {
+        key: Playout.ItemKey.make(`nod-${now}`),
+        after: Playout.ItemKey.make(`line-${moment}-a`),
+        parts: [
+          {
+            key: Playout.ItemKey.make(`nod-${now}-a`),
+            request: { prompt: "The host nods at the caller", seconds: 5 },
+          },
+        ],
+      },
+    },
+    {
+      _tag: "Replace",
+      key: Playout.ItemKey.make(`line-${moment}-b`),
+      next: {
+        key: Playout.ItemKey.make(`line-${moment}-b2`),
+        request: { prompt: "The host answers the caller", seconds: 5 },
+      },
+    },
+  ]);
+  yield* batch.committed;
+});
+```
+
+An inserted group takes the anchor's lane and a place right beside it, its first part the
+anchor's start as an insert does (after an `At` anchor without its lateness, and before one kept
+by `readyBy` at the next boundary), and its `window`;
+the rest follow it. It is refused with `InvalidItem` in a lane that is not strict, where what is
+placed after it need not wait for it, and its anchor and side are part of it, as an insert's are.
+In a batch it follows the batch's rules: a first part due by a firm `startBy` is not held, and it
+may anchor on what the batch adds. Strict lanes, `readyBy` and inserted groups have run only on
+the simulated Reactor and in the policy's property checks, not on hosted H3.
 
 ## Placement
 
@@ -351,11 +529,12 @@ when it would start (`startsAt`), how to submit it (`anchor`: insert after that 
 `"next"`, an `Asap` submission to the lowest lane) and what the projection rests on (`basis`:
 `ready`, `projected` or `unmeasured`).
 
-`place` projects the plan as it is, at the median build rates, and reserves nothing. `before` is
-not enforced, since a clip submitted after the call may come between. A clip not built yet
-counts at the length the last clip that asked for as much aired at, so `startsAt` may be off by
-up to 0.7 s for each clip ahead at a length not asked for before. A `follows` clip gets no filler
-cover, and a cutting lane refuses it.
+`place` projects the plan as it is, at the median build rates, and reserves nothing: each lane's
+items and filler at their own rate once three of their builds are measured, per second of the
+length their model builds. `before` is not enforced, since a clip submitted after the call may
+come between. A clip not built yet counts at the length the last clip that asked for as much aired
+at, else at the length its model builds for it. A `follows` clip gets no filler cover, and a
+cutting lane refuses it.
 
 While a follower waits, autoplay is fenced before its build once a clip H3 reported starting plays
 on that session, so an early end cannot air it before the clip it follows. A follower not Ready,
@@ -366,6 +545,65 @@ command whose outcome is unknown can hold the air dark there until H3's reply de
 of an item in a pending batch may be built and then dropped before the batch commits. `place`
 answers a boundary only with a clip projected Ready a readiness margin and one provider command
 before it, and on a replacement only if it airs there before that session's cap.
+
+## Forecast
+
+An application that writes for a slot needs to know when what it queued will play: when a clip
+starts, to bring a page on air just before it, and when everything queued will have played, to
+pace what it writes next. `forecast` reads that from the plan's own forward run, the one `place`
+and firm admission use. Each clip it projects to air, from the one on air up to the last item it
+places, comes with its start and end in epoch milliseconds (`startsAt`, `endsAt`), how far it is
+from air (`state`: `playing`, `ready`, `building` or `queued`) and the session it airs on, the
+one on air or its replacement. `drops` lists the items it projects to go without airing, why and
+when, and `drainsAt` is when the last item it projects to air ends.
+
+```ts
+import { Clock, Effect } from "effect";
+import { Playout } from "reactor-effect-client";
+
+export const lookAhead = Effect.fn("lookAhead")(function* (
+  playout: Playout.Playout["Service"],
+  key: Playout.ItemKey,
+) {
+  const forecast = yield* playout.forecast;
+  const now = yield* Clock.currentTimeMillis;
+  const item = Playout.forecastFor(forecast, key);
+  return {
+    // Null when it does not air in the forecast: `item` says why.
+    startsIn: item._tag === "Airs" ? item.clip.startsAt - now : null,
+    // Null when nothing queued airs.
+    drainsIn: forecast.drainsAt === null ? null : forecast.drainsAt - now,
+    item,
+  };
+});
+```
+
+`forecastFor` says where a forecast puts one item: it `Airs`, it `Drops` (`late`, `displaced`,
+`withdrawn` or `replaced`, with when), it is `Unplaced`, or it is `Absent`, settled already or
+never submitted. `forecastGroup` gives a group's places that air, from the first one's start to
+the last one's end, and the places it drops. It is undefined when none of the group's places airs,
+and the places it drops then appear only in `drops`.
+
+A forecast does not project what the plan cannot know. `unplaced` lists each item it neither airs
+nor drops, and why: a held `Manual` item (`held`), one whose enqueue's outcome is unknown
+(`unknown`), one waiting to cut a lower lane (`cut`), one waiting behind any of these as a member
+of its group, as the clip it follows or as another add of its pending batch (`blocked`), and one
+beyond what it projects: past the ten minutes it looks ahead or the looks its run takes, or with
+no session on air yet (`beyond`). It projects one renewal at most, and `basis` is `unmeasured`
+until three builds were measured, when every build counts as instant.
+
+A forecast is a projection at the build rates the plan has measured, not a promise. It changes as
+builds are measured and items arrive, and it ages between changes: a build that runs longer than
+projected shows only once it ends. Between a renewal's lead and the replacement opening, a forecast
+puts new work on the replacement, but the plan keeps sending what fits to the session on air,
+where such a clip may air a few hundred milliseconds early. A build projected Ready right at a
+boundary's readiness margin can flip which clip airs first there, and the forecast is then a whole
+clip off. `forecasts` gives a forecast now and a new one each time the plan changes, and none while
+it holds still; a slow reader skips to the newest.
+
+Forecasts have run only on the simulated Reactor, not on hosted H3. There, with nothing submitted
+after the forecast, items submitted as a filler clip started began within 0.1 s of their
+`startsAt`, and a renewal's items, submitted once the replacement had opened, within 0.15 s.
 
 ## Renewal across sessions
 
@@ -488,7 +726,9 @@ export const asRunLog = (playout: Playout.Playout["Service"]) =>
 `Moderated`, `Reconnecting` and `Reconnected`), each filler clip's start and end, a
 `ReaderOverflow` when a reader of the picture or sound falls behind, and `Starved` when nothing is
 left to play. `playout.state` holds the clip on air, the lanes, each session's role (`on-air`,
-`replacement` or `retiring`), the runway and the build estimates the playout has learned.
+`replacement` or `retiring`), the runway and the build estimates the playout has learned: over
+every build, and each lane's and filler's apart (`estimates.lanes`, `estimates.filler`), which
+it projects that lane's items and filler with.
 `playout.video` and `playout.audio` are the on-air picture and sound as decoded frames, continuing
 across renewals.
 

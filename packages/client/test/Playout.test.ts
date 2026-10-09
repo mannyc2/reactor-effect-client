@@ -21,6 +21,7 @@ import {
 import * as CoordinatorClient from "../src/CoordinatorClient.js";
 import * as H3 from "../src/H3.js";
 import {
+  FastH3Source,
   H3Source,
   LocalSource,
   Playout,
@@ -192,6 +193,142 @@ layer(hosted)("order", (it) => {
         const [, second] = group.parts;
         assert.strictEqual((yield* second?.outcome ?? Effect.die("no second part"))._tag, "Ended");
       }),
+  );
+});
+
+layer(hosted)("group outcomes", (it) => {
+  it.effect("a group's outcome counts the places that played and names where it stopped", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const playout = yield* Playout.make({
+        open: LocalSource.open({
+          build: (local) =>
+            local.request.prompt === "two"
+              ? Effect.fail("the renderer refused")
+              : Effect.as(Effect.sleep("500 millis"), { value: undefined }),
+        }),
+        lanes: [{ name: "speech" }],
+      });
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "speech",
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+          { key: key("p3"), request: clip("three") },
+        ],
+      });
+      const outcome = yield* group.outcome;
+      if (outcome._tag !== "Aired") return yield* Effect.die(`the group settled ${outcome._tag}`);
+      assert.strictEqual(outcome.played, 1);
+      assert.strictEqual(outcome.stopped?.part, 1);
+      assert.strictEqual(outcome.stopped?.outcome._tag, "Failed");
+      assert.deepStrictEqual(outcome.parts[2], { _tag: "Dropped", reason: "withdrawn" });
+    }),
+  );
+
+  it.effect("a group whose first part is dropped never aired", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      // Due now and dropped once late: nothing can be Ready by then.
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        start: { _tag: "At", time: yield* Clock.currentTimeMillis, late: { _tag: "drop" } },
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      });
+      assert.deepStrictEqual(yield* group.outcome, {
+        _tag: "NotAired",
+        first: { _tag: "Dropped", reason: "late" },
+      });
+    }),
+  );
+
+  it.effect("a replacement that loses its race does not end the group", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        parts: [
+          { key: key("a"), request: clip("a") },
+          { key: key("b"), request: clip("b") },
+          { key: key("c"), request: clip("c") },
+        ],
+      });
+      const started = yield* group.parts[0].started;
+      if (started._tag !== "Started") return yield* Effect.die("the first part never started");
+      // b is Ready behind a; replaced a second before a ends, it starts before its replacement is
+      // built, and the replacement goes.
+      const end = started.at + started.seconds * 1000;
+      yield* Effect.sleep(Duration.millis(end - 1000 - (yield* Clock.currentTimeMillis)));
+      const replacement = yield* playout.replace(key("b"), { key: key("b2"), request: clip("b2") });
+      assert.deepStrictEqual(yield* replacement.outcome, { _tag: "Dropped", reason: "withdrawn" });
+      const outcome = yield* group.outcome;
+      assert.strictEqual(outcome._tag === "Aired" ? outcome.played : outcome._tag, 3);
+      assert.deepStrictEqual(yield* starts, ["a", "b", "c"]);
+    }),
+  );
+
+  it.effect("a replaced first part answers for its group", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const long = yield* playout.submit({
+        key: key("long"),
+        lane: "line",
+        request: clip("long", 15),
+      });
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        parts: [
+          { key: key("a"), request: clip("a") },
+          { key: key("b"), request: clip("b") },
+        ],
+      });
+      yield* long.started;
+      const replacement = yield* playout.replace(key("a"), { key: key("a2"), request: clip("a2") });
+      const started = yield* group.started;
+      assert.strictEqual(started._tag, "Started");
+      assert.deepStrictEqual(started, yield* replacement.started);
+    }),
+  );
+
+  it.effect("a group inserted between another group's parts airs there, in a strict lane", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start({
+        lanes: [
+          { name: "urgent", cut: true },
+          { name: "line", strict: true },
+        ],
+      });
+      const line = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      });
+      const answer = yield* playout.insertGroup({
+        key: key("answer"),
+        after: key("p1"),
+        parts: [
+          { key: key("a1"), request: clip("answer one") },
+          { key: key("a2"), request: clip("answer two") },
+        ],
+      });
+      assert.deepStrictEqual(
+        answer.parts.map((part) => part.key),
+        [key("a1"), key("a2")],
+      );
+      yield* line.outcome;
+      yield* answer.outcome;
+      assert.deepStrictEqual(yield* starts, ["p1", "a1", "a2", "p2"]);
+    }),
   );
 });
 
@@ -546,6 +683,32 @@ layer(hosted)("edits", (it) => {
     }),
   );
 
+  it.effect("a group is refused in a skip lane while the lane is busy", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start();
+      const line = {
+        key: key("line"),
+        lane: "quiet",
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      } as const;
+      const once = yield* playout.submitGroup(line);
+      // Submitted again, it is the group the lane holds, answered as it was.
+      const again = yield* playout.submitGroup(line);
+      assert.strictEqual(again.key, once.key);
+      const busy = yield* Effect.flip(
+        playout.submitGroup({
+          key: key("next"),
+          lane: "quiet",
+          parts: [{ key: key("n1"), request: clip("n1") }],
+        }),
+      );
+      assert.strictEqual(busy._tag, "LaneBusy");
+    }),
+  );
+
   // A caller retrying an insert whose first attempt landed gets that insert, not a refusal.
   it.effect("answers an insert made again once its anchor has aired with its own handle", () =>
     Effect.gen(function* () {
@@ -823,6 +986,63 @@ layer(hosted)("time", (it) => {
     }),
   );
 
+  // Its second part builds once the first is built, long before the group's time, and waits.
+  it.effect("a group with an At start airs its first part at its time and the rest behind it", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start({
+        filler: {
+          runway: { floor: "5 seconds", target: "8 seconds" },
+          clip: ({ index, seconds }) => clip(`idle ${index}`, seconds),
+        },
+      });
+      const measured = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      yield* measured.outcome;
+      const secured = yield* eventually(playout.state, (state) => state.runwaySeconds >= 8);
+      const due = (yield* Clock.currentTimeMillis) + secured.runwaySeconds * 1000 + 6_000;
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        start: { _tag: "At", time: due, late: { _tag: "nextBoundary" } },
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      });
+      const [first, second] = group.parts;
+      const started = yield* first.started;
+      if (started._tag !== "Started") return yield* Effect.die("the first part never started");
+      assert.isAtLeast(started.at, due);
+      // A filler tile may run over by less than one step of H3's grid.
+      assert.isBelow(started.lateByMillis ?? 0, 1_000);
+      const next = yield* (second ?? first).started;
+      if (next._tag !== "Started") return yield* Effect.die("the second part never started");
+      assert.isBelow(next.at - (started.at + started.seconds * 1000), 1_000);
+      assert.deepStrictEqual(yield* starts, ["a", "p1", "p2"]);
+    }),
+  );
+
+  it.effect("a Manual group airs once released by its key", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      const group = yield* playout.submitGroup({
+        key: key("line"),
+        lane: "line",
+        start: { _tag: "Manual" },
+        parts: [
+          { key: key("p1"), request: clip("one") },
+          { key: key("p2"), request: clip("two") },
+        ],
+      });
+      yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      yield* Effect.sleep("12 seconds");
+      assert.deepStrictEqual(yield* starts, ["a"]);
+      yield* playout.release(key("line"));
+      const [first, second] = group.parts;
+      yield* (second ?? first).outcome;
+      assert.deepStrictEqual(yield* starts, ["a", "p1", "p2"]);
+    }),
+  );
+
   // A projected time is seldom a whole nanosecond, as the virtual clock counts: the playout waits
   // until the clock reaches it, rather than just short of it and on until the clock steps again.
   it.effect("drops a firm item as its projection reaches its startBy, not at a later step", () =>
@@ -835,6 +1055,9 @@ layer(hosted)("time", (it) => {
       for (const handle of measured) yield* handle.outcome;
       const median = (yield* playout.state).estimates.build?.median ?? 0;
       assert.isAbove(median, 0);
+      // The plan counts a build per second of the length H3 builds, and each build measured asked
+      // for 5 s.
+      const perBuilt = (median * 5) / H3Source.model.builtSeconds(5);
       // Nothing airs, and none may build before 5 s: each would miss its startBy from 8 s less
       // its own build on, a time for each length. Each goes alone, on the lane that cuts, which
       // airs a clip once it is Ready, so only that projection decides it.
@@ -857,7 +1080,8 @@ layer(hosted)("time", (it) => {
         )[0] ?? Number.NaN;
       const late = lengths.map((seconds) => {
         const name = `firm ${String(seconds)}`;
-        return at(name, "Dropped") - at(name, "Accepted") - (8_000 - seconds * median * 1_000);
+        const build = H3Source.model.builtSeconds(seconds) * perBuilt * 1_000;
+        return at(name, "Dropped") - at(name, "Accepted") - (8_000 - build);
       });
       // The virtual clock's wall and monotonic readings part by less than a microsecond here.
       assert.deepStrictEqual(
@@ -976,6 +1200,59 @@ layer(seamed)("admission", (it) => {
         ...Array.from({ length: 3 }, () => "Ended"),
         ...Array.from({ length: 5 }, () => "WouldMissDeadline"),
       ]);
+    }),
+  );
+
+  // An acknowledgement of what is on air: an insert due in the slot right after it, and in the
+  // same edit a replacement of the clip after that, whose words follow the insert. The clip on air
+  // outlasts the insert's build, but not both builds.
+  it.effect("a firm insert batched with a replacement builds first and airs in its slot", () =>
+    Effect.gen(function* () {
+      const { playout, starts } = yield* start();
+      // Three builds measured, so the plan projects each item's build from the median.
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const handle of measured) yield* handle.outcome;
+      const x = yield* playout.submit({ key: key("x"), lane: "line", request: clip("x", 15) });
+      const y = yield* playout.submit({ key: key("y"), lane: "line", request: clip("y") });
+      const started = yield* x.started;
+      if (started._tag !== "Started") return yield* Effect.die(`x ${started._tag}`);
+      const end = started.at + started.seconds * 1000;
+      yield* Effect.sleep(Duration.millis(end - 5_000 - (yield* Clock.currentTimeMillis)));
+      // The plan counts a build per second of the length H3 builds, and each build measured asked
+      // for 5 s.
+      const median = (yield* playout.state).estimates.build?.median ?? 0;
+      const perBuilt = (median * 5) / H3Source.model.builtSeconds(5);
+      const buildMs = (seconds: number) => H3Source.model.builtSeconds(seconds) * perBuilt * 1_000;
+      const rest = end - (yield* Clock.currentTimeMillis);
+      assert.isTrue(
+        buildMs(5) < rest && rest < buildMs(5) + buildMs(15),
+        `${rest.toFixed(0)} ms of x left, builds of ${buildMs(5).toFixed(0)} and ${buildMs(15).toFixed(0)} ms`,
+      );
+      const { results } = yield* playout.edit([
+        {
+          _tag: "Insert",
+          insert: {
+            key: key("u"),
+            after: key("x"),
+            request: clip("u"),
+            window: { startBy: Duration.millis(rest + 1_500), firm: true },
+          },
+        },
+        { _tag: "Replace", key: key("y"), next: { key: key("y2"), request: clip("y2", 15) } },
+      ]);
+      const [u, next] = results;
+      if (u?._tag !== "Added" || next?._tag !== "Added") return yield* Effect.die("not added");
+      const aired = yield* u.handle.started;
+      assert.deepStrictEqual(aired._tag === "Started" ? aired.lateByMillis : aired, undefined);
+      const order = yield* starts;
+      assert.deepStrictEqual(order.slice(order.indexOf("x"), order.indexOf("x") + 2), ["x", "u"]);
+      // The replacement took y's place once Ready, or y aired first and the replacement went.
+      const fates = [yield* y.outcome, yield* next.handle.outcome].map((outcome) =>
+        outcome._tag === "Dropped" ? `Dropped ${outcome.reason}` : outcome._tag,
+      );
+      assert.oneOf(fates.join(", "), ["Dropped replaced, Ended", "Ended, Dropped withdrawn"]);
     }),
   );
 });
@@ -1396,7 +1673,8 @@ layer(seamed, { timeout: "10 minutes" })("place", (it) => {
           problems.push(...(yield* forecast(seed, "30 minutes", 100, "5 seconds")));
         assert.deepStrictEqual(problems, []);
       }),
-    { timeout: 60_000 },
+    // About 10 s under Node on Linux and Bun, and 40-60 s or more under Node on CI's macOS runners.
+    { timeout: 180_000 },
   );
 
   // Every call falls near a renewal. The replacement's opening and its first start are only
@@ -1450,6 +1728,398 @@ layer(seamed)("place across short sessions", (it) => {
       // projects no renewal after it.
       yield* Effect.sleep("6 seconds");
       assert.isNull(yield* playout.place({ key: key("u") }));
+    }),
+  );
+});
+
+/** Filler on H3's grid at the length the plan asks for, as `place`'s checks use. */
+const gridFiller = (floor: Duration.Input, target: Duration.Input) => ({
+  runway: { floor, target },
+  clip: ({ index }: Playout.FillContext) => clip(`idle ${index}`, grid(0)),
+  lengths: { min: grid(0), max: grid(0) },
+});
+
+/** The next filler clip's start: what is submitted then builds well inside that clip. */
+const nextFiller = (playout: Playout.Service) =>
+  playout.events.pipe(
+    Stream.filter((event) => event._tag === "Filler" && event.phase === "Started"),
+    Stream.runHead,
+  );
+
+/**
+ * How far each of `handles` started from where `projected` put it, past `toleranceMs`, or the
+ * empty list. One on the replacement may be `renewalMs` off.
+ */
+const startErrors = (
+  projected: Playout.Forecast,
+  handles: ReadonlyArray<Playout.ItemHandle>,
+  toleranceMs: number,
+  renewalMs = toleranceMs,
+) =>
+  Effect.forEach(handles, (handle) =>
+    Effect.gen(function* () {
+      const found = Playout.forecastFor(projected, handle.key);
+      const started = yield* handle.started;
+      if (found._tag !== "Airs" || started._tag !== "Started")
+        return [`${handle.key}: forecast ${found._tag}, then ${started._tag}`];
+      const errorMs = started.at - found.clip.startsAt;
+      const bound = found.clip.session === "replacement" ? renewalMs : toleranceMs;
+      return Math.abs(errorMs) <= bound
+        ? []
+        : [`${handle.key} on the ${found.clip.session} started ${errorMs.toFixed(0)} ms off`];
+    }),
+  ).pipe(Effect.map((errors) => errors.flat()));
+
+/** Where `projected` drops `name`, or undefined when it does not. */
+const dropIn = (projected: Playout.Forecast, name: string) => {
+  const found = Playout.forecastFor(projected, key(name));
+  return found._tag === "Drops" ? found.drop : undefined;
+};
+
+/** When the as-run reported `name` dropped, in epoch milliseconds. */
+const droppedAt = (all: ReadonlyArray<Playout.Event>, name: string): number | undefined =>
+  all.flatMap((event) =>
+    event._tag === "AsRun" && event.event.key === name && event.event.status._tag === "Dropped"
+      ? [event.event.at]
+      : [],
+  )[0];
+
+// The fixed seam is the forward run's own, so a forecast's error is what the run gets wrong.
+layer(seamed, { timeout: "10 minutes" })("forecast", (it) => {
+  it.effect("a forecast's starts hold with nothing submitted after it", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start({
+        lanes: [{ name: "news" }, { name: "line" }],
+        filler: gridFiller("8 seconds", "16 seconds"),
+      });
+      yield* eventually(playout.state, (state) => state.estimates.build !== undefined);
+      yield* nextFiller(playout);
+      const lineup = [
+        { name: "a", lane: "line", seconds: grid(0) },
+        { name: "n", lane: "news", seconds: grid(3) },
+        { name: "b", lane: "line", seconds: grid(5) },
+        { name: "m", lane: "news", seconds: grid(1) },
+        { name: "c", lane: "line", seconds: grid(2) },
+      ];
+      const handles = yield* Effect.forEach(lineup, ({ name, lane, seconds }) =>
+        playout.submit({ key: key(name), lane, request: clip(name, seconds) }),
+      );
+      const projected = yield* playout.forecast;
+      assert.strictEqual(projected.basis, "measured");
+      assert.deepStrictEqual(yield* startErrors(projected, handles, 100), []);
+    }),
+  );
+
+  // Sessions of 75 s renewed 40 s before their cap, as `place`'s renewal checks run. What is
+  // submitted once the replacement is open builds there and airs after the switch, whose grace
+  // and first start are only projected.
+  it.effect("a forecast's starts hold across a renewal", () =>
+    Effect.gen(function* () {
+      const { playout, events } = yield* start(
+        {
+          lifetime: "75 seconds",
+          renewal: { lead: "40 seconds", grace: "100 millis" },
+          lanes: [{ name: "line" }],
+          filler: gridFiller("15 seconds", "15 seconds"),
+        },
+        "20 millis",
+      );
+      const opened = (all: ReadonlyArray<Playout.Event>) =>
+        all.filter((event) => event._tag === "Session" && event.event._tag === "Opened").length;
+      yield* eventually(events, (all) => opened(all) >= 2);
+      yield* nextFiller(playout);
+      const handles = yield* Effect.forEach(["a", "b"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      const projected = yield* playout.forecast;
+      const sessions = handles.map((handle) => {
+        const found = Playout.forecastFor(projected, handle.key);
+        return found._tag === "Airs" ? found.clip.session : found._tag;
+      });
+      assert.deepStrictEqual(sessions, ["replacement", "replacement"]);
+      assert.deepStrictEqual(yield* startErrors(projected, handles, 100, 150), []);
+    }),
+  );
+
+  it.effect("a forecast names an item it will drop, and why", () =>
+    Effect.gen(function* () {
+      const { playout, statuses } = yield* start({ lanes: [{ name: "news" }, { name: "line" }] });
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const handle of measured) yield* handle.outcome;
+      const long = yield* playout.submit({
+        key: key("long"),
+        lane: "line",
+        request: clip("long", 10),
+      });
+      yield* long.started;
+      const firm = yield* playout.submit({
+        key: key("firm"),
+        lane: "line",
+        request: clip("firm"),
+        window: { startBy: "12 seconds", firm: true },
+      });
+      yield* eventually(statuses("firm"), (all) => all.includes("Ready"));
+      // A clip of a higher lane now airs first, and firm can no longer start by its startBy.
+      yield* playout.submit({ key: key("news"), lane: "news", request: clip("news") });
+      const projected = yield* playout.forecast;
+      const found = Playout.forecastFor(projected, key("firm"));
+      assert.strictEqual(found._tag === "Drops" ? found.drop.reason : found._tag, "late");
+      assert.deepStrictEqual(yield* firm.outcome, { _tag: "Dropped", reason: "late" });
+    }),
+  );
+
+  it.effect(
+    "a forecast drops a follower with the item it follows, and stops at its last item",
+    () =>
+      Effect.gen(function* () {
+        const { playout, events, statuses } = yield* start({
+          lanes: [{ name: "news" }, { name: "line" }],
+          filler: gridFiller("8 seconds", "16 seconds"),
+        });
+        const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+          playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+        );
+        for (const handle of measured) yield* handle.outcome;
+        const long = yield* playout.submit({
+          key: key("long"),
+          lane: "line",
+          request: clip("long", 10),
+        });
+        yield* long.started;
+        const firm = yield* playout.submit({
+          key: key("firm"),
+          lane: "line",
+          request: clip("firm"),
+          window: { startBy: "12 seconds", firm: true },
+        });
+        const after = yield* playout.submit({
+          key: key("after"),
+          lane: "line",
+          request: clip("after"),
+          follows: { _tag: "Item", key: key("firm") },
+        });
+        yield* eventually(statuses("firm"), (all) => all.includes("Ready"));
+        // A clip of a higher lane airs first: firm goes late, and after, which follows it, with it.
+        yield* playout.submit({ key: key("news"), lane: "news", request: clip("news") });
+        const projected = yield* playout.forecast;
+        assert.strictEqual(dropIn(projected, "firm")?.reason, "late");
+        assert.strictEqual(dropIn(projected, "after")?.reason, "displaced");
+        assert.strictEqual(dropIn(projected, "after")?.at, dropIn(projected, "firm")?.at);
+        // Once every item it places aired or went it stops, rather than run filler to its horizon.
+        assert.deepStrictEqual(projected.clips.at(-1)?.clip, { _tag: "Item", key: key("news") });
+        assert.deepStrictEqual(yield* firm.outcome, { _tag: "Dropped", reason: "late" });
+        assert.deepStrictEqual(yield* after.outcome, { _tag: "Dropped", reason: "displaced" });
+        const errorMs =
+          (droppedAt(yield* events, "firm") ?? NaN) - (dropIn(projected, "firm")?.at ?? NaN);
+        assert.isAtMost(Math.abs(errorMs), 100, `firm dropped ${errorMs.toFixed(0)} ms off`);
+      }),
+  );
+
+  it.effect("a forecast times the late drop of an item not sent at its deadline", () =>
+    Effect.gen(function* () {
+      const { playout, events, statuses } = yield* start({
+        lanes: [{ name: "news" }, { name: "line" }],
+      });
+      const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const handle of measured) yield* handle.outcome;
+      const long = yield* playout.submit({
+        key: key("long"),
+        lane: "line",
+        request: clip("long", 15),
+      });
+      yield* long.started;
+      // A long clip of a higher lane holds the build slot for some 6 s, past timed's deadline.
+      yield* playout.submit({ key: key("slow"), lane: "news", request: clip("slow", 15) });
+      yield* eventually(statuses("slow"), (all) => all.includes("Building"));
+      const now = yield* Clock.currentTimeMillis;
+      const timed = yield* playout.submit({
+        key: key("timed"),
+        lane: "line",
+        request: clip("timed"),
+        start: { _tag: "At", time: now + 2000, late: { _tag: "skipIfLaterThan", by: "1 second" } },
+      });
+      const projected = yield* playout.forecast;
+      assert.deepStrictEqual(yield* timed.outcome, { _tag: "Dropped", reason: "late" });
+      assert.strictEqual(dropIn(projected, "timed")?.reason, "late");
+      const errorMs =
+        (droppedAt(yield* events, "timed") ?? NaN) - (dropIn(projected, "timed")?.at ?? NaN);
+      assert.isAtMost(Math.abs(errorMs), 100, `timed dropped ${errorMs.toFixed(0)} ms off`);
+    }),
+  );
+
+  it.effect("a forecast says what it cannot place", () =>
+    Effect.gen(function* () {
+      const test = yield* ReactorTest.ReactorTest;
+      const { playout, statuses } = yield* start({ lanes: [{ name: "line" }] });
+      const a = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a", 10) });
+      yield* a.started;
+      yield* playout.submit({
+        key: key("held"),
+        lane: "line",
+        request: clip("held"),
+        start: { _tag: "Manual" },
+      });
+      // Without filler the held item is not built, so the next enqueue is lost's: its reply never
+      // comes.
+      yield* test.inject({ _tag: "DropReply", command: "enqueue", nth: 1 });
+      yield* playout.submit({ key: key("lost"), lane: "line", request: clip("lost") });
+      yield* eventually(statuses("lost"), (all) => all.includes("Unknown"));
+      const projected = yield* playout.forecast;
+      assert.deepStrictEqual(Playout.forecastFor(projected, key("held")), {
+        _tag: "Unplaced",
+        why: "held",
+      });
+      assert.deepStrictEqual(Playout.forecastFor(projected, key("lost")), {
+        _tag: "Unplaced",
+        why: "unknown",
+      });
+    }),
+  );
+
+  it.effect("a forecast holds a batch's add behind a cutting add it does not project", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start({ filler: gridFiller("8 seconds", "16 seconds") });
+      yield* eventually(playout.state, (state) => state.estimates.build !== undefined);
+      yield* nextFiller(playout);
+      yield* playout.edit([
+        { _tag: "Submit", item: { key: key("cut"), lane: "urgent", request: clip("cut") } },
+        { _tag: "Submit", item: { key: key("mate"), lane: "line", request: clip("mate") } },
+      ]);
+      const projected = yield* playout.forecast;
+      assert.deepStrictEqual(Playout.forecastFor(projected, key("cut")), {
+        _tag: "Unplaced",
+        why: "cut",
+      });
+      // The batch holds mate until the cut is Ready, and the forecast does not project the cut.
+      assert.deepStrictEqual(Playout.forecastFor(projected, key("mate")), {
+        _tag: "Unplaced",
+        why: "blocked",
+      });
+      // Nothing it can place is left, so it projects no filler past the clip on air.
+      const lastStart = projected.clips.at(-1)?.startsAt ?? projected.at;
+      assert.isBelow(lastStart - projected.at, 60_000);
+    }),
+  );
+
+  it.effect(
+    "a forecast airs a batch's held add once the firm add the batch does not hold starts",
+    () =>
+      Effect.gen(function* () {
+        const { playout } = yield* start({ filler: gridFiller("8 seconds", "16 seconds") });
+        yield* eventually(playout.state, (state) => state.estimates.build !== undefined);
+        yield* nextFiller(playout);
+        const firm = { startBy: Duration.seconds(40), firm: true };
+        yield* playout.edit([
+          { _tag: "Submit", item: { key: key("cut"), lane: "urgent", request: clip("cut") } },
+          { _tag: "Submit", item: { key: key("mate"), lane: "line", request: clip("mate") } },
+          {
+            _tag: "Submit",
+            item: { key: key("due"), lane: "line", request: clip("due"), window: firm },
+          },
+        ]);
+        const projected = yield* playout.forecast;
+        // The firm add airs on its own, and its start commits the batch, which then holds mate no more.
+        assert.strictEqual(Playout.forecastFor(projected, key("due"))._tag, "Airs");
+        assert.strictEqual(Playout.forecastFor(projected, key("mate"))._tag, "Airs");
+      }),
+  );
+
+  it.effect("forecasts follows the plan", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start({ lanes: [{ name: "line" }] });
+      const a = yield* playout.submit({ key: key("a"), lane: "line", request: clip("a") });
+      yield* a.outcome;
+      // The reads that follow its end, and the grace after it, land first.
+      yield* Effect.sleep("2 seconds");
+      const seen = yield* Ref.make(0);
+      const first = yield* Deferred.make<void>();
+      const listed = yield* Deferred.make<void>();
+      yield* playout.forecasts.pipe(
+        Stream.runForEach((projected) =>
+          Effect.gen(function* () {
+            yield* Ref.update(seen, (count) => count + 1);
+            yield* Deferred.succeed(first, undefined);
+            if (Playout.forecastFor(projected, key("b"))._tag === "Airs")
+              yield* Deferred.succeed(listed, undefined);
+          }),
+        ),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      yield* Deferred.await(first);
+      assert.strictEqual(yield* Ref.get(seen), 1);
+      // Nothing plays or builds for half a minute: the plan holds still, and no forecast comes.
+      yield* Effect.sleep("30 seconds");
+      assert.strictEqual(yield* Ref.get(seen), 1);
+      yield* playout.submit({ key: key("b"), lane: "line", request: clip("b") });
+      yield* Deferred.await(listed);
+    }),
+  );
+
+  it.effect("drainsAt is when the last item ends", () =>
+    Effect.gen(function* () {
+      const { playout } = yield* start({
+        lanes: [{ name: "line" }],
+        filler: gridFiller("8 seconds", "16 seconds"),
+      });
+      yield* eventually(playout.state, (state) => state.estimates.build !== undefined);
+      yield* nextFiller(playout);
+      const handles = yield* Effect.forEach(["x", "y", "z"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      const projected = yield* playout.forecast;
+      const items = projected.clips.filter((clip) => clip.clip?._tag === "Item");
+      assert.strictEqual(projected.drainsAt, items.at(-1)?.endsAt);
+      const ended = yield* handles[2]!.outcome;
+      if (ended._tag !== "Ended" || projected.drainsAt === null)
+        return yield* Effect.die(`z ${ended._tag}, drains at ${String(projected.drainsAt)}`);
+      const errorMs = ended.at - projected.drainsAt;
+      assert.isAtMost(Math.abs(errorMs), 100, `ended ${errorMs.toFixed(0)} ms off`);
+    }),
+  );
+
+  it.effect("forecastGroup gives a group's places that air, and a part it drops", () =>
+    Effect.gen(function* () {
+      const { playout, statuses } = yield* start({
+        lanes: [{ name: "line" }],
+        filler: gridFiller("8 seconds", "16 seconds"),
+      });
+      yield* eventually(playout.state, (state) => state.estimates.build !== undefined);
+      yield* nextFiller(playout);
+      const group = yield* playout.submitGroup({
+        key: key("beats"),
+        lane: "line",
+        parts: [
+          { key: key("p1"), request: clip("p1") },
+          { key: key("p2"), request: clip("p2") },
+          { key: key("p3"), request: clip("p3") },
+        ],
+      });
+      yield* eventually(statuses("p2"), (all) => all.includes("Building"));
+      // Its replacement is Ready long before p2's turn, and takes its place.
+      yield* playout.replace(key("p2"), { key: key("r2"), request: clip("r2") });
+      const projected = yield* playout.forecast;
+      const places = Playout.forecastGroup(projected, key("beats"));
+      const named = (tag: Playout.ClipTag | null) => (tag?._tag === "Item" ? tag.key : null);
+      assert.deepStrictEqual(
+        places?.parts.map((part) => [named(part.clip), part.group?.part]),
+        [
+          [key("p1"), 0],
+          [key("r2"), 1],
+          [key("p3"), 2],
+        ],
+      );
+      assert.deepStrictEqual(
+        places?.drops.map((drop) => [drop.key, drop.reason]),
+        [[key("p2"), "replaced"]],
+      );
+      assert.strictEqual(places?.startsAt, places?.parts[0]?.startsAt);
+      assert.strictEqual(places?.endsAt, projected.drainsAt);
+      const [, second] = group.parts;
+      assert.deepStrictEqual(yield* second!.outcome, { _tag: "Dropped", reason: "replaced" });
     }),
   );
 });
@@ -2029,6 +2699,7 @@ layer(hosted)("local renderer", (it) => {
         name: "speech",
         lengths: { min: 0.5, max: 30 },
         defaultSeconds: 2,
+        builtSeconds: (seconds) => seconds,
         check: () => [],
       };
       const presented = yield* Ref.make<ReadonlyArray<number>>([]);
@@ -2061,6 +2732,77 @@ layer(hosted)("local renderer", (it) => {
     }),
   );
 
+  // The plan's longest clip to fit before a cap bisects on this.
+  it.effect("every shipped model builds a longer request at least as long", () =>
+    Effect.sync(() => {
+      const shorter: Array<string> = [];
+      for (const model of [H3Source.model, FastH3Source.model]) {
+        const { min, max } = model.lengths;
+        const steps = Math.round((max - min) * 10_000);
+        let previous = model.builtSeconds(min);
+        for (let step = 1; step <= steps; step++) {
+          const seconds = min + ((max - min) * step) / steps;
+          const built = model.builtSeconds(seconds);
+          if (built < previous) shorter.push(`${model.name} at ${seconds.toFixed(4)} s`);
+          previous = built;
+        }
+      }
+      assert.deepStrictEqual(shorter, []);
+    }),
+  );
+
+  // Silent filler builds at once and items take 0.8 s a requested second: the median of every
+  // build is a filler's, which would project an item's build at nothing.
+  it.effect("refuses a firm item its lane's builds cannot make, though filler builds at once", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const playout = yield* Playout.make({
+        open: LocalSource.open({
+          build: (local) =>
+            local.request.prompt.startsWith("idle")
+              ? Effect.succeed({ value: undefined })
+              : Effect.as(Effect.sleep(Duration.seconds(0.8 * local.seconds)), {
+                  value: undefined,
+                }),
+        }),
+        ...Playout.lineup({
+          runway: { floor: "4 seconds", target: "8 seconds" },
+          clip: ({ index }) => clip(`idle ${index}`),
+        }),
+      });
+      yield* Effect.sleep("30 seconds");
+      const items = yield* Effect.forEach(["a", "b", "c"], (name) =>
+        playout.submit({ key: key(name), lane: "line", request: clip(name) }),
+      );
+      for (const item of items) yield* item.outcome;
+      const mixed = (yield* playout.state).estimates.build?.median;
+      assert.isBelow(mixed ?? Infinity, 0.1, "the median of every build is a filler's");
+      // About 2.2 s of a filler clip is left: the next boundary is before the deadline, but a 4 s
+      // build is not.
+      yield* playout.events.pipe(
+        Stream.filter((event) => event._tag === "Filler" && event.phase === "Started"),
+        Stream.runHead,
+      );
+      yield* Effect.sleep("3 seconds");
+      const firm = yield* Effect.result(
+        playout.submit({
+          key: key("firm"),
+          lane: "line",
+          request: clip("firm"),
+          window: { startBy: "3 seconds", firm: true },
+        }),
+      );
+      assert.strictEqual(
+        Result.isFailure(firm) ? firm.failure._tag : "admitted",
+        "WouldMissDeadline",
+      );
+      const { estimates } = yield* playout.state;
+      const line = estimates.lanes.find((lane) => lane.name === "line");
+      assert.approximately(line?.build?.median ?? Infinity, 0.8, 0.05);
+      assert.isBelow(estimates.filler.build?.median ?? Infinity, 0.1);
+    }),
+  );
+
   it.effect("refuses a source that runs another model, before it airs anything", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
@@ -2068,6 +2810,7 @@ layer(hosted)("local renderer", (it) => {
         name: "speech",
         lengths: { min: 0.5, max: 30 },
         defaultSeconds: 2,
+        builtSeconds: (seconds) => seconds,
         check: () => [],
       };
       const opens = yield* Ref.make(0);
