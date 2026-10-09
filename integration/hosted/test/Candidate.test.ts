@@ -1,8 +1,11 @@
 /** The requested candidate check uses the paid runner and real ReactorTest boundary. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, layer } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Schema } from "effect";
+import { Effect, FileSystem, Layer, Ref, Schema } from "effect";
+import * as HttpClient from "effect/http/HttpClient";
 import { ReactorTest } from "reactor-effect-client";
+import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
+import * as Reactor from "reactor-effect-client/Reactor";
 import { execute } from "../Qualify.js";
 import { Check } from "../Spend.js";
 import * as Target from "../Target.js";
@@ -22,13 +25,17 @@ const run = Effect.gen(function* () {
 });
 
 layer(candidate())("candidate", (it) => {
-  it.effect("qualifies both models in one capped run", () =>
-    Effect.gen(function* () {
-      const evidence = yield* run;
-      assert.strictEqual(evidence.verdict, "pass", evidence.reasons.join("; "));
-      assert.lengthOf(evidence.sessions, 2);
-      assert.isTrue(evidence.sessions.every((session) => session.close?.confirmed === true));
-    }),
+  it.effect(
+    "qualifies both models in one capped run",
+    () =>
+      Effect.gen(function* () {
+        const evidence = yield* run;
+        assert.strictEqual(evidence.verdict, "pass", evidence.reasons.join("; "));
+        assert.lengthOf(evidence.sessions, 2);
+        assert.isTrue(evidence.sessions.every((session) => session.close?.confirmed === true));
+      }),
+    // CI's two-session rehearsal exceeded five seconds of wall time while driving simulated time.
+    { timeout: 20_000 },
   );
 });
 
@@ -66,23 +73,44 @@ layer(candidate([{ _tag: "RefuseConnect" }]))("candidate partial acquisition", (
 });
 
 layer(candidate())("candidate absent end", (it) => {
-  it.effect("independently confirms a gone session only after two consecutive reads", () =>
-    Effect.gen(function* () {
-      const test = yield* ReactorTest.ReactorTest;
-      yield* Effect.gen(function* () {
-        while (!(yield* test.log).some((entry) => entry.name.startsWith("DELETE ")))
-          yield* Effect.sleep("5 millis");
-        // The source's confirmation reads first; the candidate's two independent reads follow.
-        yield* test.inject({ _tag: "MissingSession", nth: 2 });
-        yield* test.inject({ _tag: "MissingSession", nth: 3 });
-      }).pipe(Effect.forkScoped);
-      const evidence = yield* run;
-      assert.strictEqual(evidence.verdict, "pass", evidence.reasons.join("; "));
-      assert.lengthOf(evidence.sessions, 2);
-      assert.deepStrictEqual(
-        evidence.candidate?.phases[0]?.endReads.map((read) => read.state),
-        ["absent", "absent"],
-      );
-    }),
+  it.effect(
+    "independently confirms a gone session only after two consecutive reads",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* ReactorTest.ReactorTest;
+        const http = yield* HttpClient.HttpClient;
+        const armed = yield* Ref.make(false);
+        const client = HttpClient.transform(http, (response, request) => {
+          if (request.method !== "DELETE") return response;
+          return response.pipe(
+            Effect.tap(() =>
+              Effect.gen(function* () {
+                if (yield* Ref.getAndSet(armed, true)) return;
+                // The source reads first after DELETE; its independent reads follow.
+                yield* test.inject({ _tag: "MissingSession", nth: 2 });
+                yield* test.inject({ _tag: "MissingSession", nth: 3 });
+              }),
+            ),
+          );
+        });
+        const coordinator = yield* CoordinatorClient.make().pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+        );
+        const reactor = yield* Reactor.make().pipe(
+          Effect.provideService(CoordinatorClient.CoordinatorClient, coordinator),
+        );
+        const evidence = yield* run.pipe(
+          Effect.provideService(HttpClient.HttpClient, client),
+          Effect.provideService(CoordinatorClient.CoordinatorClient, coordinator),
+          Effect.provideService(Reactor.Reactor, reactor),
+        );
+        assert.strictEqual(evidence.verdict, "pass", evidence.reasons.join("; "));
+        assert.lengthOf(evidence.sessions, 2);
+        assert.deepStrictEqual(
+          evidence.candidate?.phases[0]?.endReads.map((read) => read.state),
+          ["absent", "absent"],
+        );
+      }),
+    { timeout: 20_000 },
   );
 });
