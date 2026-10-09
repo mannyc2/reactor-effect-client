@@ -5062,22 +5062,22 @@ const decide = <Req extends ClipRequest>(
     // A member its group holds back airs once the members ahead of it have, before the cap too.
     const queuedMs = (value: Session<Req>): number =>
       secondsOf(waitingOf(value).filter((clip) => airsAtPlaceOf(roster, clip, now))) * 1000;
+    const buildingMs = (value: Session<Req>): number =>
+      [...items.values()]
+        .filter(
+          (item) =>
+            item.sessionId === value.id && (item.phase === "Building" || item.phase === "Unknown"),
+        )
+        .reduce((total, item) => total + lengthOf(item.spec.seconds) * 1000, 0) +
+      (value.source?.building ?? [])
+        .filter((clip) => clip.tag?._tag === "Filler")
+        .reduce((total, clip) => total + clip.seconds * 1000, 0);
     const onAir = session(state.air);
     const startsAt =
       target.id === state.air || onAir === undefined
         ? now.mono + playingRestMs(target)
-        : now.mono + playingRestMs(onAir) + queuedMs(onAir);
-    const buildingMs =
-      [...items.values()]
-        .filter(
-          (item) =>
-            item.sessionId === target.id && (item.phase === "Building" || item.phase === "Unknown"),
-        )
-        .reduce((total, item) => total + lengthOf(item.spec.seconds) * 1000, 0) +
-      (target.source?.building ?? [])
-        .filter((clip) => clip.tag?._tag === "Filler")
-        .reduce((total, clip) => total + clip.seconds * 1000, 0);
-    return startsAt + queuedMs(target) + buildingMs;
+        : now.mono + playingRestMs(onAir) + queuedMs(onAir) + buildingMs(onAir);
+    return startsAt + queuedMs(target) + buildingMs(target);
   }
   /** The runway filler refills below; protecting the air, it covers the next item's build too. */
   function fillerFloor(): number {
