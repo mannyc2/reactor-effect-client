@@ -74,9 +74,8 @@ browser and macOS qualification. Serial sessions do not establish renewal behavi
 Filler before the readyBy clip asks for 10 s, which keeps it on air past the judgment 8 s after
 it starts. With each family's longest clip there, the paid FastH3 phase of October 9 closed past
 its deadline: its firm clip was Ready 14.87 s after submission, against H3's 9.63 s. The
-command's rehearsal uses H3's measured timing for both models. A rehearsal test also runs both
-phases at a timing fitted to that paid FastH3 phase, where FastH3's phase ends 2.6 s before its
-deadline. Neither establishes hosted headroom.
+rehearsal uses H3's measured timing for both models, so passing it does not establish hosted
+headroom within the fixed deadline.
 
 ### Tour
 
