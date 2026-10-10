@@ -245,8 +245,13 @@ it named 52 ms after it was sent
 
 `h3.snapshot` is H3's state and queue as the model last reported them. Its `_tag` is
 `Synchronizing` while a full state and queue are awaited, `Ready` with `state` and `queue`, or
-`Unavailable` with its `cause`. Every snapshot also lists the clips seen, each with its last
-lifecycle message. `h3.changes` streams a snapshot at every change, `h3.events` streams the
+`Unavailable` with its `cause`. Every snapshot also lists up to 4,096 retained clip observations,
+each with its last lifecycle message. At that bound, the oldest observations with an explicit
+finish, stop, failure or pop retire once the reported generation, playout, history and playing
+state no longer name them. Clips without an explicit end stay retained; when protected observations
+exceed the bound, the provider fails with `Overflow`. Clip operations keep their own lifetime evidence,
+so retiring a snapshot entry does not erase a held operation's result.
+`h3.changes` streams a snapshot at every change, `h3.events` streams the
 provider's events, and `h3.observe()` pairs a snapshot with every event after it, with no gap.
 
 ```ts

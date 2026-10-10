@@ -9,10 +9,12 @@ import {
   Duration,
   Effect,
   Exit,
+  Fiber,
   Inspectable,
   type Layer,
   Option,
   Result,
+  Ref,
   Schema,
   Scope,
   Stream,
@@ -22,6 +24,8 @@ import * as H3 from "../src/H3.js";
 import { ReactorTest } from "../src/index.js";
 import { deploymentContract } from "../src/internal/h3/commands.js";
 import { decodeMessage } from "../src/internal/h3/messages.js";
+import { h3 } from "../src/internal/h3/family.js";
+import * as ProviderState from "../src/internal/h3/state.js";
 import { deployment } from "../src/internal/reactorTest/h3.js";
 import { commands, connect, environment } from "./fixtures/Simulated.js";
 
@@ -166,6 +170,85 @@ scenario("a clip's facts arrive in order: generated, started, then finished", ()
     assert.isTrue(started.source.sequence < ended.source.sequence);
     assert.strictEqual(ended.message, "clip_finished");
   }),
+);
+
+// Replay real provider events at a small bound so a long session's retention failure costs
+// six clips instead of the production bound's 4,097; operation evidence stays on the provider.
+scenario(
+  "completed clips retire without losing an operation or admitting an oversized live queue",
+  () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow());
+      const session = yield* connect;
+      const provider = yield* H3.make(session);
+      const observation = yield* provider.observe();
+      const model = yield* Ref.make(
+        ProviderState.initial({
+          coherent: h3.coherent,
+          sessionId: session.id,
+          generation: observation.initial.transportGeneration,
+          revision: observation.initial.revision,
+          maxClips: 3,
+        }),
+      );
+      const reader = yield* observation.events.pipe(
+        Stream.takeUntil(
+          (event) =>
+            event._tag === "Message" &&
+            event.message.type === "clip_popped" &&
+            event.message.data.clip.prompt === "retained 5",
+        ),
+        Stream.runForEach((event) =>
+          Effect.gen(function* () {
+            if (event._tag !== "Message" || event.disposition !== "applied") return;
+            const next = ProviderState.apply({
+              model: yield* Ref.get(model),
+              message: event.message,
+              source: event.source,
+            });
+            if (Result.isFailure(next)) return yield* next.failure;
+            yield* Ref.set(model, next.success[1]);
+          }),
+        ),
+        Effect.forkScoped,
+      );
+      const first = yield* provider.prepare({ prompt: "retained 0", seconds: 5 });
+      const accepted = yield* first.submit;
+      const operation = yield* provider.operation(first);
+      yield* provider.pop(accepted.clip.clip_id);
+      assert.strictEqual((yield* operation.ended).message, "clip_popped");
+      for (let index = 1; index < 6; index++) {
+        const next = yield* provider.enqueue({ prompt: `retained ${index}`, seconds: 5 });
+        yield* provider.pop(next.clip.clip_id);
+      }
+      yield* Fiber.join(reader);
+      const retained = ProviderState.snapshot(yield* Ref.get(model));
+      assert.isAtMost(retained.clips.length, 3);
+      assert.notInclude(
+        retained.clips.map((entry) => entry.clip.clip_id),
+        accepted.clip.clip_id,
+      );
+      assert.strictEqual((yield* operation.ended).clipId, accepted.clip.clip_id);
+      assert.strictEqual((yield* operation.facts).ended?.message, "clip_popped");
+      assert.strictEqual(
+        (yield* Effect.flip(operation.reached("started"))).reason._tag,
+        "ClipEnded",
+      );
+
+      const test = yield* ReactorTest.ReactorTest;
+      yield* test.inject({ _tag: "StallBuild" });
+      for (let index = 0; index < 4; index++)
+        yield* provider.enqueue({ prompt: `waiting ${index}`, seconds: 5 });
+      const queue = yield* provider.getQueue;
+      assert.strictEqual(queue.value.generation.length, 4);
+      const overflow = ProviderState.apply({
+        model: yield* Ref.get(model),
+        message: { type: "queue_update", data: queue.value },
+        source: queue.source,
+      });
+      assert.isTrue(Result.isFailure(overflow));
+      if (Result.isFailure(overflow)) assert.strictEqual(overflow.failure.reason._tag, "Overflow");
+    }),
 );
 
 scenario("a failed build ends the clip, and the phases it never reached fail ClipEnded", () =>

@@ -1068,6 +1068,24 @@ describe("PlayoutPolicy, uncertainty and loss", () => {
   });
 });
 describe("PlayoutPolicy, lanes", () => {
+  it("waits for a session that can air an item after the build still on air", () => {
+    const policy = drive();
+    policy.tick(0);
+    policy.open("s1", 60_000);
+    policy.submit(spec("building", 1, 15), 10);
+    policy.reply({ _tag: "Done", clipId: "cb" }, 20);
+    const playing = clip("playing", undefined, 50);
+    policy.event({ _tag: "Started", clip: playing }, "s1", 30);
+    policy.observe({ playing, building: [clip("cb", item("building"), 15)] }, "s1", 40);
+    policy.tick(30_010);
+    policy.open("s2", 30_000, 30_020);
+    policy.submit(spec("next"), 30_030);
+    assert.deepStrictEqual(enqueued(policy.actions, "s2"), []);
+    policy.event(buildFailed(clip("cb", item("building"), 15)), "s1", 30_040);
+    policy.observe({ playing, building: [] }, "s1", 30_050);
+    assert.deepStrictEqual(enqueued(policy.actions, "s2"), ["next"]);
+  });
+
   const fillersOf = (policy: ReturnType<typeof drive>) =>
     commands(policy.actions).flatMap((action) =>
       action.command._tag === "Enqueue" && action.command.tag._tag === "Filler"
