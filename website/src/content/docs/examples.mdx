@@ -6,7 +6,7 @@ description: "Applications built on reactor-effect, from one clip in a file to a
 import { Aside, Badge, LinkCard } from "@astrojs/starlight/components";
 
 Every example is a small Effect application in the repository, typechecked against the packages on
-every change. Most run offline on `ReactorTest` with no API key. All but the rundown are written to
+every change. Most run offline on `ReactorTest` with no API key. The Reactor examples other than the rundown are written to
 run on hosted Reactor with `REACTOR_API_KEY` set, where only the layer changes; no example has run there
 yet, though paid checks ran most of the SDK they use
 ([hosted evidence](/reactor-effect-client/reference/hosted-evidence/)). Clone the repository and
@@ -19,7 +19,7 @@ bun install && bun run build
 
 <Aside>
   Offline, the simulated H3 sends one flat colour per clip, so what you see is the SDK at work, not
-  the model's picture. Live examples need the native addon for your machine: npm brings it prebuilt
+  the model's picture. Live Reactor examples that decode frames need the native addon for your machine: npm brings it prebuilt
   with `reactor-effect-native`, and in the repository `bun run native:build` builds it.
 </Aside>
 
@@ -139,3 +139,22 @@ bun run start && bun run test
   title="packages/client/examples"
   href="https://github.com/mannyc2/reactor-effect-client/tree/main/packages/client/examples"
 />
+
+## Streaming speech
+
+`SpeechModel` streams PCM audio from a complete transcript. The entry point provides
+`CartesiaSpeech` through Effect's native model Layer; the consumer needs no Reactor session or
+native addon. Set `CARTESIA_API_KEY`, `CARTESIA_MODEL` and `CARTESIA_VOICE_ID` explicitly, then run:
+
+```sh
+node packages/client/examples/src/speech.ts
+ffplay -f s16le -ar 24000 -ac 1 .check/speech.pcm
+```
+
+This calls Cartesia and can incur charges. It writes arriving audio to a `.partial` file, renames
+it on successful completion, and reports time to first audio. `SPEECH_TEXT` changes the text and
+`SPEECH_OUTPUT` changes the output path. The Cartesia adapter requests mono 24 kHz PCM; the consumer
+prints the format received. A two-minute client deadline bounds the example.
+
+Hosted speech quality and latency have not been qualified. The example records generation output;
+it does not pace live playback or schedule an unknown-duration utterance in `Playout`.

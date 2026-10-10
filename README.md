@@ -4,9 +4,9 @@
 
 # reactor-effect
 
-**Build on [Reactor](https://reactor.inc)'s real-time video models with [Effect](https://effect.website).**<br />
-Keep a channel on air across session caps, read decoded frames in Node without a browser,<br />
-and run the whole application offline before it spends a cent.
+**Live audio and video production with [Effect](https://effect.website).**<br />
+Stream speech, generate video, and keep a programme on air.<br />
+Choose generation providers through Effect; Reactor supplies the existing video and audio sessions.
 
 [![npm](https://img.shields.io/npm/v/reactor-effect-client?color=13775B&label=npm)](https://www.npmjs.com/package/reactor-effect-client)
 [![CI](https://github.com/mannyc2/reactor-effect-client/actions/workflows/ci.yml/badge.svg)](https://github.com/mannyc2/reactor-effect-client/actions/workflows/ci.yml)
@@ -30,6 +30,31 @@ and run the whole application offline before it spends a cent.
 <br />
 
 <img src="website/public/playout-renewal.png" alt="Playout keeps H3 on air across a session renewal: session 2 opens before session 1's cap, and the air switches between them at a clip boundary." />
+
+## Generation and production
+
+This experiment broadens the project beyond a single generation provider. Applications choose
+capabilities and compose their providers with Effect Layers:
+
+| Capability                | Implementation                                              | Output                                            |
+| ------------------------- | ----------------------------------------------------------- | ------------------------------------------------- |
+| Streaming text to speech  | `SpeechModel` with `CartesiaSpeech`                         | PCM audio blocks as they arrive                   |
+| Generated video and audio | Reactor's `H3`, `FastH3`, and `ViduS2Avatar`                | Session media and model-specific controls         |
+| Scheduled production      | `Playout` with `H3Source`, `FastH3Source`, or `LocalSource` | Ordered clips, media streams, and as-run evidence |
+
+`CartesiaSpeech.model` uses Effect 4.0's native `effect/ai/Model`: an ordinary Layer with provider
+and model identity. The application consumes `SpeechModel`, so it can supply another speech
+implementation without changing its audio consumer. No Reactor session or native addon is needed
+for HTTP speech generation.
+
+Generation and presentation have different lifetimes. Streaming speech can emit audio before its
+length is known. `Playout` schedules finite clips with known or estimated lengths; the experiment
+does not yet schedule an unfinished speech stream. Applications own playback, mixing, editorial
+priority, and proof that an audience received the output.
+
+The [speech example](./packages/client/examples#streaming-speech) saves incoming PCM and reports
+time to first audio. The Cartesia adapter follows its documented bytes API; hosted speech quality
+and latency have not been qualified. The existing Reactor evidence below remains provider-specific.
 
 ## Try it in a minute, no API key
 
@@ -68,7 +93,7 @@ const firstClip = Effect.gen(function* () {
 }).pipe(Effect.scoped);
 ```
 
-## Why reactor-effect
+## Production with Reactor
 
 - **Stay on air.** `Playout` is a keyed schedule of clips in priority lanes, with filler that holds
   a runway, deadlines, cues and edits. It renews sessions before their cap and switches at a clip
@@ -108,13 +133,15 @@ The hosted figures come from paid runs between 2026-09-24 and 2026-10-01, on the
 | [Capture](./packages/native/examples)    | A command line that writes a clip's decoded frames and audio to an MP4                                                                                                                               | paid only             |
 | [Rundown](./packages/client/examples)    | An application service over `Playout`, tested offline on the test clock                                                                                                                              | runs on `ReactorTest` |
 
+The [streaming speech example](./packages/client/examples#streaming-speech) uses a separate TTS provider and needs explicit Cartesia credentials, model and voice.
+
 ## Packages
 
-| Package                                        | What it gives you                                                                                                                                                   | Runs in                |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| [`reactor-effect-client`](./packages/client)   | `Reactor` and `Session`, `CoordinatorClient` and tokens, `H3`, `FastH3`, `ViduS2Avatar`, `Playout` with `H3Source`, `FastH3Source` and `LocalSource`, `ReactorTest` | Node, Bun and browsers |
-| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the browser's `RTCPeerConnection`, and `BrowserMedia` for the session's tracks                                                                     | Browsers               |
-| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a Node-API addon over Reactor's `reactor-webrtc` crate, prebuilt for Linux x64 (glibc) and macOS on Apple silicon                                   | Node and Bun           |
+| Package                                        | What it gives you                                                                                                                                                                                       | Runs in                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| [`reactor-effect-client`](./packages/client)   | `SpeechModel` and `CartesiaSpeech`, `Reactor` and `Session`, `CoordinatorClient` and tokens, `H3`, `FastH3`, `ViduS2Avatar`, `Playout` with `H3Source`, `FastH3Source` and `LocalSource`, `ReactorTest` | Node, Bun and browsers |
+| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the browser's `RTCPeerConnection`, and `BrowserMedia` for the session's tracks                                                                                                         | Browsers               |
+| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a Node-API addon over Reactor's `reactor-webrtc` crate, prebuilt for Linux x64 (glibc) and macOS on Apple silicon                                                                       | Node and Bun           |
 
 ```sh
 npm install --save-exact reactor-effect-client effect@4.0.0

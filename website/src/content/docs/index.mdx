@@ -1,9 +1,9 @@
 ---
 title: reactor-effect
-description: An Effect SDK for Reactor's real-time video models, H3 today. Sessions that renew themselves, a playout that keeps a channel on air, decoded frames in Node without a browser, and Reactor simulated offline.
+description: Live audio and video production with Effect. Stream speech through provider Layers, generate video with Reactor, and schedule clips for continuous air.
 template: splash
 hero:
-  tagline: Build on Reactor's real-time video models, H3 today, from Node, Bun and the browser. Keep a channel on air across session caps, read decoded frames without a browser, and run the whole application offline before it spends a cent.
+  tagline: Live audio and video production with Effect. Stream speech, generate video with Reactor, and keep a programme on air. Choose providers through Layers and consume decoded media.
   image:
     html: '<video class="hero-reel" src="https://github.com/mannyc2/reactor-effect-client/releases/download/media/showreel-loop.mp4" poster="https://github.com/mannyc2/reactor-effect-client/releases/download/media/showreel-poster.jpg" autoplay muted loop playsinline aria-label="H3 video decoded and recorded by reactor-effect: a red convertible crossing a desert, five scenes back to back"></video>'
   actions:
@@ -28,6 +28,17 @@ import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
 The video above is H3's own output, decoded in-process and recorded by the hosted `showreel` check on
 October 1, 2026: one `Playout`, five scenes on one session, seams of 89–120 ms with no dark frame.
 [The whole reel, with sound](https://github.com/mannyc2/reactor-effect-client/releases/download/media/showreel.mp4).
+
+## Generation and production
+
+This experiment brings streaming speech alongside the existing Reactor video and audio path.
+`SpeechModel` defines text-to-PCM generation; `CartesiaSpeech` implements it using Effect's native
+`Model` and an HTTP client. Reactor remains the provider for H3, FastH3 and Vidu S2-Avatar.
+
+The [speech example](/reactor-effect-client/examples/#streaming-speech)
+saves audio as it arrives. It requires explicit credentials, model and voice; hosted Cartesia
+quality and latency have not been qualified. `Playout` schedules finite clips. Playback, mixing
+and scheduling an unfinished speech stream remain separate application concerns.
 
 ## What it does
 

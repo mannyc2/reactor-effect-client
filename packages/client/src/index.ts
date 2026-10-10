@@ -1,4 +1,5 @@
 /** Portable entry point: importing it selects no host and loads no native code. */
+export * as CartesiaSpeech from "./CartesiaSpeech.js";
 export * as CoordinatorClient from "./CoordinatorClient.js";
 export * as FastH3 from "./FastH3.js";
 export * as FastH3Source from "./FastH3Source.js";
@@ -14,4 +15,5 @@ export * as ReactorError from "./ReactorError.js";
 export * as ReactorTest from "./ReactorTest.js";
 export * as References from "./References.js";
 export * as Session from "./Session.js";
+export * as SpeechModel from "./SpeechModel.js";
 export * as ViduS2Avatar from "./ViduS2Avatar.js";

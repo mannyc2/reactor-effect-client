@@ -1,13 +1,14 @@
 # reactor-effect-client
 
-The portable core of [reactor-effect](https://github.com/mannyc2/reactor-effect-client), an
-[Effect](https://effect.website) SDK for [Reactor](https://reactor.inc)'s real-time video models. It
-opens and owns Reactor sessions, drives H3, FastH3 and Vidu S2-Avatar's talking character, keeps a
-channel on air across session caps with `Playout`, and simulates Reactor in memory with
-`ReactorTest`, so an application runs offline before it spends anything. It loads no native code and
-runs on Node, Bun and browsers; a transport comes from
-[`reactor-effect-browser`](https://www.npmjs.com/package/reactor-effect-browser) or
-[`reactor-effect-native`](https://www.npmjs.com/package/reactor-effect-native).
+The portable core of [reactor-effect](https://github.com/mannyc2/reactor-effect-client), for live
+audio and video production with [Effect](https://effect.website). `SpeechModel` streams generated
+speech through a provider selected at the application boundary; `CartesiaSpeech` supplies the
+first TTS adapter. Reactor is the provider behind `Reactor`, `Session`, `H3`, `FastH3` and
+`ViduS2Avatar`. `Playout` schedules clips from Reactor or application renderers.
+
+The core runs on Node, Bun and browsers and loads no native code. HTTP speech requires an Effect
+`HttpClient`. Reactor media transport comes from `reactor-effect-browser` or
+`reactor-effect-native`; `ReactorTest` simulates that provider offline.
 
 **[Documentation](https://mannyc2.github.io/reactor-effect-client/)** ·
 [Quickstart](https://mannyc2.github.io/reactor-effect-client/start/quickstart/) ·
@@ -31,6 +32,46 @@ as `effect`, with `--save-exact`. A project with `@effect/platform-node` also pi
 otherwise installs a later release.
 [Installation](https://mannyc2.github.io/reactor-effect-client/start/installation/) covers each
 host.
+
+## Streaming speech
+
+```ts
+import { Effect, Layer, Stream } from "effect";
+import { FetchHttpClient } from "effect/http";
+import { CartesiaSpeech, SpeechModel } from "reactor-effect-client";
+
+const audio = Stream.unwrap(
+  Effect.gen(function* () {
+    const speech = yield* SpeechModel.SpeechModel;
+    return speech.stream({ text: "Welcome to the live programme." });
+  }),
+);
+
+// At the application's entry point: consume each block in your audio sink.
+const Speech = CartesiaSpeech.layerConfig.pipe(Layer.provide(FetchHttpClient.layer));
+```
+
+Set `CARTESIA_API_KEY`, `CARTESIA_MODEL` and `CARTESIA_VOICE_ID`, then provide `Speech` to the
+program consuming `audio`. Or use `CartesiaSpeech.model(name, { apiKey, voice })`, with a redacted
+key. This is Effect's native `Model`, which also supplies `Model.ProviderName` and `Model.ModelName`.
+See the [runnable example](./examples#streaming-speech).
+
+Each consumption starts a generation from a complete transcript. Cartesia's
+[bytes endpoint](https://docs.cartesia.ai/api-reference/tts/bytes) returns streaming output; the
+adapter decodes mono 24 kHz signed 16-bit PCM into `Media.AudioFrame`. It carries a split sample
+across HTTP chunks, rejects empty or incomplete audio, and scopes the request to consumption.
+Blocks are delivered at generation speed; your sink owns playback pacing. EOF means the response
+ended, not that the full sentence was heard. This is streamed output, not incremental text input.
+
+`SpeechError` distinguishes invalid input, HTTP rejection, transport failure and invalid audio.
+It records `not-submitted`, `unknown` or `replied`; provider diagnostics stay redacted. There are
+no implicit retries or fallbacks after a failure, including one after partial audio. Interruption
+releases the local response but cannot establish remote cancellation or billing outcome.
+
+`Playout` remains a finite-clip scheduler. To schedule synthesized speech with it, finish a
+bounded build with a measured duration and use `LocalSource` to present it. Streaming speech with
+an unknown final duration does not yet have a playout adapter. The Cartesia path has no hosted
+qualification; Reactor's recorded evidence does not qualify another provider.
 
 ## A first clip, offline
 
@@ -105,6 +146,8 @@ a namespace. Nothing under `internal/` is reachable.
 
 | Module                                                                                          | What it is                                                                                                                   |
 | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `SpeechModel`                                                                                   | Provider-neutral text-to-PCM stream and speech failures                                                                      |
+| `CartesiaSpeech`                                                                                | Cartesia speech implementation as an Effect `Model`, plus environment configuration                                          |
 | [`Reactor`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)                 | The service that acquires sessions: `create` allocates one this process owns, `attach` joins one                             |
 | [`Session`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)                 | One session: status, events, commands, uploads, recordings, media, reconnects and its close report                           |
 | [`CoordinatorClient`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)       | Reactor's HTTP API: pricing, tokens (`tokens`, `fixedTokens`), inspection, termination, recordings                           |

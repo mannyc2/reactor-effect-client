@@ -1,8 +1,8 @@
 # Examples
 
-Seven Effect applications built on reactor-effect. Each is its own private workspace that declares
+Effect applications for live audio and video production with reactor-effect. Each workspace declares
 exactly what it uses and runs from its TypeScript sources on Node 22.18 or newer, or Bun. Most run
-offline on `ReactorTest`, Reactor simulated in memory, with no API key. All but the rundown are
+offline on `ReactorTest`, Reactor simulated in memory, with no API key. The Reactor examples other than the rundown are
 written to run on hosted Reactor with `REACTOR_API_KEY` set, where only the layer changes. No
 example has run there yet, though paid checks ran most of the SDK they use
 ([hosted evidence](https://mannyc2.github.io/reactor-effect-client/reference/hosted-evidence/)).
@@ -25,6 +25,8 @@ Offline, the simulated H3 sends a flat colour per clip, so what you see is the S
 than the model's picture. H3 Studio's offline build runs in the
 [playground](https://mannyc2.github.io/reactor-effect-client/playground/) on the documentation site.
 The [examples page](https://mannyc2.github.io/reactor-effect-client/examples/) walks through each.
+
+The [streaming speech example](../packages/client/examples#streaming-speech) consumes a provider-neutral speech service backed by Cartesia. It saves arriving PCM blocks and reports time to first audio, with explicit credentials, model and voice.
 
 ## Which shape fits
 

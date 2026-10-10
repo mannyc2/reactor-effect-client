@@ -54,8 +54,8 @@ install system packages.
 ## Architecture
 
 - Three packages, and one addon package per native platform, are published with one version:
-  - `reactor-effect-client` (`packages/client`) is the portable core: the coordinator's HTTP API,
-    sessions, the wire protocol, the H3 provider, the playout and the Reactor test layer. It runs
+  - `reactor-effect-client` (`packages/client`) is the portable core: streaming speech, provider
+    adapters, decoded media, clip playout, and Reactor's sessions, protocol and test layer. It runs
     on Node, Bun and browsers and loads no native code.
   - `reactor-effect-browser` binds the client's `Peer` port to `RTCPeerConnection` and DOM media.
   - `reactor-effect-native` binds it to a libwebrtc Node-API addon, in process or in a child process
@@ -66,6 +66,9 @@ install system packages.
   packages do. A host imports the client's public modules and never another host.
 - One session owns each allocation or attachment: its commands, connection generations and cleanup
   evidence. H3 and the playout build on that session and never allocate around it.
+- Generation capabilities use Effect services and Layers; `effect/ai/Model` owns provider/model
+  selection. Reactor sessions and billing evidence stay with Reactor. Streaming generation does
+  not imply a finite clip duration or proof of presentation.
 - The SDK owns generic provider and queue mechanics. Editorial priority, filler, pricing, personas
   and proof of presented output belong to the application.
 - The native bridge carries transport and media only. Session allocation, model commands and
@@ -98,8 +101,8 @@ install system packages.
 - **Comments give the reason in plain words.** They never cite issues, review findings, design
   documents or line numbers elsewhere: nobody can follow those, and they go stale. If the code
   already says it, there is no comment. A measured number stays, with what was measured.
-- **One name, one thing, in Reactor's words**: session, generation, clip, grant, as-run. There is no
-  alias that only dodges a clash, and nothing is named like an Effect export (`Clock`, `Channel`,
+- **One name, one thing, in the owning domain's words**: session, generation, clip, grant, as-run.
+  There is no alias that only dodges a clash, and nothing is named like an Effect export (`Clock`, `Channel`,
   `Queue`). An `Effect.fn` name matches its function.
 - **Short lines, one statement each.** `bun run format` applies oxfmt at 100 columns. Use a `switch`,
   a lookup table or a named helper instead of a nested ternary; a `switch` over a union handles every

@@ -1,7 +1,7 @@
 /**
- * Media a connected session carries: owned decoded frames from a native or
- * simulated host, or platform tracks from a browser. Every value here belongs
- * to one connection generation; a reconnect produces new ones.
+ * Decoded audio and video shared by generation and production, plus the media
+ * views of a Reactor connection. Session views belong to one connection
+ * generation; independent producers, such as speech, own their frame sequences.
  */
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";

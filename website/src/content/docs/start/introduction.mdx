@@ -1,26 +1,34 @@
 ---
 title: Introduction
-description: "What reactor-effect is, what it adds to Reactor's own SDKs, and when to use it."
+description: "Live audio and video production, generation providers, and Effect composition."
 ---
 
 import { Aside, Card, CardGrid, LinkCard } from "@astrojs/starlight/components";
 
-[Reactor](https://reactor.inc) serves real-time video models over WebRTC: you open a session, send
-the model commands, and receive its video and audio as they are generated. reactor-effect is an
-[Effect](https://effect.website) SDK for building applications on it, from a page that plays one
-clip to a channel that renews its sessions to stay on air.
+reactor-effect is for live audio and video production with [Effect](https://effect.website).
+Applications choose generation capabilities, compose their providers with Layers, and consume
+media streams. Reactor supplies video and audio through H3, FastH3 and Vidu S2-Avatar;
+`CartesiaSpeech` supplies streaming text to speech through the provider-neutral `SpeechModel`.
 
-It is built for the parts of a Reactor application that outlive a single request. A session bills
-until it ends, its token expires, its connection drops, its owner process crashes, and the session
-itself has a maximum length. reactor-effect makes each of those an explicit, typed, tested part of
-the API, so an application keeps its picture on air and is told of any session that may still be
-billing.
+Effect 4.0's `effect/ai/Model` already carries provider identity, model identity and a Layer. The
+speech adapter uses it directly. Effect's language-model service does not define speech or video
+generation, so these media capabilities have their own contracts.
+
+Generation, scheduling and presentation are separate. Speech arrives as ordered PCM blocks before
+its final duration is known. `Playout` schedules finite clips and manages their queue, deadlines
+and source renewal. An application owns editorial priority, playback, mixing and proof of
+presented output. The initial speech adapter does not schedule an unfinished utterance in Playout.
+
+Reactor's allocated sessions retain their own lifecycle: expiring tokens, reconnection, ownership,
+maximum length and termination evidence. An HTTP speech request does not acquire those semantics.
+The [speech example](/reactor-effect-client/examples/#streaming-speech)
+shows the independent path. Hosted Cartesia quality and latency have not been qualified.
 
 ## Three packages
 
 | Package                  | What it gives you                                                                                                                                                                           | Runs in                |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| `reactor-effect-client`  | Sessions and tokens, the H3 and Vidu S2-Avatar providers, `Playout`, and `ReactorTest`, Reactor simulated in memory. Portable: it loads no native code.                                                         | Node, Bun and browsers |
+| `reactor-effect-client`  | Streaming speech and its Cartesia adapter, Reactor sessions and providers, `Playout`, and `ReactorTest`. Portable: it loads no native code.                                                         | Node, Bun and browsers |
 | `reactor-effect-browser` | The session's transport on the browser's own `RTCPeerConnection`, and playback of its tracks in DOM media elements.                                                                         | Browsers               |
 | `reactor-effect-native`  | The session's transport on Reactor's `reactor-webrtc` crate (libwebrtc) through Node-API: decoded frames and PCM in your process, with an optional child process per connection under Node. | Node and Bun           |
 
@@ -63,7 +71,7 @@ control in tests. It speaks Reactor's public coordinator API and wire protocol, 
 that create and connect a session carry its own `sdk_type`, so Reactor can tell its sessions apart.
 
 <Aside>
-  reactor-effect supports **H3 Reference Turbo Realtime** and **Vidu S2-Avatar** today. Reactor's
+  The Reactor adapters support **H3 Reference Turbo Realtime**, **FastH3** and **Vidu S2-Avatar**. Reactor's
   other models share the same session and wire protocol; each needs a provider module of its own,
   like `H3` or `ViduS2Avatar`.
 </Aside>
