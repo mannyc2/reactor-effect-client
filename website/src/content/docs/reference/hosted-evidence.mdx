@@ -25,8 +25,8 @@ its worst case in a ledger before any token exists, and a ledger's total is capp
 
 ## Every run
 
-34 runs, 40 sessions, from 2026-09-24 to 2026-10-09. Every allocated session ended with its
-termination confirmed by an independent read. Neither 0.11.0 candidate attempt has passed.
+35 runs, 42 sessions, from 2026-09-24 to 2026-10-10. Every allocated session ended with its
+termination confirmed by an independent read. The third 0.11.0 candidate attempt passed.
 
 | Started (UTC)    | Code                 | Check               | Sessions | Estimate | Result                                                       |
 | ---------------- | -------------------- | ------------------- | -------- | -------- | ------------------------------------------------------------ |
@@ -64,6 +64,7 @@ termination confirmed by an independent read. Neither 0.11.0 candidate attempt h
 | 2026-10-03 14:48 | checkout `ab4a792`   | `rejoin`            | 1        | $0.245   | Pass, all four criteria (run `5e507c87`)                      |
 | 2026-10-09 13:03 | checkout `7944b74`   | `candidate`         | 0        | —        | Fail: first H3 session creation returned HTTP 402            |
 | 2026-10-09 17:35 | checkout `e28d197`   | `candidate`         | 2        | $5.460   | Fail: FastH3's phase closed past its 80 s deadline           |
+| 2026-10-10 01:28 | checkout `8b5958d`   | `candidate`         | 2        | $5.075   | Pass, all 32 criteria (run `68595077`)                       |
 
 The summaries, one per ledger:
 [0.3.0-rc.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.3.0-rc.0/summary.md),
@@ -80,8 +81,9 @@ The summaries, one per ledger:
 [0.10.0](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.10.0/summary.md),
 [0.10.0-fasth3](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.10.0-fasth3/summary.md),
 [0.10.0-rejoin](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.10.0-rejoin/summary.md),
-[0.11.0-dev-candidate](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.11.0-dev-candidate/summary.md)
-and [0.11.0-dev-candidate-retry](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.11.0-dev-candidate-retry/summary.md).
+[0.11.0-dev-candidate](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.11.0-dev-candidate/summary.md),
+[0.11.0-dev-candidate-retry](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.11.0-dev-candidate-retry/summary.md)
+and [0.11.0-dev-candidate-corrected](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.11.0-dev-candidate-corrected/summary.md).
 
 - **Estimates** are the evidence's own, at the rate Reactor's pricing stated then: 125 credits a
   second, $0.0125. Up to 0.7.0 they count every started minute whole, so they are upper bounds;
@@ -106,7 +108,12 @@ and [0.11.0-dev-candidate-retry](https://github.com/mannyc2/reactor-effect-clien
   firm clip started 18.05 s after allocation, where H3's started at 12.38 s, and every later step
   followed that much later. FastH3's phase closed 80.05 s after allocation, past its fixed 80 s work
   deadline, so the run failed before its remaining criteria were judged. Both sessions' ends were
-  confirmed, and the public Ledger was left empty. Hosted qualification remains pending.
+  confirmed, and the public Ledger was left empty. The filler before the readyBy clip then asked
+  for 10 s in place of the family's longest clip. A third attempt at `8b5958d`, authorized
+  separately in a ledger of its own with a $10 limit, reserved $6.30 and passed all 32 criteria.
+  FastH3's firm clip was Ready 14.18 s after submission, and its session closed 75.87 s after
+  allocation, inside its 80 s deadline; H3's closed 68.99 s after allocation. Independent reads
+  confirmed both ends, and the public Ledger was empty after each.
 - **Commits.** The 0.8.0-dev commits were renamed when the branch's messages were reworded, with no
   change to any tree; the ledger's summary maps each to its new name. The second `show`'s checkout,
   `c9f3f96`, matches the 0.8.0 release's library source except for its version string.

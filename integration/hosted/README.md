@@ -75,7 +75,10 @@ Filler before the readyBy clip asks for 10 s, which keeps it on air past the jud
 it starts. With each family's longest clip there, the paid FastH3 phase of October 9 closed past
 its deadline: its firm clip was Ready 14.87 s after submission, against H3's 9.63 s. The
 rehearsal uses H3's measured timing for both models, so passing it does not establish hosted
-headroom within the fixed deadline.
+headroom within the fixed deadline. With the 10 s filler, the paid run of October 10 passed all
+32 criteria ([its summary](./evidence/0.11.0-dev-candidate-corrected/summary.md)): FastH3's firm
+clip was Ready 14.18 s after submission, its readyBy clip was Ready 1.44 s before the cutoff,
+and its session closed 75.87 s after allocation.
 
 ### Tour
 
