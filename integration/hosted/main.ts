@@ -265,30 +265,39 @@ const preflight = Command.make(
     const earlier = yield* Ledger.entries(input.ledger);
     const reservedUsd = earlier.reduce((total, run) => total + Ledger.reserved(run), 0);
     const coordinator = yield* CoordinatorClient.CoordinatorClient;
-    const rate = yield* CoordinatorClient.modelRate(yield* coordinator.pricing, model);
+    const pricing = yield* coordinator.pricing;
+    const allocations = Spend.allocationsFor(check, key);
+    const rates = yield* Effect.forEach(allocations, (allocation) =>
+      CoordinatorClient.modelRate(pricing, allocation.model.name).pipe(
+        Effect.map((rate) => ({ model: allocation.model.name, rate })),
+      ),
+    );
     const worst = yield* Spend.admit({
-      rate,
+      rates,
       authorization,
       reservedUsd,
     });
-    yield* Console.log(
-      `${model}: rate ${rate.creditsPerSecond} credits/s, billed per ${rate.per}, at ${rate.creditsPerDollar} credits/$: ${check} bills up to $${worst.toFixed(4)}; the ledger holds $${reservedUsd.toFixed(4)}`,
-    );
+    for (const { model, rate } of rates)
+      yield* Console.log(
+        `${model}: rate ${rate.creditsPerSecond} credits/s, billed per ${rate.per}, at ${rate.creditsPerDollar} credits/$: ${check} bills up to $${worst.toFixed(4)}; the ledger holds $${reservedUsd.toFixed(4)}`,
+      );
     // Minting allocates nothing; a token that grants more than asked refuses here.
-    const grant = yield* coordinator.mintToken({
-      modelName: model,
-      maxSessionDuration:
-        Spend.plans[check].seconds === "unlimited"
-          ? "unlimited"
-          : `${Spend.plans[check].seconds} seconds`,
-      expiresAfter: `${Spend.tokenSecondsFor(check)} seconds`,
-    });
-    const granted = yield* Spend.provenGrant({
-      jwt: Redacted.value(grant.jwt),
-      granted: grant.granted,
-    });
-    yield* Spend.acceptGrant({ check, granted });
-    yield* Console.log(`a token grants one session of ${granted.maxSessionSeconds} s`);
+    for (const allocation of allocations) {
+      const grant = yield* coordinator.mintToken({
+        modelName: allocation.model.name,
+        maxSessionDuration:
+          allocation.seconds === "unlimited" ? "unlimited" : `${allocation.seconds} seconds`,
+        expiresAfter: `${Spend.tokenSecondsFor(check)} seconds`,
+      });
+      const granted = yield* Spend.provenGrant({
+        jwt: Redacted.value(grant.jwt),
+        granted: grant.granted,
+      });
+      yield* Spend.acceptGrant({ check, model: allocation.model.name, granted });
+      yield* Console.log(
+        `${allocation.model.name}: a token grants one session of ${granted.maxSessionSeconds} s`,
+      );
+    }
     // Building the native peer loads and verifies the library.
     yield* Layer.build(NativePeer.layer()).pipe(Effect.scoped);
     yield* Console.log("the native library loads");
@@ -391,7 +400,7 @@ const qualify = Command.make("qualify").pipe(
 );
 
 qualify.pipe(
-  Command.run({ version: "0.10.0" }),
+  Command.run({ version: "0.11.0" }),
   // The application's entry point.
   // @effect-diagnostics-next-line strictEffectProvide:off
   Effect.provide(NodeServices.layer),

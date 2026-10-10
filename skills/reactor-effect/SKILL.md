@@ -113,7 +113,7 @@ const program = Effect.gen(function* () {
 
 ## Keeping a channel on air: `Playout`
 
-For FastH3, use `Playout.make({ model: FastH3Source.model, open: ledger.source(FastH3Source.opener({ tokens })) })` with an application-owned `Playout.Service<FastH3.Request>` tag. Automatic continuations use only built, retained clips; hosted qualification is pending.
+For FastH3, use `Playout.make({ model: FastH3Source.model, open: ledger.source(FastH3Source.opener({ tokens })) })` with an application-owned `Playout.Service<FastH3.Request>` tag. Automatic continuations use only built, retained clips. One paid single-session FastH3 playout passed on hosted Reactor; renewal across FastH3 sessions has no hosted run.
 
 `Playout.layer({ open, lanes, filler, renewal })` where `open` is
 `ledger.source(H3Source.opener({ tokens: coordinator.tokens({ ... }) }))`, with `ledger` the

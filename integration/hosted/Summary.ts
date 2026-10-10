@@ -990,6 +990,32 @@ const section = (evidence: Evidence): string => {
         ]),
     `- **Network:** ${environment.network}`,
     `- **Cost:** worst case ${usd(evidence.budget.worstCaseUsd)}, estimated ${usd(evidence.budget.estimatedUsd)}${evidence.budget.rate === undefined ? "" : ` at ${evidence.budget.rate.creditsPerSecond} credits/s, billed per ${evidence.budget.rate.per}, and ${evidence.budget.rate.creditsPerDollar} credits/$`}`,
+    ...(evidence.budget.allocations ?? []).map(
+      (allocation) =>
+        `- **Allocation:** ${allocation.model}, capped ${allocation.seconds} s, ${allocation.rate.creditsPerSecond} credits/s, billed per ${allocation.rate.per}, ${allocation.rate.creditsPerDollar} credits/$`,
+    ),
+    ...(evidence.candidate?.phases ?? []).flatMap((phase) => [
+      `- **Candidate ${phase.model}:** session ${phase.sessionId}; forecast ${phase.forecastOrder.join(" → ")}; observed starts ${phase.startOrder.join(" → ")}; recorded before connect ${phase.recordedBeforeConnect}; Ledger entries after close ${phase.ledgerAfterClose ?? "unconfirmed"}`,
+      `  - independent end reads: ${phase.endReads.map((read) => `${seconds(read.atMs)} ${read.state}`).join(" → ") || "none"}`,
+      ...phase.groups.map(
+        (group) =>
+          `  - ${group.key}: ${group.outcome}, ${group.played} played, parts ${group.parts.join(" → ")}${group.stoppedPart === undefined ? "" : `, stopped at part ${group.stoppedPart}`}`,
+      ),
+      ...(phase.firm === undefined
+        ? []
+        : [
+            `  - firm batch: started ${seconds(phase.firm.startedMs)}, committed ${seconds(phase.firm.committedMs)}, Manual add Ready at start ${phase.firm.manualWasReady}; Manual build allowed from ${seconds(phase.firm.manualBuildAfterMs)}`,
+          ]),
+      ...phase.media.map(
+        (media) =>
+          `  - ${media.key}: provider start ${seconds(media.startedMs)}, first fresh decoded frame ${media.firstFrameMs === undefined ? "unobserved" : seconds(media.firstFrameMs)}, ${media.frames} decoded frames during its observed playback; ${media.live ? "lit and changing" : (media.reason ?? "failed live-video judgment")}`,
+      ),
+      ...(phase.readyBy === undefined
+        ? []
+        : [
+            `  - readyBy: due ${seconds(phase.readyBy.timeMs)}, cutoff ${seconds(phase.readyBy.cutoffMs)}, Ready ${phase.readyBy.readyMs === undefined ? "unobserved" : seconds(phase.readyBy.readyMs)}, started ${phase.readyBy.startedMs === undefined ? "unobserved" : seconds(phase.readyBy.startedMs)}, missed clip ${phase.readyBy.missed}; filler started ${seconds(phase.readyBy.filler.startedMs)}, predicted end ${seconds(phase.readyBy.filler.predictedEndMs)}`,
+          ]),
+    ]),
     `- **Timeline:** ${evidence.milestones.map((milestone) => `${milestone.step} ${seconds(milestone.atMs)}`).join(" · ")}`,
     ...(evidence.liveness === undefined
       ? []

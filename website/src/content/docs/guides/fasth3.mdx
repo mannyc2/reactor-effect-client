@@ -118,9 +118,16 @@ clip retained in history, and confirmed its session closed. It did not run `Fast
 `FastH3Source` or a FastH3 playout, and did not establish history capacity, dependent build order,
 or video drain timing.
 
-<Aside type="caution" title="Not yet qualified on hosted Reactor">
-  The provider and playout source have no hosted qualification run. A `Started` fact means the model
-  reported a start; it does not prove that a viewer saw a frame or that an encoder emitted it.
+<Aside type="caution" title="What hosted Reactor has qualified">
+  One paid [`candidate` run on October 10, 2026](https://github.com/mannyc2/reactor-effect-client/blob/main/integration/hosted/evidence/0.11.0-dev-candidate-corrected/summary.md)
+  aired a FastH3 playout over `FastH3Source.open`, recorded in a `Ledger`, on one 90 s capped
+  session. It passed a firm batch, strict and inserted groups in order, the forecast, `readyBy`
+  keeping and dropping clips, a continuation and an opening frame reaching the provider, decoded
+  video during every clip and confirmed termination. Its 14.375 s firm clip was Ready 14.18 s after
+  submission, where H3 built its 15.083 s clip in 8.72 s. Renewal across sessions,
+  `FastH3Source.resume`, takeover, TURN, browsers and macOS have no hosted FastH3 run. A `Started`
+  fact means the model reported a start; it does not prove that a viewer saw a frame or that an
+  encoder emitted it.
 </Aside>
 
 ## Pitfalls and limits

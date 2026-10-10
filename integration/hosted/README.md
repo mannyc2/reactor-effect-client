@@ -16,11 +16,12 @@ A capability added after 0.3.0 gets one check of its own, run once against the p
 
 ## The checks
 
-`--model h3|fast-h3` selects the model for a check that supports both. These checks default to H3. `frames` and `fasth3` default to FastH3; the Vidu checks keep their own model. An unsupported combination is refused before pricing or token requests. A rehearsal runs the selected model on ReactorTest and proves the program; a paid run is needed to establish hosted behavior.
+`--model h3|fast-h3` selects the model for a check that supports both. These checks default to H3. `frames` and `fasth3` default to FastH3; the Vidu checks keep their own model. An unsupported combination is refused before pricing or token requests. A rehearsal runs the selected model on ReactorTest and proves the program; a paid run is needed to establish hosted behavior. `candidate` fixes its own sequence: one H3 session, then one FastH3 session. It refuses `--model`.
 
 | Check         | Models         | What it proves or records                                                                                                                                                                                                                                                                                                                                                                                           |
 | ------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `vertical`    | H3, FastH3     | Always first: pricing, a token, allocation, connection, a short clip's correlated acceptance and lifecycle, live video, audio when offered, metadata and an ICE pair, then termination. Short requests are 5 s on H3 and 5.167 s on FastH3.                                                                                                                                                                         |
+| `candidate`   | H3 then FastH3 | One bounded release-candidate run: public Ledger recording and confirmed termination, firm batches, strict group order, inserted groups, forecasts, readyBy and decoded video on each model.                                                                                                                                                                                                                        |
+| `vertical`    | H3, FastH3     | Pricing, a token, allocation, connection, a short clip's correlated acceptance and lifecycle, live video, audio when offered, metadata and an ICE pair, then termination. Short requests are 5 s on H3 and 5.167 s on FastH3.                                                                                                                                                                                       |
 | `takeover`    | H3, FastH3     | An owner plays the family's longest clip with its shortest queued, then dies mid-clip. A raw attach is ready within 5 s, names the playing clip, reads queued metadata, sends no enqueue, receives fresh frames and ends the dead owner's session.                                                                                                                                                                  |
 | `turn`        | H3, FastH3     | The vertical from a network that blocks outbound UDP, requiring a relay pair. It runs only while no earlier paid run in the ledger selected one.                                                                                                                                                                                                                                                                    |
 | `audio`       | H3             | The vertical with a gray reference image and a 3 s reference tone; the clip must report one audio reference and `has_reference_audio`.                                                                                                                                                                                                                                                                              |
@@ -31,7 +32,7 @@ A capability added after 0.3.0 gets one check of its own, run once against the p
 | `edits`       | H3, FastH3     | A group of three, two inserts and a batch withdrawal/insertion. Clips start in planned order and each seam is measured.                                                                                                                                                                                                                                                                                             |
 | `cut`         | H3, FastH3     | A cut lane stops a lower lane's clip once and starts next. An optional moderation prompt records its verdict and withdrawal or session end.                                                                                                                                                                                                                                                                         |
 | `tokens`      | H3, FastH3     | A session outlives its creating token, resumes on bound tokens, refreshes for uploads and ends. H3 uploads an image and audio; FastH3 uploads an opening frame.                                                                                                                                                                                                                                                     |
-| `tour`        | H3, FastH3     | One 90 s raw-API tour of tokens, canvas, seed, uploads and reuse, queue edits, stop/play, reset, text budget, recordings, reconnect and API-key termination. H3 observes an over-budget build failure; FastH3 requires a replied refusal at enqueue.                                                                                                                                                                |
+| `tour`        | H3, FastH3     | One 90 s raw-API tour of tokens, canvas, seed, uploads and reuse, queue edits, stop/play, reset, text budget, recordings, reconnect and API-key termination. FastH3 also runs the queue check's five playback boundaries on this session. H3 observes an over-budget build failure; FastH3 requires a replied refusal at enqueue.                                                                                   |
 | `adoption`    | H3, FastH3     | One 75 s session taken over by raw attach, then owned source resume after token expiry, using an isolated Node owner. Fresh frames, refreshed uploads, 401/403 refusals and termination are judged.                                                                                                                                                                                                                 |
 | `show`        | H3, FastH3     | Three 75 s sessions with filler, recovery, edits, one planned switch, timed cues, a deliberate session loss, carried work, cut/conflict lanes and drain.                                                                                                                                                                                                                                                            |
 | `unconnected` | H3             | Records what happens to a session nothing connects to, including billing and cleanup.                                                                                                                                                                                                                                                                                                                               |
@@ -41,6 +42,43 @@ A capability added after 0.3.0 gets one check of its own, run once against the p
 | `character`   | Vidu S2-Avatar | The avatar provider through one live call, greeting, speech, transcripts, call end and termination.                                                                                                                                                                                                                                                                                                                 |
 | `fasth3`      | FastH3         | A raw probe of the deployment, state/queue counts, lengths, history, continuations, stop, builds and seams. It records answers without turning them into qualification criteria.                                                                                                                                                                                                                                    |
 | `rejoin`      | Vidu S2-Avatar | One live-call reconnect, judged on a live picture, successful reconnect within 30 s and termination; fresh media and runner liveness are recorded.                                                                                                                                                                                                                                                                  |
+
+### Candidate
+
+`candidate` qualifies the current SDK through one command and two serial physical sessions,
+one H3 and one FastH3. Each is capped at 90 s and its work ends within 80 s of allocation.
+The 80 s deadline also bounds the entire phase, including setup. Each allocation has its own
+model and live rate in the reservation and saved evidence; no
+assumption that the models cost the same enters admission or estimates. At the public rates
+read October 9, 2026, 350 credits per second and 10,000 credits per dollar for each, it reserves
+$6.30. Its reviewed whole-minute ceiling is $8.40, within the unchanged $10 ledger cap.
+
+Both phases use the SDK's public file-backed Ledger and the family's source opener. The
+allocation must appear in that Ledger before connection. With one build at a time, a firm
+batch add must air within 30 seconds, before its held Manual co-add may build at 50 seconds.
+A strict two-part group receives a two-part inserted
+group: the forecast and observed starts must put them in `p1, i1, i2, p2` order, and both group
+outcomes must settle. A clip Ready by its readyBy judgment is kept behind filler and airs late,
+while an unready overdue clip drops. The Manual item is released, the playout drains, the
+source closes and the coordinator independently confirms termination. The public Ledger must
+then be empty before the next model allocates. Required phases retain fresh decoded video
+observations separately from provider starts; these facts establish received media, not
+presented or encoded output.
+
+Failure, an unknown dispatch or an unconfirmed end stops before the next allocation. A rerun
+needs another explicit spend decision; the reservation is never refunded. The existing raw
+Tour/Queue, owner-adoption, token-expiry, renewal/recovery, cut and TURN checks remain available
+for their own questions. They are outside this candidate run's live scope, as are hosted
+browser and macOS qualification. Serial sessions do not establish renewal behavior.
+
+Filler before the readyBy clip asks for 10 s, which keeps it on air past the judgment 8 s after
+it starts. With each family's longest clip there, the paid FastH3 phase of October 9 closed past
+its deadline: its firm clip was Ready 14.87 s after submission, against H3's 9.63 s. The
+rehearsal uses H3's measured timing for both models, so passing it does not establish hosted
+headroom within the fixed deadline. With the 10 s filler, the paid run of October 10 passed all
+32 criteria ([its summary](./evidence/0.11.0-dev-candidate-corrected/summary.md)): FastH3's firm
+clip was Ready 14.18 s after submission, its readyBy clip was Ready 1.44 s before the cutoff,
+and its session closed 75.87 s after allocation.
 
 ### Tour
 
@@ -53,6 +91,8 @@ The detailed timeline below describes the default H3 tour. With `--model fast-h3
 - **Judged, as H3's schema or the SDK documents them.** The canvas asked for and its size in `canvas_accepted` and the state; clip 1's correlated acceptance, lifecycle, live video, audio, `has_reference_audio` and metadata echo; clip 2 accepted on clip 1's uploads with nothing uploaded again, reporting one image and one audio reference; the queue read after a `move` to the front; a stop acknowledged, the playing clip stopped and nothing started with autoplay off until a `play` of the clip it names; a prompt past the text budget failing its clip with `clip_failed`, which the clip's operation reports as `ClipEnded`; a reset stopping the playing clip and leaving both queues empty; popped clips never built or started; the reconnect making the next generation, H3 answering on it with the ready clip kept, and fresh frames on it; the API key's termination and the session's own close confirmed; and, only once the end is confirmed, an attach to the ended session failing, and the key finding no unknown session: its read failing and its termination confirmed absent.
 - **Recorded, not judged.** The seed H3 echoes and its default before and after; a position-zero clip's place in the queue; each queue command's round trip and `refresh`'s outcome; whether the moved clip headed the generation queue when popped, which makes it the build in flight only by inference, and when clip 2 was built after that pop; what `reset` restores; the DELETE statuses, and which refusal the attach and the unknown session's read met, with their HTTP statuses; whether the deployment records (Reactor leaves recording to each deployment: `RecorderDisabled`, or the clip's markers and its download's size, never its content); and what the SDK reads from the echo of a three-session token and an uncapped one, which mint nothing that is used.
 - **Rehearsed.** ReactorTest answers as a disabled recorder does; a rehearsal test turns its recorder on so the download runs too, and another refuses clip 1's image, after which the later phases still run and the session still ends.
+
+FastH3 runs the standalone queue workflow on the Tour's session after its reconnect and original popped-clip judgments. An acknowledged stop and reset leave the active queues empty before the probe. All five boundary observations and queue criteria are kept. Before the API key ends the longer session, an upload refreshes its token while it is live, retaining authority for its own close afterward. A FastH3 qualification that runs this Tour needs no separate paid `queue`; the standalone check remains available for a queue-only investigation. The cap stays 90 s, so the combined run reserves $3.15 at the checked per-second rate, instead of $4.90 for separate Tour and Queue allocations. This saving has been rehearsed; hosted success remains unmeasured.
 
 ### Adoption
 
@@ -215,7 +255,7 @@ The evidence never holds a credential, SDP, a candidate address, a frame, audio,
 2. **Saved as it happens.** The run claims a new file, recording its worst case, before any token exists, and saves after every milestone with an atomic replace. A crash still leaves the session ids, the reservation and everything observed so far. Ctrl-C interrupts the check, so its finalizers still close the sessions. A cleanup that ends what a failed check left open sends every DELETE at once, before it records any end, so a save that fails skips no session and no session waits on another's end.
 3. **Bounded by the session.** All work finishes 10 s before the session's cap: within 40 s of allocation for a 50 s session. `dropped` observes an uncapped session within its reviewed 80 s hold, then confirms its end; a third cleanup try can exceed the reservation. `unconnected` reads its session until 120 s after the request, past the cap and 30 s counted from allocation, `ACTIVE` or ready, since the cap is what it watches, and then ends the session with the API key, trying up to three times; the sessions on its spent token it holds 10 s past their ready, within 15 s of that token's second create's answer, and then ends.
 4. **Stops at uncertainty.** An unknown outcome, an allocation it cannot confirm, or an unconfirmed termination fails the run, never repeated by itself; the summary then says which session to confirm in the dashboard and by when its cap ends it. For `dropped`, whose session has no cap, it says to end it in the dashboard at once. For `unconnected`, whose question is whether the cap ends such a session, it says to end the session in the dashboard instead, and after a create whose outcome is unknown, to look there for a session it may have allocated, with any codes the create's reply held. `avatar` records a command's unknown outcome and goes on: its commands bill nothing beyond the session's time, which it ends either way, and one of them may never be answered.
-5. **Free preflight.** `preflight` checks the live rate of one check's model against that check's budget and the ledger, and a token minted for the model and its granted limits (minting allocates nothing): `vertical`'s, unless `--check` names another check. It also checks that the native library loads, and that `adoption`'s owner can run: `node` 22.18 or newer, and the isolated owner command, which given no grant must build its native peer and exit on the missing grant (its error output is never read). It then prints the token probes: what a 15 s and a 7 h token live, what an uncapped and a three-session token echo, the `/tokens` reply's key names and types, and what a bind of an unknown session and the API key reading or ending one answer. Each is one request that allocates nothing; only statuses, codes, numbers and key names are kept. Every probe request, and every read with the key, refuses a redirect and sends no cookies, as the client's coordinator does, so a credential goes only where it was sent.
+5. **Free preflight.** `preflight` checks the live rates of every model a check allocates against that check's budget and the ledger, and a token minted for the model and its granted limits (minting allocates nothing): `vertical`'s, unless `--check` names another check. It also checks that the native library loads, and that `adoption`'s owner can run: `node` 22.18 or newer, and the isolated owner command, which given no grant must build its native peer and exit on the missing grant (its error output is never read). It then prints the token probes: what a 15 s and a 7 h token live, what an uncapped and a three-session token echo, the `/tokens` reply's key names and types, and what a bind of an unknown session and the API key reading or ending one answer. Each is one request that allocates nothing; only statuses, codes, numbers and key names are kept. Every probe request, and every read with the key, refuses a redirect and sends no cookies, as the client's coordinator does, so a credential goes only where it was sent.
 6. **Rehearsed end to end.** `rehearse <check>` runs the same program against `ReactorTest` at the timing paid runs measured, under a test clock, so it takes a moment and repeats exactly. The takeover's owner runs in this process there, and so does `adoption`'s, which a paid run starts under Node on the isolated native host: a kill cuts the owner's network before interrupting it, so it cannot close or terminate what it held. CI rehearses every check and these failure paths as `ReactorTest` faults: a lost enqueue reply, a termination confirmed only after the library's read, black and frozen video, missing audio and an over-granting token; `cut`'s moderation three ways (a verdict, a session ended with no verdict, a prompt moderation lets through); a refused clip in `adoption`, whose later steps still run, and an `adoption` owner that fails before streaming, whose session is still ended; `show`'s loss both ways, by a verdict and by the API key; and `unconnected` with its session ended 30 s in, with its cap ignored, and with an end just after its last watch read; with a spent token that allocates again or names its session again, whose first create is refused, or whose second create hangs to its deadline, is refused 429, meets a 5xx or names no session; with the spent token's session never ready within its wait, and found ended after the second create; with the watched session's create unknown or naming no session; with the evidence a crash leaves while each create is unanswered; with a slow DELETE; with a read answered 404 for a running session, once, twice with the read at the end contradicting, and on the read at the end alone; and with both its cap and the key's DELETE ignored; `showreel` with its first scene's build failed; `showreel`'s recording through a real ffmpeg, when one is installed; and `avatar` with no picture, each call doing all it does for one. It also starts `adoption`'s paid owner command under Node from the TypeScript sources, as far as its help: the portable gate has no staged addon for the isolated peer. A rehearsal checks every save but writes only its claim and its last: its clock moves while it runs, so a file written mid-check would move the simulated session's time.
 
 A rehearsal cannot prove what only hosted Reactor decides: how it notices a vanished owner and accepts a new connection, what it does with a session nothing connects to, its build and seam timing, billing, relay behaviour, or what a viewer sees.
@@ -301,37 +341,33 @@ bun --no-env-file integration/hosted/main.ts summarize $L > $L/summary.md
 
 Use a built checkout with a staged addon whose source hash matches, as above. `--model fast-h3` selects both the check's provider and any takeover owner's source; saved evidence records `reactor/fast-h3`. FastH3's short request is 5.167 s and its long request is 14.375 s. H3 keeps its 5 s and 15 s requests.
 
-Qualification before publication uses separate `integration/hosted/evidence/0.11.0-dev-*` ledgers. The following reservations use the recorded October 3, 2026 rate of 350 credits per second and 10,000 credits per dollar; re-read pricing and run preflight before requesting approval for each ledger. Each amount, ledger and rate needs authorization. A failure, rerun or changed rate requires a new decision; reservations are never refunded.
-
-| Ledger         | Checks, in order                                                    | Reservation at that per-second rate |
-| -------------- | ------------------------------------------------------------------- | ----------------------------------- |
-| `0.11.0-dev-1` | FastH3 `vertical`, `queue`; H3 `edits`; optional FastH3 `turn` last | $7.00; $5.25 without `turn`         |
-| `0.11.0-dev-2` | FastH3 `takeover`, `resume`, `renewal`                              | $7.00                               |
-| `0.11.0-dev-3` | FastH3 `edits`, `cut`, `frames`, `tokens`                           | $7.00                               |
-| `0.11.0-dev-4` | FastH3 `show` alone                                                 | $7.875                              |
-| `0.11.0-dev-5` | FastH3 `adoption`, `tour`                                           | $5.775                              |
-
-Run `turn` only on a network that blocks outbound UDP, and skip it if an earlier paid run in its ledger already selected a relay pair. Record a skip in the summary. FastH3 showreel, macOS and browser qualification need separate scope and spend decisions.
+The 0.11.0 candidate uses one `candidate` run in a fresh
+`integration/hosted/evidence/0.11.0-dev-candidate` ledger. At the October 9 rates above, its two
+90 s caps reserve $6.30; read live pricing for both models and run the free preflight before
+requesting that amount. Preflight checks both models' grants and allocates no session. The
+candidate commit, exact bounds and passing rehearsals belong with the spend request.
 
 ```sh
 bun run build
 export REACTOR_API_KEY=... # never echoed or saved
-QUALIFY_LEDGER=integration/hosted/evidence/0.11.0-dev-1
+QUALIFY_LEDGER=integration/hosted/evidence/0.11.0-dev-candidate
 
-# Free preflight, before requesting this ledger's amount.
-bun --no-env-file integration/hosted/main.ts preflight --check vertical --model fast-h3 \
-  --total-budget-usd 7.00 --ledger "$QUALIFY_LEDGER"
+# Free, before requesting the run's spend.
+bun --no-env-file integration/hosted/main.ts preflight --check candidate \
+  --total-budget-usd 6.30 --ledger "$QUALIFY_LEDGER"
 
-# Only after authorization. Read each result before starting the next check.
-bun --no-env-file integration/hosted/main.ts run vertical --model fast-h3 \
-  --budget-usd 2.10 --total-budget-usd 7.00 --ledger "$QUALIFY_LEDGER" \
+# Only after authorization of this candidate and amount.
+bun --no-env-file integration/hosted/main.ts run candidate \
+  --budget-usd 6.30 --total-budget-usd 6.30 --ledger "$QUALIFY_LEDGER" \
   --network "<where, without addresses>" --i-authorize-paid-sessions
 bun --no-env-file integration/hosted/main.ts summarize "$QUALIFY_LEDGER" > "$QUALIFY_LEDGER/summary.md"
 ```
 
-The check budget must cover its live worst case and fit both the declared ceiling and the ledger total. At the recorded rate, one 50 s session reserves $1.75 with a $2.10 ceiling; `renewal`, `adoption` and `tour` have a $4.20 ceiling. `show` uses three sessions and reserves $7.875 per second, so give it a budget between $7.875 and $10. Its per-minute worst case is $12.60 and is refused by the unchanged $10 ledger cap.
-
-Once published, the release's own ledger `evidence/0.11.0/` is for the published bytes, using the scratch-project route above. Publication and its paid check require their own approvals.
+The budget must cover the admitted live worst case and fit the reviewed ceiling and ledger
+total. A changed rate or unit is reviewed before spend. A failure or uncertainty stops; another
+run requires new approval. Publication is separately approved after qualification. Historical
+ledgers retain their original revisions and claims; the superseded five-ledger matrix is not
+an instruction to allocate more sessions.
 
 ### The showreel
 

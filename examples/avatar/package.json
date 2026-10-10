@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-example-avatar",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "description": "reactor-effect avatar: a Vidu S2-Avatar character made from a photo, one call with its picture decoded and its transcripts, offline with no key or live with one",
   "type": "module",

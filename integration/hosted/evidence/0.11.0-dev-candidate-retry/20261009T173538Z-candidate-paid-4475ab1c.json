@@ -1,0 +1,3785 @@
+{
+  "format": "reactor-hosted-qualification/v2",
+  "runId": "4475ab1c",
+  "check": "candidate",
+  "mode": "paid",
+  "startedAt": "2026-10-09T17:35:38.995Z",
+  "finishedAt": "2026-10-09T17:38:14.285Z",
+  "environment": {
+    "runtime": "bun 1.4.2",
+    "os": "linux x64",
+    "commit": "e28d197e99927b75b324e4e75574f5c791938f8b",
+    "dirty": false,
+    "packages": {
+      "reactor-effect-client": "0.11.0",
+      "reactor-effect-native": "0.11.0",
+      "effect": "4.0.0",
+      "@effect/platform-node": "4.0.0"
+    },
+    "native": {
+      "platform": "linux-x64-gnu",
+      "file": "reactor-effect-native.linux-x64-gnu.node",
+      "sha256": "9390d1775d66cd0307c90b1db89c969d7adfd2592086ec1b07a5f7acdd614da4",
+      "sourceSha256": "1da0d5fb603a0df6f0f9fdaca843c0e167659926ab2e98d27a391c7448bdd01d",
+      "target": "x86_64-unknown-linux-gnu",
+      "webrtcPrebuilt": "webrtc-7907-a5ddff60-p9"
+    },
+    "network": "Linux development host, native WebRTC",
+    "apiOrigin": "https://api.reactor.inc"
+  },
+  "budget": {
+    "checkUsd": 6.3,
+    "totalUsd": 10,
+    "reservedBeforeUsd": 0,
+    "allocations": [
+      {
+        "model": "reactor/h3-reference-to-video-turbo-realtime",
+        "seconds": 90,
+        "rate": {
+          "creditsPerSecond": 350,
+          "creditsPerDollar": 10000,
+          "per": "second"
+        }
+      },
+      {
+        "model": "reactor/fast-h3",
+        "seconds": 90,
+        "rate": {
+          "creditsPerSecond": 350,
+          "creditsPerDollar": 10000,
+          "per": "second"
+        }
+      }
+    ],
+    "worstCaseUsd": 6.3,
+    "estimatedUsd": 5.46
+  },
+  "grants": [
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 90,
+      "expiresAt": 1791567489
+    },
+    {
+      "maxSessions": 1,
+      "maxSessionSeconds": 90,
+      "expiresAt": 1791567563
+    }
+  ],
+  "sessions": [
+    {
+      "id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+      "model": "reactor/h3-reference-to-video-turbo-realtime",
+      "allocatedMs": 493,
+      "capEndsAt": "2026-10-09T17:37:09.497Z",
+      "close": {
+        "requestedMs": 74160,
+        "reportedMs": 74565,
+        "confirmed": true,
+        "report": {
+          "localClosed": true,
+          "allocation": "known",
+          "ownership": "owned",
+          "sessionId": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+          "remote": {
+            "attempted": true,
+            "responseReceived": true,
+            "confirmed": true,
+            "evidence": "terminal",
+            "deleteStatus": 200,
+            "state": "CLOSED"
+          },
+          "unpublishSubmitted": [],
+          "unresolvedPublications": [],
+          "localErrors": []
+        }
+      },
+      "trail": []
+    },
+    {
+      "id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+      "model": "reactor/fast-h3",
+      "allocatedMs": 75087,
+      "capEndsAt": "2026-10-09T17:38:24.091Z",
+      "close": {
+        "requestedMs": 154714,
+        "reportedMs": 155139,
+        "confirmed": true,
+        "report": {
+          "localClosed": true,
+          "allocation": "known",
+          "ownership": "owned",
+          "sessionId": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+          "remote": {
+            "attempted": true,
+            "responseReceived": true,
+            "confirmed": true,
+            "evidence": "terminal",
+            "deleteStatus": 200,
+            "state": "CLOSED"
+          },
+          "unpublishSubmitted": [],
+          "unresolvedPublications": [],
+          "localErrors": []
+        }
+      },
+      "trail": [
+        {
+          "atMs": 155278,
+          "state": "CLOSED"
+        }
+      ],
+      "terminalMs": 155278
+    }
+  ],
+  "milestones": [
+    {
+      "atMs": 10,
+      "step": "admitted",
+      "detail": "worst case $6.3000"
+    },
+    {
+      "atMs": 493,
+      "step": "allocated",
+      "detail": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+    },
+    {
+      "atMs": 74565,
+      "step": "closed",
+      "detail": "6b859cb0-4c4b-445a-986c-fe68621e36b4 confirmed"
+    },
+    {
+      "atMs": 74708,
+      "step": "h3 candidate passed"
+    },
+    {
+      "atMs": 75087,
+      "step": "allocated",
+      "detail": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+    },
+    {
+      "atMs": 155139,
+      "step": "closed",
+      "detail": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1 confirmed"
+    },
+    {
+      "atMs": 155279,
+      "step": "settled"
+    }
+  ],
+  "outcomes": [],
+  "criteria": [
+    {
+      "name": "h3: a firm batch airs before its Manual add is Ready",
+      "passed": true
+    },
+    {
+      "name": "h3: the forecast preserves strict places and inserted groups",
+      "passed": true
+    },
+    {
+      "name": "h3: groups air all their places in strict order",
+      "passed": true
+    },
+    {
+      "name": "h3: decoded video arrives during each ordered clip",
+      "passed": true
+    },
+    {
+      "name": "h3: readyBy keeps a Ready clip waiting past its cutoff for filler",
+      "passed": true
+    },
+    {
+      "name": "h3: readyBy drops an overdue clip that was not Ready",
+      "passed": true
+    },
+    {
+      "name": "h3: readyBy airs after the cutoff once filler ends",
+      "passed": true
+    },
+    {
+      "name": "h3: decoded video arrives during every accepted clip",
+      "passed": true
+    },
+    {
+      "name": "h3: live decoded video",
+      "passed": true
+    },
+    {
+      "name": "h3: the provider reports the uploaded input",
+      "passed": true
+    },
+    {
+      "name": "h3: every command has a known outcome",
+      "passed": true
+    },
+    {
+      "name": "h3: the source confirms termination",
+      "passed": true
+    },
+    {
+      "name": "h3: an independent coordinator read confirms the end",
+      "passed": true
+    },
+    {
+      "name": "h3: the Ledger forgets the confirmed session",
+      "passed": true
+    },
+    {
+      "name": "h3: the Ledger recorded its session before connection",
+      "passed": true
+    },
+    {
+      "name": "fast-h3: a firm batch airs before its Manual add is Ready",
+      "passed": true
+    },
+    {
+      "name": "fast-h3: the forecast preserves strict places and inserted groups",
+      "passed": true
+    },
+    {
+      "name": "fast-h3: groups air all their places in strict order",
+      "passed": true
+    },
+    {
+      "name": "fast-h3: decoded video arrives during each ordered clip",
+      "passed": true
+    },
+    {
+      "name": "fast-h3: readyBy keeps a Ready clip waiting past its cutoff for filler",
+      "passed": true
+    },
+    {
+      "name": "fast-h3: readyBy drops an overdue clip that was not Ready",
+      "passed": true
+    },
+    {
+      "name": "confirmed termination",
+      "passed": true
+    }
+  ],
+  "spans": [
+    {
+      "name": "CoordinatorClient.mintToken",
+      "startMs": 14.3,
+      "durationMs": 137.6,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Ledger.source",
+      "startMs": 152.2,
+      "durationMs": 3080.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+      },
+      "events": []
+    },
+    {
+      "name": "H3Source.open",
+      "startMs": 153.3,
+      "durationMs": 3079.5,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 153.5,
+      "durationMs": 2894.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.model.name": "reactor/h3-reference-to-video-turbo-realtime",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 495.7,
+      "durationMs": 2552.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+      },
+      "events": [
+        {
+          "name": "reactor.connect.described",
+          "atMs": 837.1
+        },
+        {
+          "name": "reactor.connect.prepared",
+          "atMs": 971.9
+        },
+        {
+          "name": "reactor.connect.registered",
+          "atMs": 1130.6
+        },
+        {
+          "name": "reactor.connect.offered",
+          "atMs": 1607.1
+        },
+        {
+          "name": "reactor.connect.answered",
+          "atMs": 2082.4
+        },
+        {
+          "name": "reactor.connect.ready",
+          "atMs": 3046
+        }
+      ]
+    },
+    {
+      "name": "Session.control",
+      "startMs": 3051.1,
+      "durationMs": 95.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_schema",
+        "reactor.request.id": "ctrl_645d27426d03bf1e632ac52562b07bce_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3147.9,
+      "durationMs": 26.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3175.9,
+      "durationMs": 28.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_2",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3205.1,
+      "durationMs": 27.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_flush_on_clip_end",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_3",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 3270.5,
+      "durationMs": 27.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_4",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.upload",
+      "startMs": 3300.8,
+      "durationMs": 620.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.upload.mime_type": "image/png",
+        "reactor.upload.size": 110809,
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.upload",
+      "startMs": 3921.8,
+      "durationMs": 304,
+      "status": "ok",
+      "attributes": {
+        "reactor.upload.mime_type": "audio/wav",
+        "reactor.upload.size": 288044,
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 4226.5,
+      "durationMs": 874.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "0a07d3620209214dbfee962394cbea34:1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 4227,
+      "durationMs": 872.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_5",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 5100.8,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 12872.8,
+      "durationMs": 31.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "0a07d3620209214dbfee962394cbea34:2",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 12873,
+      "durationMs": 30.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_6",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 12903.9,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 17601.2,
+      "durationMs": 29.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "0a07d3620209214dbfee962394cbea34:3",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 17601.4,
+      "durationMs": 28.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_7",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 17630.7,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 19816.4,
+      "durationMs": 29.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "0a07d3620209214dbfee962394cbea34:4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 19816.6,
+      "durationMs": 28.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_8",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 19846.2,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 21941.9,
+      "durationMs": 28.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "0a07d3620209214dbfee962394cbea34:5",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 21942.1,
+      "durationMs": 27.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_9",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 21970.3,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 38165.9,
+      "durationMs": 30.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "0a07d3620209214dbfee962394cbea34:6",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 38166.2,
+      "durationMs": 29.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_10",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 38196.5,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 48740.4,
+      "durationMs": 28.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "0a07d3620209214dbfee962394cbea34:7",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 48740.6,
+      "durationMs": 27.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_11",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 48768.6,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 53264,
+      "durationMs": 29.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "0a07d3620209214dbfee962394cbea34:8",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 53264.2,
+      "durationMs": 28.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_12",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 53293,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 58422.5,
+      "durationMs": 29.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "0a07d3620209214dbfee962394cbea34:9",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 58422.7,
+      "durationMs": 28.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_645d27426d03bf1e632ac52562b07bce_13",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 58451.9,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Session.close",
+      "startMs": 74159.8,
+      "durationMs": 404.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      },
+      "events": []
+    },
+    {
+      "name": "CoordinatorClient.terminate",
+      "startMs": 74173.4,
+      "durationMs": 390.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      },
+      "events": []
+    },
+    {
+      "name": "CoordinatorClient.inspect",
+      "startMs": 74566.9,
+      "durationMs": 140.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+      },
+      "events": []
+    },
+    {
+      "name": "CoordinatorClient.mintToken",
+      "startMs": 74711.5,
+      "durationMs": 135.1,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Ledger.source",
+      "startMs": 74846.7,
+      "durationMs": 2791.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+      },
+      "events": []
+    },
+    {
+      "name": "FastH3Source.open",
+      "startMs": 74847,
+      "durationMs": 2791.6,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Reactor.create",
+      "startMs": 74847,
+      "durationMs": 2563.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.model.name": "reactor/fast-h3",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.connect",
+      "startMs": 75088.9,
+      "durationMs": 2321.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+      },
+      "events": [
+        {
+          "name": "reactor.connect.described",
+          "atMs": 75387.1
+        },
+        {
+          "name": "reactor.connect.prepared",
+          "atMs": 75524.2
+        },
+        {
+          "name": "reactor.connect.registered",
+          "atMs": 75638.2
+        },
+        {
+          "name": "reactor.connect.offered",
+          "atMs": 76269.8
+        },
+        {
+          "name": "reactor.connect.answered",
+          "atMs": 76674.7
+        },
+        {
+          "name": "reactor.connect.ready",
+          "atMs": 77409.7
+        }
+      ]
+    },
+    {
+      "name": "Session.control",
+      "startMs": 77412,
+      "durationMs": 113,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "request_schema",
+        "reactor.request.id": "ctrl_03191dbbfc076c1d55f5f6b66b44fcea_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 77525.8,
+      "durationMs": 36,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_state",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_1",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 77562.3,
+      "durationMs": 38,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "get_queue",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_2",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 77600.8,
+      "durationMs": 37.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_flush_on_clip_end",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_3",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 77649,
+      "durationMs": 36.8,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "set_autoplay",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_4",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.upload",
+      "startMs": 77687,
+      "durationMs": 704.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.upload.mime_type": "image/png",
+        "reactor.upload.size": 110809,
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 78391.8,
+      "durationMs": 631.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ff2aeb8aec7d3b3a3fb1bf0e097aeb66:1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 78392.1,
+      "durationMs": 631,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_5",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 79023.6,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 93140.7,
+      "durationMs": 40,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ff2aeb8aec7d3b3a3fb1bf0e097aeb66:2",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 93140.9,
+      "durationMs": 39.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_6",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 93180.6,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 97771.6,
+      "durationMs": 39.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ff2aeb8aec7d3b3a3fb1bf0e097aeb66:3",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 97771.8,
+      "durationMs": 38.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_7",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 97811.1,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 101941,
+      "durationMs": 38.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ff2aeb8aec7d3b3a3fb1bf0e097aeb66:4",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 101941.1,
+      "durationMs": 37.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_8",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 101979.1,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 106066.8,
+      "durationMs": 39.5,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ff2aeb8aec7d3b3a3fb1bf0e097aeb66:5",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 106067,
+      "durationMs": 39,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_9",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 106106.3,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 113056.5,
+      "durationMs": 39.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ff2aeb8aec7d3b3a3fb1bf0e097aeb66:6",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 113056.7,
+      "durationMs": 38.6,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_10",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 113095.8,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 127648,
+      "durationMs": 39.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ff2aeb8aec7d3b3a3fb1bf0e097aeb66:7",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 127648.2,
+      "durationMs": 39.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_11",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 127687.8,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 131507.9,
+      "durationMs": 44.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ff2aeb8aec7d3b3a3fb1bf0e097aeb66:8",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 131508.1,
+      "durationMs": 43.1,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_12",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 131551.9,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 135666.9,
+      "durationMs": 38.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "move",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_13",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 135707,
+      "durationMs": 38.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ff2aeb8aec7d3b3a3fb1bf0e097aeb66:9",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 135707.2,
+      "durationMs": 38.2,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_14",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 135745.7,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "H3.enqueue",
+      "startMs": 154111.2,
+      "durationMs": 41.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.h3.submission.id": "ff2aeb8aec7d3b3a3fb1bf0e097aeb66:10",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "Session.command",
+      "startMs": 154111.4,
+      "durationMs": 40.4,
+      "status": "ok",
+      "attributes": {
+        "reactor.operation": "enqueue",
+        "reactor.request.id": "data_03191dbbfc076c1d55f5f6b66b44fcea_15",
+        "reactor.connection.generation": "1",
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.command.outcome": "replied"
+      },
+      "events": []
+    },
+    {
+      "name": "H3.reconcile",
+      "startMs": 154152.4,
+      "durationMs": 0,
+      "status": "ok",
+      "attributes": {},
+      "events": []
+    },
+    {
+      "name": "Session.close",
+      "startMs": 154714.4,
+      "durationMs": 423.3,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.close.local_closed": true,
+        "reactor.close.allocation": "known",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      },
+      "events": []
+    },
+    {
+      "name": "CoordinatorClient.terminate",
+      "startMs": 154726.6,
+      "durationMs": 410.9,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "reactor.termination.attempted": true,
+        "reactor.termination.confirmed": true,
+        "reactor.termination.evidence": "terminal"
+      },
+      "events": []
+    },
+    {
+      "name": "CoordinatorClient.inspect",
+      "startMs": 155141.4,
+      "durationMs": 136.7,
+      "status": "ok",
+      "attributes": {
+        "reactor.session.id": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+      },
+      "events": []
+    }
+  ],
+  "liveness": {
+    "samples": [
+      {
+        "atMs": 1011,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 2011,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 3012,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 4012,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 5012,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 6012,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 7012,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 8012,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 9013,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 10013,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 11013,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 12013,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 13013,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 14013,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 15013,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 16013,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 17013,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 18014,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 19014,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 20014,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 21014,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 22014,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 23014,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 24014,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 25014,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 26015,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 27015,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 28015,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 29015,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 30015,
+        "lateMs": 0.3
+      },
+      {
+        "atMs": 31015,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 32016,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 33016,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 34016,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 35016,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 36016,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 37016,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 38016,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 39016,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 40016,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 41017,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 42017,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 43017,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 44017,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 45017,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 46017,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 47017,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 48017,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 49017,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 50018,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 51018,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 52018,
+        "lateMs": 0.5
+      },
+      {
+        "atMs": 53022,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 54022,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 55022,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 56022,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 57022,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 58022,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 59022,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 60022,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 61022,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 62023,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 63023,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 64023,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 65023,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 66023,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 67023,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 68023,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 69023,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 70023,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 71023,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 72023,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 73024,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 74024,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 75024,
+        "lateMs": 0.2
+      },
+      {
+        "atMs": 76024,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 77024,
+        "lateMs": 0.4
+      },
+      {
+        "atMs": 78025,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 79025,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 80025,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 81025,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 82025,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 83025,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 84025,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 85025,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 86025,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 87025,
+        "lateMs": 0
+      },
+      {
+        "atMs": 88025,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 89026,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 90026,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 91026,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 92026,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 93026,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 94026,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 95026,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 96026,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 97027,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 98027,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 99027,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 100027,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 101027,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 102027,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 103027,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 104027,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 105027,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 106027,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 107028,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 108028,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 109028,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 110028,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 111028,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 112028,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 113028,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 114028,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 115028,
+        "lateMs": 0
+      },
+      {
+        "atMs": 116028,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 117029,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 118029,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 119029,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 120029,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 121029,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 122029,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 123029,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 124029,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 125030,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 126030,
+        "lateMs": 0.4
+      },
+      {
+        "atMs": 127030,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 128030,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 129030,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 130030,
+        "lateMs": 0
+      },
+      {
+        "atMs": 131030,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 132031,
+        "lateMs": 0.2
+      },
+      {
+        "atMs": 133031,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 134031,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 135031,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 136031,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 137031,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 138031,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 139032,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 140032,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 141032,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 142032,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 143032,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 144032,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 145032,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 146032,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 147032,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 148033,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 149033,
+        "lateMs": 0.3
+      },
+      {
+        "atMs": 150033,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 151033,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 152033,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 153033,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 154033,
+        "lateMs": 0.1
+      },
+      {
+        "atMs": 155034,
+        "lateMs": 0.1
+      }
+    ],
+    "maxLateMs": 0.5
+  },
+  "sessionEvents": [
+    {
+      "atMs": 500,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "connecting"
+    },
+    {
+      "atMs": 500,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "waiting"
+    },
+    {
+      "atMs": 2082,
+      "generation": 1,
+      "tag": "Track",
+      "detail": "main_video"
+    },
+    {
+      "atMs": 2082,
+      "generation": 1,
+      "tag": "Decoded",
+      "detail": "video main_video"
+    },
+    {
+      "atMs": 2082,
+      "generation": 1,
+      "tag": "Track",
+      "detail": "main_audio"
+    },
+    {
+      "atMs": 2082,
+      "generation": 1,
+      "tag": "Decoded",
+      "detail": "audio main_audio"
+    },
+    {
+      "atMs": 3052,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "ready"
+    },
+    {
+      "atMs": 3148,
+      "generation": 1,
+      "tag": "Control",
+      "detail": "ModelSchema"
+    },
+    {
+      "atMs": 3175,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update matched"
+    },
+    {
+      "atMs": 3204,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update matched"
+    },
+    {
+      "atMs": 3232,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 3232,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message flush_accepted matched"
+    },
+    {
+      "atMs": 3296,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 3298,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message autoplay_accepted matched"
+    },
+    {
+      "atMs": 5098,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 5099,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 5100,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 12864,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 12865,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 12865,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 12866,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 12867,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 12867,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 12902,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 12902,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 12904,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 17599,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 17599,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 17600,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 17628,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 17629,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 17631,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 19813,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 19815,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 19815,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 19845,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 19845,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 19846,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 21939,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 21939,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 21941,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 21969,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 21969,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 21970,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 24062,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 24063,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 24063,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 27979,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 27980,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 27981,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 27982,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 33186,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 33186,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 33230,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 33232,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 38195,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 38196,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 38196,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 38360,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 38361,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 38399,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 38401,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 43528,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 43530,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 43568,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 43570,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 45032,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 45032,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 45033,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 48697,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 48698,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 48737,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 48738,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 48767,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 48768,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 48768,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 50950,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 50950,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 50950,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 53292,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 53292,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 53293,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 55450,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 55450,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 55452,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 58449,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 58451,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 58451,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 63776,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 63777,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 63859,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 63859,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 65321,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 65321,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 65322,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 69008,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 69008,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 69027,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 69028,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 74157,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 74163,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "closing"
+    },
+    {
+      "atMs": 74564,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "closed"
+    },
+    {
+      "atMs": 75090,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "connecting"
+    },
+    {
+      "atMs": 75090,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "waiting"
+    },
+    {
+      "atMs": 76675,
+      "generation": 1,
+      "tag": "Track",
+      "detail": "main_video"
+    },
+    {
+      "atMs": 76675,
+      "generation": 1,
+      "tag": "Decoded",
+      "detail": "video main_video"
+    },
+    {
+      "atMs": 76675,
+      "generation": 1,
+      "tag": "Track",
+      "detail": "main_audio"
+    },
+    {
+      "atMs": 76675,
+      "generation": 1,
+      "tag": "Decoded",
+      "detail": "audio main_audio"
+    },
+    {
+      "atMs": 77412,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "ready"
+    },
+    {
+      "atMs": 77448,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 77526,
+      "generation": 1,
+      "tag": "Control",
+      "detail": "ModelSchema"
+    },
+    {
+      "atMs": 77526,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 77562,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update matched"
+    },
+    {
+      "atMs": 77601,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update matched"
+    },
+    {
+      "atMs": 77638,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 77638,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message flush_accepted matched"
+    },
+    {
+      "atMs": 77685,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 77686,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message autoplay_accepted matched"
+    },
+    {
+      "atMs": 79022,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 79022,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 79023,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 92507,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 92507,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 92508,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 93135,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 93137,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 93138,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 93141,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 93177,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 93180,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 93180,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 97770,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 97770,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 97771,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 97810,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 97810,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 97811,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 101938,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 101940,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 101940,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 101978,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 101978,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 101979,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 106064,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 106065,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 106066,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 106104,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 106104,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 106106,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 108206,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 108208,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 108208,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 108209,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 110222,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 110223,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 110223,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 113093,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 113095,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 113096,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 113754,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 113754,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 113784,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 113784,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 113876,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 113876,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 119005,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 119005,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 119007,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 119007,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 119043,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 119043,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 124173,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 124173,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 124174,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 124174,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 124210,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 124210,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 125353,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 125354,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 125355,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 127686,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 127686,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 127688,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 129830,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 129832,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 129832,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 129832,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 129860,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 129862,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 131506,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 131506,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 131507,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 131551,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 131551,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 131552,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 135664,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 135665,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 135666,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 135706,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 135706,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_moved matched"
+    },
+    {
+      "atMs": 135745,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 135745,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 135746,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 144691,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 144691,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 144693,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 144693,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 144781,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 144782,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 148302,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_generated unsolicited"
+    },
+    {
+      "atMs": 148303,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 148304,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 150388,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_finished unsolicited"
+    },
+    {
+      "atMs": 150389,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 150389,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 150390,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 150424,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_started unsolicited"
+    },
+    {
+      "atMs": 150425,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 154150,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message queue_update unsolicited"
+    },
+    {
+      "atMs": 154152,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message state_update unsolicited"
+    },
+    {
+      "atMs": 154152,
+      "generation": 1,
+      "tag": "Model",
+      "detail": "message clip_queued matched"
+    },
+    {
+      "atMs": 154715,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "closing"
+    },
+    {
+      "atMs": 155138,
+      "generation": 1,
+      "tag": "Status",
+      "detail": "closed"
+    }
+  ],
+  "candidate": {
+    "phases": [
+      {
+        "model": "reactor/h3-reference-to-video-turbo-realtime",
+        "sessionId": "6b859cb0-4c4b-445a-986c-fe68621e36b4",
+        "recordedBeforeConnect": true,
+        "forecastOrder": [
+          "h3:p1",
+          "h3:i1",
+          "h3:i2",
+          "h3:p2"
+        ],
+        "startOrder": [
+          "h3:firm",
+          "h3:p1",
+          "h3:i1",
+          "h3:i2",
+          "h3:p2",
+          "h3:ready",
+          "h3:manual"
+        ],
+        "items": [
+          {
+            "key": "h3:manual",
+            "submittedMs": 3235,
+            "readyMs": 55452,
+            "startedMs": 69028,
+            "endedMs": 74157,
+            "seconds": 5.167,
+            "airedSeconds": 5.170000000000002,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+          },
+          {
+            "key": "h3:firm",
+            "submittedMs": 3235,
+            "readyMs": 12866,
+            "startedMs": 12867,
+            "endedMs": 27980,
+            "seconds": 15.083,
+            "airedSeconds": 15.08,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+          },
+          {
+            "key": "h3:p1",
+            "submittedMs": 12868,
+            "readyMs": 17600,
+            "startedMs": 27982,
+            "endedMs": 33186,
+            "seconds": 5.167,
+            "airedSeconds": 5.17,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+          },
+          {
+            "key": "h3:p2",
+            "submittedMs": 12868,
+            "readyMs": 24064,
+            "startedMs": 43568,
+            "endedMs": 48698,
+            "seconds": 5.167,
+            "airedSeconds": 5.170000000000002,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+          },
+          {
+            "key": "h3:i1",
+            "submittedMs": 12869,
+            "readyMs": 19815,
+            "startedMs": 33230,
+            "endedMs": 38361,
+            "seconds": 5.167,
+            "airedSeconds": 5.170000000000002,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+          },
+          {
+            "key": "h3:i2",
+            "submittedMs": 12869,
+            "readyMs": 21941,
+            "startedMs": 38399,
+            "endedMs": 43529,
+            "seconds": 5.167,
+            "airedSeconds": 5.159999999999997,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+          },
+          {
+            "key": "h3:ready",
+            "submittedMs": 48738,
+            "readyMs": 50951,
+            "startedMs": 63859,
+            "endedMs": 69008,
+            "seconds": 5.167,
+            "airedSeconds": 5.170000000000002,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "6b859cb0-4c4b-445a-986c-fe68621e36b4"
+          },
+          {
+            "key": "h3:missed",
+            "submittedMs": 48739,
+            "dropped": "late",
+            "last": "Dropped"
+          }
+        ],
+        "groups": [
+          {
+            "key": "h3:group",
+            "outcome": "Aired",
+            "played": 2,
+            "parts": [
+              "Ended",
+              "Ended"
+            ]
+          },
+          {
+            "key": "h3:inserted",
+            "outcome": "Aired",
+            "played": 2,
+            "parts": [
+              "Ended",
+              "Ended"
+            ]
+          }
+        ],
+        "media": [
+          {
+            "key": "h3:manual",
+            "startedMs": 69028,
+            "firstFrameMs": 69038,
+            "frames": 123,
+            "live": true
+          },
+          {
+            "key": "h3:firm",
+            "startedMs": 12867,
+            "firstFrameMs": 13001,
+            "frames": 356,
+            "live": true
+          },
+          {
+            "key": "h3:p1",
+            "startedMs": 27982,
+            "firstFrameMs": 27983,
+            "frames": 125,
+            "live": true
+          },
+          {
+            "key": "h3:p2",
+            "startedMs": 43568,
+            "firstFrameMs": 43577,
+            "frames": 123,
+            "live": true
+          },
+          {
+            "key": "h3:i1",
+            "startedMs": 33230,
+            "firstFrameMs": 33244,
+            "frames": 123,
+            "live": true
+          },
+          {
+            "key": "h3:i2",
+            "startedMs": 38399,
+            "firstFrameMs": 38413,
+            "frames": 123,
+            "live": true
+          },
+          {
+            "key": "h3:ready",
+            "startedMs": 63859,
+            "firstFrameMs": 63959,
+            "frames": 122,
+            "live": true
+          }
+        ],
+        "video": {
+          "frames": 1462,
+          "formats": [
+            "BGRA"
+          ],
+          "sizes": [
+            "1344x768"
+          ],
+          "firstFrameMs": 13001,
+          "fps": 23.9,
+          "interval": {
+            "p50": 42,
+            "p95": 44,
+            "max": 129
+          },
+          "lit": 1462,
+          "distinct": 1462,
+          "lost": 0,
+          "gaps": 0
+        },
+        "firm": {
+          "startedMs": 12867,
+          "committedMs": 12868,
+          "manualWasReady": false,
+          "manualBuildAfterMs": 53235
+        },
+        "readyBy": {
+          "timeMs": 49738,
+          "cutoffMs": 56738,
+          "readyMs": 50951,
+          "startedMs": 63859,
+          "missed": "Dropped",
+          "filler": {
+            "startedMs": 48738,
+            "seconds": 15.083,
+            "predictedEndMs": 63821
+          }
+        },
+        "uploads": [
+          {
+            "metadata": "h3:firm",
+            "hasReferenceAudio": true,
+            "continued": false
+          },
+          {
+            "metadata": "h3:p1",
+            "hasReferenceAudio": false,
+            "continued": false
+          },
+          {
+            "metadata": "h3:i1",
+            "hasReferenceAudio": false,
+            "continued": false
+          },
+          {
+            "metadata": "h3:i2",
+            "hasReferenceAudio": false,
+            "continued": false
+          },
+          {
+            "metadata": "h3:p2",
+            "hasReferenceAudio": false,
+            "continued": false
+          },
+          {
+            "metadata": "h3:ready",
+            "hasReferenceAudio": false,
+            "continued": false
+          },
+          {
+            "metadata": "h3:manual",
+            "hasReferenceAudio": false,
+            "continued": false
+          }
+        ],
+        "endReads": [
+          {
+            "atMs": 74708,
+            "state": "CLOSED"
+          }
+        ],
+        "ledgerAfterClose": 0
+      },
+      {
+        "model": "reactor/fast-h3",
+        "sessionId": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1",
+        "recordedBeforeConnect": true,
+        "forecastOrder": [
+          "fast-h3:p1",
+          "fast-h3:i1",
+          "fast-h3:i2",
+          "fast-h3:p2"
+        ],
+        "startOrder": [
+          "fast-h3:firm",
+          "fast-h3:p1",
+          "fast-h3:i1",
+          "fast-h3:i2",
+          "fast-h3:p2",
+          "fast-h3:ready",
+          "fast-h3:manual"
+        ],
+        "items": [
+          {
+            "key": "fast-h3:manual",
+            "submittedMs": 77639,
+            "readyMs": 131507,
+            "startedMs": 150390,
+            "seconds": 5.167,
+            "last": "Started",
+            "sessionId": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+          },
+          {
+            "key": "fast-h3:firm",
+            "submittedMs": 77639,
+            "readyMs": 92508,
+            "startedMs": 93138,
+            "endedMs": 108207,
+            "seconds": 14.375,
+            "airedSeconds": 14.38,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+          },
+          {
+            "key": "fast-h3:p1",
+            "submittedMs": 93138,
+            "readyMs": 97771,
+            "startedMs": 108209,
+            "endedMs": 113754,
+            "seconds": 5.167,
+            "airedSeconds": 5.159999999999998,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+          },
+          {
+            "key": "fast-h3:p2",
+            "submittedMs": 93138,
+            "readyMs": 110223,
+            "startedMs": 124175,
+            "endedMs": 129830,
+            "seconds": 5.167,
+            "airedSeconds": 5.16,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+          },
+          {
+            "key": "fast-h3:i1",
+            "submittedMs": 93139,
+            "readyMs": 101940,
+            "startedMs": 113785,
+            "endedMs": 119005,
+            "seconds": 5.167,
+            "airedSeconds": 5.170000000000002,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+          },
+          {
+            "key": "fast-h3:i2",
+            "submittedMs": 93139,
+            "readyMs": 106066,
+            "startedMs": 119007,
+            "endedMs": 124173,
+            "seconds": 5.167,
+            "airedSeconds": 5.169999999999998,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+          },
+          {
+            "key": "fast-h3:ready",
+            "submittedMs": 129833,
+            "readyMs": 135666,
+            "startedMs": 144693,
+            "endedMs": 150389,
+            "seconds": 5.167,
+            "airedSeconds": 5.159999999999997,
+            "termination": "finished",
+            "last": "Ended",
+            "sessionId": "f0fbf68c-4206-4b9a-99cd-7d68a546b6b1"
+          },
+          {
+            "key": "fast-h3:missed",
+            "submittedMs": 129833,
+            "dropped": "late",
+            "last": "Dropped"
+          }
+        ],
+        "groups": [
+          {
+            "key": "fast-h3:group",
+            "outcome": "Aired",
+            "played": 2,
+            "parts": [
+              "Ended",
+              "Ended"
+            ]
+          },
+          {
+            "key": "fast-h3:inserted",
+            "outcome": "Aired",
+            "played": 2,
+            "parts": [
+              "Ended",
+              "Ended"
+            ]
+          }
+        ],
+        "media": [
+          {
+            "key": "fast-h3:manual",
+            "startedMs": 150390,
+            "firstFrameMs": 150393,
+            "frames": 105,
+            "live": true
+          },
+          {
+            "key": "fast-h3:firm",
+            "startedMs": 93138,
+            "firstFrameMs": 93181,
+            "frames": 339,
+            "live": true
+          },
+          {
+            "key": "fast-h3:p1",
+            "startedMs": 108209,
+            "firstFrameMs": 108210,
+            "frames": 126,
+            "live": true
+          },
+          {
+            "key": "fast-h3:p2",
+            "startedMs": 124175,
+            "firstFrameMs": 124188,
+            "frames": 122,
+            "live": true
+          },
+          {
+            "key": "fast-h3:i1",
+            "startedMs": 113785,
+            "firstFrameMs": 113810,
+            "frames": 123,
+            "live": true
+          },
+          {
+            "key": "fast-h3:i2",
+            "startedMs": 119007,
+            "firstFrameMs": 119021,
+            "frames": 124,
+            "live": true
+          },
+          {
+            "key": "fast-h3:ready",
+            "startedMs": 144693,
+            "firstFrameMs": 144713,
+            "frames": 127,
+            "live": true
+          }
+        ],
+        "video": {
+          "frames": 1409,
+          "formats": [
+            "BGRA"
+          ],
+          "sizes": [
+            "1344x768"
+          ],
+          "firstFrameMs": 93181,
+          "fps": 22.9,
+          "interval": {
+            "p50": 42,
+            "p95": 44,
+            "max": 543
+          },
+          "lit": 1409,
+          "distinct": 1409,
+          "lost": 0,
+          "gaps": 0
+        },
+        "firm": {
+          "startedMs": 93138,
+          "committedMs": 93138,
+          "manualWasReady": false,
+          "manualBuildAfterMs": 127639
+        },
+        "uploads": [
+          {
+            "metadata": "fast-h3:firm",
+            "hasStartingFrame": true,
+            "continued": false
+          },
+          {
+            "metadata": "fast-h3:p1",
+            "hasStartingFrame": false,
+            "continued": true
+          },
+          {
+            "metadata": "fast-h3:i1",
+            "hasStartingFrame": false,
+            "continued": false
+          },
+          {
+            "metadata": "fast-h3:i2",
+            "hasStartingFrame": false,
+            "continued": false
+          },
+          {
+            "metadata": "fast-h3:p2",
+            "hasStartingFrame": false,
+            "continued": false
+          },
+          {
+            "metadata": "fast-h3:manual",
+            "hasStartingFrame": false,
+            "continued": false
+          },
+          {
+            "metadata": "fast-h3:ready",
+            "hasStartingFrame": false,
+            "continued": false
+          }
+        ],
+        "endReads": []
+      }
+    ]
+  },
+  "verdict": "fail",
+  "reasons": [
+    "a step ran past its deadline"
+  ],
+  "missing": []
+}

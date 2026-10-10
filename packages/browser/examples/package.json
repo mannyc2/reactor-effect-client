@@ -1,6 +1,6 @@
 {
   "name": "reactor-effect-browser-examples",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "description": "reactor-effect-browser example: H3 Studio, a page that runs an H3 session over the browser's WebRTC with a token server, or offline on ReactorTest",
   "type": "module",
