@@ -27,7 +27,7 @@ than the model's picture. H3 Studio's offline build runs in the
 [playground](https://mannyc2.github.io/reactor-effect-client/playground/) on the documentation site.
 The [examples page](https://mannyc2.github.io/reactor-effect-client/examples/) walks through each.
 
-The [streaming speech example](../packages/client/examples#streaming-speech) consumes a provider-neutral speech service backed by Cartesia. It saves arriving PCM blocks and reports time to first audio, with explicit credentials, model and voice. The [character page](../packages/browser/examples#character-page) plays the same service in a browser, through a server that keeps the key.
+The [streaming speech example](../packages/client/examples#streaming-speech) consumes a provider-neutral speech service backed by Cartesia. It saves arriving PCM blocks and reports time to first audio, with explicit credentials, model and voice. The [character page](../packages/browser/examples#character-page) uses that service with OpenRouter speech in a browser, through a server that keeps the key.
 
 ## Which shape fits
 

@@ -181,11 +181,11 @@ const page = Effect.gen(function* () {
 
   switch (setup.speech._tag) {
     case "Available":
-      ui.speech.textContent = `Speech: ${setup.speech.provider} ${setup.speech.model}, generated on the server, billed per character.`;
+      ui.speech.textContent = `Speech: ${setup.speech.model} via ${setup.speech.provider}.`;
       break;
     case "Unavailable":
       ui.speech.textContent =
-        "Speech: the server has no provider. Set CARTESIA_API_KEY, CARTESIA_MODEL and CARTESIA_VOICE_ID, or play a local audio file.";
+        "Speech isn't configured yet. You can try the character with a local audio file.";
       ui.say.disabled = true;
       break;
   }

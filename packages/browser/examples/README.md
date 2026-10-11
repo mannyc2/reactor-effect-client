@@ -88,20 +88,23 @@ Both modes use the same speech model and the same playback; the character only a
 follows what is heard.
 
 ```sh
-CARTESIA_API_KEY=… CARTESIA_MODEL=… CARTESIA_VOICE_ID=… bun run start   # http://127.0.0.1:3000/character
+OPENROUTER_API_KEY=… OPENROUTER_SPEECH_MODEL=… OPENROUTER_SPEECH_VOICE=… bun run start
 ```
 
-Write a line and press Say. Say again, or Stop, interrupts the line playing. Without the Cartesia
+Choose a speech model and its supported voice from [OpenRouter's audio API](https://openrouter.ai/docs/api/api-reference/tts/create-speech). The example uses
+`/api/v1/audio/speech` with PCM output; chat-only models cannot synthesize these lines.
+
+Write a line and press Say. Say again, or Stop, interrupts the line playing. Without the OpenRouter
 variables the server has no speech and the page says so; Play a local audio file sends any file the
 browser can decode through the same playback, with no provider and no cost.
 
-- **Speech.** The server runs `SpeechModel`, which `CartesiaSpeech.layerConfig` provides when
-  `CARTESIA_API_KEY` is set, and streams each line to the page as server-sent events: PCM blocks as
+- **Speech.** The server runs `SpeechModel`, which `OpenRouterSpeech.layerConfig` provides when
+  `OPENROUTER_API_KEY` is set, and streams each line to the page as server-sent events: PCM blocks as
   they are generated, then either the end or the provider's `SpeechError` with its reason and
   dispatch outcome, before or after audio. The page's `Speech.layer` is a `SpeechModel` over that
   endpoint, so the key stays on the server. A line has at most 500 characters. Saying one calls
-  Cartesia, which bills per character. Interrupting a line releases its request on the server; that
-  does not prove Cartesia stopped generating or billing it.
+  OpenRouter and uses the selected model's pricing. Interrupting a line releases its request on
+  the server; that does not prove the provider stopped generating or billing it.
 - **Playback.** `Speaker` schedules each block on a Web Audio context as it arrives, at most one
   second ahead of the output, so a line generated faster than real time waits in its stream (and in
   network buffers) rather than piling up in the audio graph. A line arriving slower than real time
@@ -116,29 +119,30 @@ browser can decode through the same playback, with no provider and no cost.
 
 ### Live2D setup
 
-Neither Live2D's Cubism Core nor any Live2D model may be redistributed in this repository, so the
-character appears only once you supply them. Without them the page names what is missing and plays
-the voice on its own.
+Cubism Core and the model are obtained separately under Live2D's terms and are not bundled with
+these packages. Without them the page names what is missing and plays the voice on its own.
 
-1. Download the [Cubism SDK for Web](https://www.live2d.com/en/sdk/download/web/) and unzip it.
-   Downloading it accepts Live2D's licences: the Proprietary Software License for Cubism Core and
-   the Open Software License for the Framework. An organisation with annual revenue of ¥10 million
-   or more also needs Live2D's release licence to publish what it builds.
-2. Link it here, where Git ignores it:
+1. Download the [Cubism SDK for Web](https://www.live2d.com/en/sdk/download/web/) and unzip it,
+   retaining its licence files. The SDK includes the
+   [Hiyori Momose sample](https://www.live2d.com/en/learn/sample/momose-hiyori/) used by this demo;
+   the download and sample pages describe their terms.
+2. Extract or link it here, where Git ignores it:
    `ln -s /path/to/CubismSdkForWeb-5-r.5 packages/browser/examples/cubism`.
-3. In `packages/browser/examples`, `bun run build:live2d` typechecks `live2d/adapter.ts` against the
-   SDK's Framework sources and bundles both into `dist/live2d/adapter.js`.
+3. In `packages/browser/examples`, `bun run build:live2d` typechecks the adapter and model renderer
+   against the SDK's Framework sources and bundles them into `dist/live2d/adapter.js`.
 4. Start the server with `LIVE2D_MODEL` naming the `.model3.json` of a model you may use, such as one
    of the SDK's samples under its own terms:
    `LIVE2D_MODEL=cubism/Samples/Resources/Hiyori/Hiyori.model3.json bun run start`. The server serves
    that model's directory, the SDK's Core script and the Framework's WebGL shaders.
 
 The adapter draws with the Framework's own WebGL renderer, plays the model's `Idle` motions in
-turn, blinks, breathes, and runs the model's physics and pose. It adds the mouth's opening to the
-parameters in the model's `LipSync` group, or Cubism's standard `ParamMouthOpenY` when it names
-none, at a weight of 0.8, as Live2D's lip-sync guide does. It expects the SDK's layout (`Core/`
-beside `Framework/`) and WebGL 2. It compiles against the 5-r.5 Framework; no Live2D model has been
-drawn by this repository's checks, which have neither Core nor a model.
+turn, blinks, breathes, and runs the model's physics and pose. Playback sets the parameters in
+the model's `LipSync` group, or Cubism's standard `ParamMouthOpenY` when it names none, to the
+measured mouth opening scaled by 0.8. This overrides idle mouth motions so silence closes the
+mouth. It expects the SDK's layout (`Core/`
+beside `Framework/`) and WebGL 2, and targets SDK 5-r.5. Core loads before the Framework is
+initialised. Automated package checks do not download the SDK or a model; rendering can be
+checked locally with Hiyori and the page's audio-file control.
 
 | File                   | What it is                                                                                 |
 | ---------------------- | ------------------------------------------------------------------------------------------ |
@@ -146,7 +150,8 @@ drawn by this repository's checks, which have neither Core nor a model.
 | `src/Speech.ts`        | The page's `SpeechModel`, over the server's speech endpoint                                |
 | `src/Speaker.ts`       | Web Audio playback of PCM blocks, bounded and interruptible, and the level of the output   |
 | `src/Avatar.ts`        | The character's lifetime and frame loop, its mouth, and the adapter contract it implements |
-| `live2d/adapter.ts`    | The Live2D adapter over the Cubism SDK's Framework, built only with the SDK linked         |
+| `live2d/adapter.ts`    | Loads Cubism Core before importing the model renderer                                      |
+| `live2d/model.ts`      | The model, motions, textures and rendering over the Cubism SDK's Framework                 |
 | `tsconfig.live2d.json` | Compiles the adapter with the Framework's looser settings                                  |
 | `web/character.html`   | The page and its styles                                                                    |
 

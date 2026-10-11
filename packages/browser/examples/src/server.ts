@@ -17,7 +17,7 @@ import {
 import { Model } from "effect/ai";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
-import * as CartesiaSpeech from "reactor-effect-client/CartesiaSpeech";
+import * as OpenRouterSpeech from "reactor-effect-client/OpenRouterSpeech";
 import * as CoordinatorClient from "reactor-effect-client/CoordinatorClient";
 import * as H3 from "reactor-effect-client/H3";
 import type { AudioFrame } from "reactor-effect-client/Media";
@@ -145,7 +145,7 @@ const CharacterHandlers = HttpApiBuilder.group(
       name: yield* Effect.serviceOption(Model.ModelName),
     });
     if (Option.isNone(speech))
-      yield* Effect.logInfo("CARTESIA_API_KEY is not set: the character page has no speech");
+      yield* Effect.logInfo("OPENROUTER_API_KEY is not set: the character page has no speech");
     const { avatar } = yield* live2d;
     const unavailable = SpeechUnavailable.make({ message: "No speech provider is configured" });
     return handlers.handleAll({
@@ -186,12 +186,12 @@ const CharacterHandlers = HttpApiBuilder.group(
 );
 
 /**
- * Cartesia speaks when `CARTESIA_API_KEY` is set, with `CARTESIA_MODEL` and
- * `CARTESIA_VOICE_ID`; without the key the character page plays local audio.
+ * OpenRouter speaks when `OPENROUTER_API_KEY` is set, with an explicit speech
+ * model and voice; without the key the character page plays local audio.
  */
 const Speech = Layer.unwrap(
-  Effect.map(Config.Redacted("CARTESIA_API_KEY").pipe(Config.option), (key) =>
-    Option.isSome(key) ? CartesiaSpeech.layerConfig : Layer.empty,
+  Effect.map(Config.Redacted("OPENROUTER_API_KEY").pipe(Config.option), (key) =>
+    Option.isSome(key) ? OpenRouterSpeech.layerConfig : Layer.empty,
   ),
 );
 

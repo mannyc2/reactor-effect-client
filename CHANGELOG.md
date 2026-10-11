@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `OpenRouterSpeech`, a streaming `SpeechModel` provider for OpenRouter's audio API, with explicit model and voice selection and PCM format read from response metadata.
+- A browser character example with audio-only playback or a persistent Live2D character driven by the same speech output. Cubism and the Hiyori sample are configured locally and are not bundled in the packages.
 - `Playout.ClipModel` and the `model` option of `Playout.make` and `LocalSource.open`, so a playout plans for a model other than H3 and a local renderer can air clips shorter than 5 s. Both constructors require the model explicitly.
 - `Source.model`; the playout refuses a source whose model name differs from its own before sending commands.
 - `H3Source.model`, the H3 clip model and its documented request limits.
