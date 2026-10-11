@@ -14,7 +14,7 @@ import {
   Redacted,
   Stream,
 } from "effect";
-import { Model } from "effect/ai";
+import * as Model from "effect/ai/Model";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import * as OpenRouterSpeech from "reactor-effect-client/OpenRouterSpeech";
