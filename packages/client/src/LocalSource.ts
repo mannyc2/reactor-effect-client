@@ -59,7 +59,7 @@ import type {
 import { CommandError, SourceError } from "./internal/playout/errors.js";
 
 /** Local sources allocate no paid resources; cleanup counts retired sessions. */
-export const evidence: Evidence<void, SourceError> = {
+export const evidence: Evidence<void, unknown> = {
   mayStillBill: () => false,
   failedOpen: () => ({ _tag: "NotAllocated", retryAfter: undefined }),
 };

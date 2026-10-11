@@ -407,22 +407,19 @@ export const make = Effect.fnUntraced(function* <
 
   const open = Effect.gen(function* () {
     const child = yield* Scope.fork(scope);
+    // Keep adapter failures separate from the scheduler's timeout, without tracing cleanup evidence.
+    const adapterError = yield* Ref.make<E | undefined>(undefined);
     const opened = yield* options.open.pipe(
-      Effect.catchCause((cause) =>
-        Effect.failCause(
-          Cause.map(cause, (error) => ({ error, evidence: evidence.failedOpen(error) })),
-        ),
-      ),
+      Effect.tapError((error) => Ref.set(adapterError, error)),
       Effect.timeoutOrElse({
         duration: openTimeout,
         orElse: () =>
-          Effect.fail({
-            error: PlayoutStopped.make({
+          Effect.fail(
+            PlayoutStopped.make({
               reason: { _tag: "OpenTimeout" },
               message: "opening a session took too long",
             }),
-            evidence: undefined,
-          }),
+          ),
       }),
       Effect.withSpan("Playout.open", spanOptions({ acquisition }), { captureStackTrace: false }),
       Scope.provide(child),
@@ -432,16 +429,14 @@ export const make = Effect.fnUntraced(function* <
     if (Exit.isFailure(opened)) {
       yield* closeScope(child, opened);
       const found = Cause.findError(opened.cause);
-      yield* Ref.set(
-        lastOpenError,
-        Result.map(found, (failure) => failure.error),
-      );
+      yield* Ref.set(lastOpenError, found);
       if (Result.isFailure(found)) yield* ErrorReporter.report(opened.cause);
       else yield* reportDefects(opened.cause);
-      const failed = Result.getOrUndefined(found);
-      const error = failed?.error;
+      const error = Result.getOrUndefined(found);
       // A timeout or defect may have allocated unseen; an adapter classifies its own failures.
-      const allocation = failed?.evidence;
+      const failed = yield* Ref.get(adapterError);
+      const allocation =
+        failed !== undefined && failed === error ? evidence.failedOpen(failed) : undefined;
       const allocated = allocation?._tag !== "NotAllocated";
       if (allocation?._tag === "Allocated") yield* record(allocation.report);
       const retryAfter = allocation?.retryAfter;

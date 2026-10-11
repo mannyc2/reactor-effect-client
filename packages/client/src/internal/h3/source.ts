@@ -133,12 +133,15 @@ const mapCommandError =
 const sourceError = <A>(
   source: Stream.Stream<A, ReactorError>,
   reason: "Lost" | "Media",
-  message: string,
 ): Stream.Stream<A, SourceError> =>
   Stream.catchCause(source, (cause) =>
     Stream.failCause(
       Cause.map(cause, (error) =>
-        SourceError.make({ reason: { _tag: reason }, message, detail: Redacted.make(error) }),
+        SourceError.make({
+          reason: { _tag: reason },
+          message: error.message,
+          detail: Redacted.make(error),
+        }),
       ),
     ),
   );
@@ -542,7 +545,7 @@ const fromSession = Effect.fnUntraced(function* <Req extends SourceRequest, C ex
   return {
     sessionId: session.id,
     model: model.model,
-    events: sourceError(events, "Lost", "the source was lost"),
+    events: sourceError(events, "Lost"),
     enqueue: (request, tag, continueFrom) =>
       Effect.gen(function* () {
         const caller = Tag.encode({ tag, metadata: request.metadata });
@@ -573,12 +576,10 @@ const fromSession = Effect.fnUntraced(function* <Req extends SourceRequest, C ex
     video: sourceError(
       track(session, (media) => media.video(model.tracks.video), overflowed("video")),
       "Media",
-      "the source's video failed",
     ),
     audio: sourceError(
       track(session, (media) => media.audio(model.tracks.audio), overflowed("audio")),
       "Media",
-      "the source's audio failed",
     ),
     close: session.close,
   } satisfies Omit<Source<Req, CloseReport>, "lifetime">;
