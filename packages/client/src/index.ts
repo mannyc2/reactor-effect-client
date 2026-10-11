@@ -8,6 +8,7 @@ export * as H3Source from "./H3Source.js";
 export * as Ledger from "./Ledger.js";
 export * as LocalSource from "./LocalSource.js";
 export * as Media from "./Media.js";
+export * as OpenRouterSpeech from "./OpenRouterSpeech.js";
 export * as Peer from "./Peer.js";
 export * as Playout from "./Playout.js";
 export * as Reactor from "./Reactor.js";

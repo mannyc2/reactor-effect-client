@@ -76,6 +76,19 @@ admission and deadline decisions use past clips with the same requested duration
 estimate. Those decisions can be wrong when content determines length. The Cartesia path has no
 hosted qualification; Reactor's recorded evidence does not qualify another provider.
 
+For OpenRouter, provide `OpenRouterSpeech.layerConfig` with `FetchHttpClient.layer` instead.
+Set `OPENROUTER_API_KEY`, `OPENROUTER_SPEECH_MODEL` and `OPENROUTER_SPEECH_VOICE`, or use
+`OpenRouterSpeech.model(name, { apiKey, voice })`. Model and voice have no defaults: select an
+available speech model and one of its supported voices from OpenRouter's
+[models API](https://openrouter.ai/api/v1/models?output_modalities=speech).
+
+The [speech endpoint](https://openrouter.ai/docs/api/api-reference/tts/create-speech) returns
+signed 16-bit little-endian PCM. The adapter reads the sample rate and channel count from its
+`audio/pcm` Content-Type parameters and rejects missing metadata instead of assuming a playback
+rate. Split samples and multichannel frames are carried across chunks; an incomplete final frame
+fails. Keep credentials server-side when serving browser playback. This adapter has not been
+qualified with a paid OpenRouter generation.
+
 ## Choosing a playout source
 
 `Playout.make({ model: H3Source.model, evidence: H3Source.evidence, open, lanes })` schedules H3.
@@ -171,6 +184,7 @@ a namespace. Nothing under `internal/` is reachable.
 | Module                                                                                          | What it is                                                                                                                   |
 | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `SpeechModel`                                                                                   | Provider-neutral text-to-PCM stream and speech failures                                                                      |
+| `OpenRouterSpeech`                                                                              | OpenRouter speech implementation as an Effect `Model`, plus environment configuration                                        |
 | `CartesiaSpeech`                                                                                | Cartesia speech implementation as an Effect `Model`, plus environment configuration                                          |
 | [`Reactor`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)                 | The service that acquires sessions: `create` allocates one this process owns, `attach` joins one                             |
 | [`Session`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)                 | One session: status, events, commands, uploads, recordings, media, reconnects and its close report                           |

@@ -42,6 +42,7 @@ export const packages = Object.freeze([
       "./H3Source",
       "./LocalSource",
       "./Media",
+      "./OpenRouterSpeech",
       "./Peer",
       "./Playout",
       "./Reactor",
