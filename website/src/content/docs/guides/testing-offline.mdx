@@ -87,13 +87,13 @@ run it on the simulated Reactor and assert its as-run outcomes.
    npm install --save-dev --save-exact @effect/vitest@4.0.0 vitest@5
    ```
 
-2. **The code under test.** It asks for `Playout.Playout` and nothing else, so it runs on a paid
+2. **The code under test.** It asks for the application-owned `Channel` service, so it runs on a paid
    playout or a simulated one:
 
    ```ts
    import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
    import { assert, layer } from "@effect/vitest";
-   import { Effect, Layer, Ref, Stream } from "effect";
+   import { Context, Effect, Layer, Ref, Stream } from "effect";
    import type { Duration } from "effect";
    import {
      CoordinatorClient,
@@ -104,9 +104,16 @@ run it on the simulated Reactor and assert its as-run outcomes.
      ReactorTest,
    } from "reactor-effect-client";
 
+   import type { ReactorError, Session } from "reactor-effect-client";
+
+   class Channel extends Context.Service<
+     Channel,
+     Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>
+   >()("app/Channel") {}
+
    /** The code under test: airs a show's prompts in order and reports how each one settled. */
    const playShow = Effect.fn("playShow")(function* (show: string, prompts: ReadonlyArray<string>) {
-     const playout = yield* Playout.Playout;
+     const playout = yield* Channel;
      const handles = yield* Effect.forEach(prompts, (prompt, index) =>
        playout.submit({
          key: Playout.ItemKey.make(`${show}-${index}`),
@@ -143,7 +150,15 @@ run it on the simulated Reactor and assert its as-run outcomes.
 
    /** A playout with one lane, over the real client and Reactor simulated in memory. */
    const SimulatedShow = (cap: Duration.Input) =>
-     Playout.layer({ open: open(cap), lanes: [{ name: "show" }] }).pipe(
+     Layer.effect(
+       Channel,
+       Playout.make({
+         model: H3Source.model,
+         evidence: H3Source.evidence,
+         open: open(cap),
+         lanes: [{ name: "show" }],
+       }),
+     ).pipe(
        Layer.provideMerge(Reactor.layer()),
        Layer.provideMerge(CoordinatorClient.layer()),
        Layer.provideMerge(
@@ -201,7 +216,7 @@ run it on the simulated Reactor and assert its as-run outcomes.
      it.effect("airs 100 s of programme on one-minute sessions, within budget", () =>
        Effect.gen(function* () {
          yield* Effect.forkScoped(ReactorTest.flow("100 millis"));
-         const playout = yield* Playout.Playout;
+         const playout = yield* Channel;
          const switches = yield* Ref.make(0);
          yield* playout.events.pipe(
            Stream.filter((event) => event._tag === "Session" && event.event._tag === "Switched"),

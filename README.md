@@ -50,7 +50,15 @@ for HTTP speech generation.
 Generation and presentation have different lifetimes. Streaming speech can emit audio before its
 length is known. `Playout` schedules finite clips with known or estimated lengths; the experiment
 does not yet schedule an unfinished speech stream. Applications own playback, mixing, editorial
-priority, and proof that an audience received the output.
+priority, and proof that an audience received the output. Placement, admission and deadline decisions
+forecast an unbuilt clip from past clips with the same requested length, or the model's estimate.
+Those decisions can be wrong when content determines duration, as with speech.
+
+`Playout.make` requires an explicit model and cleanup evidence: `H3Source.model` with
+`H3Source.evidence`, `FastH3Source.model` with `FastH3Source.evidence`, or a renderer's model with
+`LocalSource.evidence`. Applications own the service tag over `Playout.Service<Req, Report, E>`
+and construct it with `Layer.effect`; provider reports and open failures keep their own types.
+`LocalSource.open` also requires a model, and closes with `void`.
 
 The [speech example](./packages/client/examples#streaming-speech) saves incoming PCM and reports
 time to first audio. The Cartesia adapter follows its documented bytes API; hosted speech quality

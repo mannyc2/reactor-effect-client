@@ -7,8 +7,8 @@ import { Aside, CardGrid, LinkCard, Steps } from "@astrojs/starlight/components"
 
 A playout gets its sessions from an `open` effect, which it calls for the first session and for
 each replacement. `H3Source.open` opens a paid H3 session, and `LocalSource.open` renders clips
-in your own process. Both return a `Playout.Source`, so the same programme runs on either. A paid
-session opens through a [`Ledger`](#owner-records), which records it before it connects:
+in your own process. Both implement `Playout.Source<Req, Report>`, so a programme can use either
+with its model and evidence. A paid session opens through a [`Ledger`](#owner-records), which records it before it connects:
 
 ```ts
 import { Effect } from "effect";
@@ -24,6 +24,8 @@ export const recordedChannel = Effect.gen(function* () {
   const coordinator = yield* CoordinatorClient.CoordinatorClient;
   const ledger = yield* Ledger.Ledger;
   return yield* Playout.make({
+    model: H3Source.model,
+    evidence: H3Source.evidence,
     open: ledger.source(
       H3Source.opener({
         tokens: coordinator.tokens({
@@ -170,7 +172,7 @@ speech or stills, and for demos. It costs nothing, and closing it ends no paid s
 
 ```ts
 import { Effect } from "effect";
-import { LocalSource, Playout } from "reactor-effect-client";
+import { H3Source, LocalSource, Playout } from "reactor-effect-client";
 
 /** Your speech engine: 48 kHz mono PCM for a line of text. */
 declare const synthesize: (
@@ -180,7 +182,10 @@ declare const synthesize: (
 const block = 480; // 10 ms at 48 kHz
 
 export const announcer = Playout.make({
+  model: H3Source.model,
+  evidence: LocalSource.evidence,
   open: LocalSource.open({
+    model: H3Source.model,
     // Renders a clip before it is Ready, and says how long it really is.
     build: (clip) =>
       Effect.map(synthesize(clip.request.prompt), (pcm) => ({
@@ -215,7 +220,7 @@ export const announcer = Playout.make({
 
 | Option       | What it does                                                                    |
 | ------------ | ------------------------------------------------------------------------------- |
-| `model`      | The model the source runs, H3's by default; pass the same model to `Playout.make` |
+| `model`      | Required: the model the source runs; pass the same model to `Playout.make` |
 | `build`      | Makes a clip's value, and its built length when that differs from what its model builds (`seconds`) |
 | `present`    | Plays the value through the `sink`'s `video` and `audio`; without it, a clip plays for its length |
 | `lifetime`   | Caps the session, as a paid session's cap does, so the playout renews it; unending by default |
@@ -225,40 +230,59 @@ export const announcer = Playout.make({
 so a finalizer releases what they made. A hook that fails with your own error fails that clip
 alone: `Failed` with reason `Clip`, your error pretty-printed and `Redacted` in `provider`. A hook
 that dies stops the source, and the playout replaces its session. The playout checks every
-request against its model, H3's by default. A renderer with its own lengths passes the same
+request against its required model. A renderer with its own lengths passes the same
 `ClipModel` to `LocalSource.open` and `Playout.make`, so speech can air below H3's 5 s minimum.
 Its `builtSeconds` is the length the model builds for a requested length, which the playout plans
 a clip not built yet at; speech builds what it is asked:
 
 ```ts
 import { Effect } from "effect";
-import { H3, LocalSource, Playout } from "reactor-effect-client";
+import { H3, H3Source, LocalSource, Playout } from "reactor-effect-client";
 const speech: Playout.ClipModel<H3.Request> = {
   name: "speech", lengths: { min: 0.5, max: 30 }, defaultSeconds: 2,
   builtSeconds: (seconds) => seconds, check: () => [],
+  timing: H3Source.model.timing,
 };
 export const spoken = Playout.make({
   model: speech,
+  evidence: LocalSource.evidence,
   open: LocalSource.open({ model: speech, build: (clip) => Effect.succeed({ value: clip.request.prompt }) }),
   lanes: [{ name: "speech" }],
 });
 ```
 
 <Aside>
-`LocalSource.open({ buildRatio: 0.4, lifetime: "1 minute" })` runs a whole programme, renewals
+`LocalSource.open({ model: H3Source.model, buildRatio: 0.4, lifetime: "1 minute" })` runs a whole programme, renewals
 included, without a renderer: a quick way to see what your schedule does. Standing in for H3, it
 builds H3's lengths: a 7.3 s request airs 8 s.
 </Aside>
 
 ## Writing a source
 
-`Playout.Source` is an interface: a `sessionId`, a `lifetime`, `events`, the commands `enqueue`,
+`Playout.Source<Req, Report>` is an interface: a `sessionId`, a `lifetime`, `events`, the commands `enqueue`,
 `remove`, `move`, `setAutoplay`, `stop` and `play`, the `video` and `audio` streams, and `close`.
-Its optional `model` names the model it runs. The playout refuses a different model name at
-open, before sending commands; a source without `model` is not checked.
+Its `close` returns the provider-owned `Report`. Its optional `model` names the model it runs.
+The playout refuses a different model name at open, before sending commands; a source without `model` is not checked.
 Its doc comment lists what the playout relies on, such as `events` starting with a `State` and
 reporting a clip's start or end before the `State` that shows it. Write one only for a model or
 renderer the SDK does not cover.
+
+Command methods fail with `Playout.CommandError`, whose reason states whether a command was
+`NotSubmitted`, `Replied` or `Unknown`. Events and media streams fail with `Playout.SourceError`,
+whose reason is `Lost`, `Media` or `InvalidInput`; adapter diagnostics stay in redacted `detail`.
+
+Supply `Playout.Evidence<Report, E>` beside `open`. Its `mayStillBill` classifies reports, and
+`failedOpen` classifies an open failure as `Allocated` with a report or `NotAllocated`, with an
+optional retry delay. `H3Source.evidence` and `FastH3Source.evidence` interpret
+`Session.CloseReport` and `ReactorError.AcquisitionFailure`. `LocalSource.evidence` never reports
+billing; its source closes with `void`, so `cleanup.sessions` counts its retired sources.
+
+A source delivers finite clips and reports the observed length when Ready. Before then, placement,
+admission and deadline decisions use the last observed length for the same requested duration,
+or the model's estimate. This assumes requested length predicts actual length. When content
+sets duration, as with speech, those decisions can be wrong for unbuilt clips. A bounded build
+and measured duration are needed before presenting speech through `LocalSource`; no streaming
+speech bridge exists.
 
 ## Limits
 
@@ -266,8 +290,8 @@ renderer the SDK does not cover.
   model.
 - A `LocalSource` renders in your process: its builds and presentations use your CPU, and one
   slow build holds its one build slot.
-- H3's 5 to 15.084 s request bounds apply by default. A local renderer with another range
-  declares its own model and passes it to both the source and the playout.
+- H3's 5 to 15.084 s request bounds apply when you choose `H3Source.model`. A local renderer
+  declares or selects a model and passes it to both the source and the playout.
 
 ## Next
 

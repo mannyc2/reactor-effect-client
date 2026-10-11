@@ -1,13 +1,14 @@
 /** Shared policy inputs and the scripted provider used by its property families. */
+import type * as H3 from "../src/H3.js";
 import { assert } from "@effect/vitest";
 import { Array, Config, Effect, Option, Redacted } from "effect";
 import * as Policy from "../src/internal/playout/policy.js";
 import type { ClipTag, SourceClip, SourceEvent, SourceState } from "../src/Playout.js";
-import { ItemKey } from "../src/Playout.js";
-import { CommandFailure, ReactorError } from "../src/ReactorError.js";
+import { CommandError, ItemKey } from "../src/Playout.js";
 
-const config: Policy.Config = {
+const config: Policy.Config<H3.Request> = {
   defaultSeconds: 5,
+  timing: { seamMs: 40, readinessMarginMs: 250, commandMs: 200, continuedBuildFactor: 2.5 },
   // The scripted provider builds what is asked.
   builtSeconds: (seconds) => seconds,
   lanes: [
@@ -32,7 +33,7 @@ const sameClip = (a: ClipTag, b: ClipTag): boolean =>
     : b._tag === "Filler" && a.index === b.index;
 // Test fixtures are called directly rather than composed as a public pipeable API.
 // @effect-diagnostics-next-line missingPipeableSignature:off
-const spec = (name: string, lane = 1, seconds = 5): Policy.Spec => ({
+const spec = (name: string, lane = 1, seconds = 5): Policy.Spec<H3.Request> => ({
   key: key(name),
   lane,
   request: { prompt: name, seconds },
@@ -58,12 +59,17 @@ const source = (partial: Partial<SourceState> = {}): SourceState => ({
 /** A command that failed: never sent, answered with a refusal, or sent with its reply lost. */
 const failed = (outcome: "not-submitted" | "replied" | "unknown"): Policy.CommandResult => ({
   _tag: "Failed",
-  cause: CommandFailure.from(
-    ReactorError.fromCode("InvalidState", "the provider refused it"),
-    outcome === "not-submitted"
-      ? { operation: "enqueue", outcome }
-      : { operation: "enqueue", outcome, requestId: "request", generation: 1n },
-  ),
+  cause: CommandError.make({
+    reason: (
+      {
+        unknown: { _tag: "Unknown" },
+        "not-submitted": { _tag: "NotSubmitted", next: "await-change" },
+        replied: { _tag: "Replied", next: "none" },
+      } as const
+    )[outcome],
+    operation: "enqueue",
+    message: "the provider refused it",
+  }),
 });
 /** The provider failed `value`'s build. */
 const buildFailed = (value: SourceClip): SourceEvent => ({
@@ -78,7 +84,7 @@ const buildFailed = (value: SourceClip): SourceEvent => ({
  * lane and filler project with them, and a continued build is projected at 1 s a second.
  */
 const lineBuild = { lane: 1, perBuilt: 0.4, perRequested: 0.4 };
-const measured: Policy.State = {
+const measured: Policy.State<H3.Request> = {
   ...Policy.initial,
   samples: {
     build: [lineBuild, lineBuild, lineBuild],
@@ -132,18 +138,18 @@ const lasting: Lifetimes = { lifetimeMs: 120_000, leadMs: 30_000 };
 const renewing: Lifetimes = { lifetimeMs: 20_000, leadMs: 10_000 };
 
 /** The test config with its line lane strict. */
-const strictLine: Policy.Config = {
+const strictLine: Policy.Config<H3.Request> = {
   ...config,
   lanes: config.lanes.map((lane) => (lane.name === "line" ? { ...lane, strict: true } : lane)),
 };
 
 const simulate = (
   script: Script,
-  from: Policy.State,
+  from: Policy.State<H3.Request>,
   lifetimes: Lifetimes = lasting,
-  base: Policy.Config = config,
+  base: Policy.Config<H3.Request> = config,
 ) => {
-  const settings: Policy.Config = {
+  const settings: Policy.Config<H3.Request> = {
     ...base,
     leadMs: lifetimes.leadMs,
     filler: {
@@ -160,8 +166,8 @@ const simulate = (
   let clips = 0;
   let opened = 0;
   let wanted = 0;
-  const actions: Array<Policy.Action> = [];
-  const inputs: Array<Policy.Input> = [];
+  const actions: Array<Policy.Action<H3.Request>> = [];
+  const inputs: Array<Policy.Input<H3.Request>> = [];
   const sessions = new Map<
     string,
     {
@@ -262,7 +268,7 @@ const simulate = (
    * aired unseen. The scripted provider starts clips when the script says, so only the plan's
    * decision is checked, not start times.
    */
-  const decideLate = (before: Policy.State, input: Policy.Input) => {
+  const decideLate = (before: Policy.State<H3.Request>, input: Policy.Input<H3.Request>) => {
     if (state.closed) return;
     for (const item of state.items.values()) {
       if (item.spec.window?.firm !== true || item.startBy === undefined || clock < item.startBy)
@@ -369,7 +375,7 @@ const simulate = (
     }
   };
 
-  const send = (input: Policy.Input, at = clock + 7) => {
+  const send = (input: Policy.Input<H3.Request>, at = clock + 7) => {
     clock = at;
     inputs.push(input);
     if (input._tag === "Source" && input.event._tag === "Started") {
@@ -426,7 +432,7 @@ const simulate = (
     if (input._tag === "Result" && filler !== undefined) {
       fillers.delete(input.id);
       const result = input.result;
-      if (result._tag === "Failed" && result.cause.context.outcome !== "unknown")
+      if (result._tag === "Failed" && result.cause.reason._tag !== "Unknown")
         applied.set(
           filler.index,
           new Set([...(applied.get(filler.index) ?? [])].filter((id) => id !== filler.sessionId)),
@@ -571,7 +577,11 @@ const simulate = (
     if (state.air === undefined) throw new Error("the scripted provider has no session on air");
     return state.air;
   };
-  const edit = (index: number, list: ReadonlyArray<Policy.EditInput>, batch = false) => {
+  const edit = (
+    index: number,
+    list: ReadonlyArray<Policy.EditInput<H3.Request>>,
+    batch = false,
+  ) => {
     const id = 100 + index;
     const keys = new Map<number, string>();
     const parts = new Map<number, ReadonlyArray<string>>();
@@ -673,7 +683,7 @@ const simulate = (
   const timing = (
     index: number,
     lane: number,
-  ): Pick<Policy.Spec, "start"> | Pick<Policy.Spec, "window"> =>
+  ): Pick<Policy.Spec<H3.Request>, "start"> | Pick<Policy.Spec<H3.Request>, "window"> =>
     index % 5 === 1
       ? {
           start: {
@@ -693,7 +703,7 @@ const simulate = (
         : index % 7 === 6 && !strictLane(lane)
           ? { start: { _tag: "Manual" } }
           : { start: { _tag: "Follow" } };
-  const cued = (name: string, lane: number, index: number): Policy.Spec => ({
+  const cued = (name: string, lane: number, index: number): Policy.Spec<H3.Request> => ({
     ...spec(name, lane, 5 + (index % 3) * 5),
     cues: index % 2 === 0 ? [{ name: "cue", from: "end", offsetMs: 500 }] : [],
     continuity: index % 4 === 3,
@@ -703,11 +713,11 @@ const simulate = (
   /** A group of two placed `side` of `anchor`, its first part `first`, as `insertGroup` sends it. */
   const besideGroup = (
     name: string,
-    first: Policy.Spec,
+    first: Policy.Spec<H3.Request>,
     index: number,
     anchor: ItemKey,
     side: "before" | "after",
-  ): Policy.EditInput => {
+  ): Policy.EditInput<H3.Request> => {
     const { window: _window, ...later } = cued(`${name}b`, 1, index + 1);
     return {
       _tag: "InsertGroup",
@@ -722,7 +732,7 @@ const simulate = (
   /** The provider carries out the command in flight on a lane, and answers it. */
   const complete = (busy: {
     readonly id: number;
-    readonly command: Policy.Command;
+    readonly command: Policy.Command<H3.Request>;
     readonly sessionId: string;
   }) => {
     const value = sessions.get(busy.sessionId);
@@ -1090,7 +1100,7 @@ const simulate = (
 const check = (
   script: Script,
   lifetimes: Lifetimes = lasting,
-  base: Policy.Config = config,
+  base: Policy.Config<H3.Request> = config,
 ): void => {
   for (const from of [Policy.initial, measured]) keeps(script, from, lifetimes, base);
 };
@@ -1105,7 +1115,7 @@ const check = (
 const wakes = (
   script: Script,
   lifetimes: Lifetimes = lasting,
-  base: Policy.Config = config,
+  base: Policy.Config<H3.Request> = config,
 ): void => {
   for (const from of [Policy.initial, measured]) {
     const { problems } = simulate(script, from, lifetimes, base);
@@ -1114,9 +1124,9 @@ const wakes = (
 };
 const keeps = (
   script: Script,
-  from: Policy.State,
+  from: Policy.State<H3.Request>,
   lifetimes: Lifetimes = lasting,
-  base: Policy.Config = config,
+  base: Policy.Config<H3.Request> = config,
 ): void => {
   const {
     actions,
@@ -1135,7 +1145,7 @@ const keeps = (
   } = simulate(script, from, lifetimes, base);
   // What `wakes` checks as the script runs: a refusal is then always attributable.
   assert.deepStrictEqual(problems, [], problems.join("; "));
-  const history = new Map<string, Array<Policy.Action & { readonly _tag: "Emit" }>>();
+  const history = new Map<string, Array<Policy.Action<H3.Request> & { readonly _tag: "Emit" }>>();
   for (const action of actions)
     if (action._tag === "Emit" && action.event._tag === "AsRun")
       history.set(action.event.event.key, [...(history.get(action.event.event.key) ?? []), action]);

@@ -1,5 +1,6 @@
 import { Context, Effect, Layer, Result, Schema } from "effect";
 import { Playout } from "reactor-effect-client";
+import { Channel } from "./Channel.ts";
 
 /** One item of a rundown: what to show, and for how long. */
 export interface Segment {
@@ -48,7 +49,7 @@ export class Rundown extends Context.Service<
   static readonly layer = Layer.effect(
     Rundown,
     Effect.gen(function* () {
-      const playout = yield* Playout.Playout;
+      const playout = yield* Channel;
       const runs = { next: 0 };
       const play = Effect.fn("Rundown.play")(function* (segments: ReadonlyArray<Segment>) {
         const run = runs.next++;

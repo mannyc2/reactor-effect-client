@@ -18,7 +18,7 @@ This module runs one `Playout` over the simulated Reactor and exposes it as `sen
 
 ```ts title="channel.ts"
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Layer, ManagedRuntime, Redacted, Result } from "effect";
+import { Context, Effect, Layer, ManagedRuntime, Redacted, Result } from "effect";
 import {
   CoordinatorClient,
   H3,
@@ -27,6 +27,13 @@ import {
   Reactor,
   ReactorTest,
 } from "reactor-effect-client";
+
+import type { ReactorError, Session } from "reactor-effect-client";
+
+class Channel extends Context.Service<
+  Channel,
+  Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>
+>()("app/Channel") {}
 
 /** Each session the playout opens runs on a token capped at ten minutes. */
 const open = Effect.gen(function* () {
@@ -37,7 +44,15 @@ const open = Effect.gen(function* () {
 });
 
 /** The playout over the simulated Reactor; see "Going live" for the hosted layer. */
-const Channel = Playout.layer({ open, lanes: [{ name: "viewer" }] }).pipe(
+const ChannelLive = Layer.effect(
+  Channel,
+  Playout.make({
+    model: H3Source.model,
+    evidence: H3Source.evidence,
+    open,
+    lanes: [{ name: "viewer" }],
+  }),
+).pipe(
   Layer.provideMerge(Reactor.layer()),
   Layer.provideMerge(CoordinatorClient.layer({ apiKey: Redacted.make("demo") })),
   Layer.provideMerge(ReactorTest.layer({ timing: ReactorTest.Timing.hosted, apiKey: "demo" })),
@@ -45,7 +60,7 @@ const Channel = Playout.layer({ open, lanes: [{ name: "viewer" }] }).pipe(
 );
 
 /** Built on first use, shared by every call, released by `dispose`. */
-const runtime = ManagedRuntime.make(Channel);
+const runtime = ManagedRuntime.make(ChannelLive);
 
 export type Submitted =
   | { readonly accepted: true }
@@ -58,7 +73,7 @@ const handles = new Map<string, Playout.ItemHandle>();
 export async function sendPrompt(key: string, prompt: string): Promise<Submitted> {
   const submitted = await runtime.runPromise(
     Effect.gen(function* () {
-      const playout = yield* Playout.Playout;
+      const playout = yield* Channel;
       return yield* playout.submit({
         key: Playout.ItemKey.make(key),
         lane: "viewer",

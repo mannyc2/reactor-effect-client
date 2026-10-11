@@ -255,8 +255,19 @@ export const make = ({
             }),
           ),
         );
-        const wait = yield* Deadline.decode("replyTimeout")(
+        const wait = yield* Schema.decodeEffect(Deadline.Deadline)(
           options.replyTimeout ?? settings.replyTimeout,
+        ).pipe(
+          Effect.mapError((cause) =>
+            ReactorError.fromCode(
+              "InvalidInput",
+              "replyTimeout is not a finite, non-negative duration",
+              {
+                outcome: "not-submitted",
+                detail: cause,
+              },
+            ),
+          ),
         );
         return { c, payload, wait };
       }).pipe(Effect.catch((error) => refuse(name, "data", error)));

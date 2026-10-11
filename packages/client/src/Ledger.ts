@@ -88,11 +88,11 @@ export interface Opener<Req extends ClipRequest, R> {
       readonly sessionId: string;
       readonly endsAt?: number | undefined;
     }) => Effect.Effect<void, LedgerError>,
-  ) => Effect.Effect<Source<Req>, AcquisitionFailure, R | Scope.Scope>;
+  ) => Effect.Effect<Source<Req, CloseReport>, AcquisitionFailure, R | Scope.Scope>;
   /** Adopts a recorded session, so that closing it ends it. */
   readonly resume: (
     entry: Entry,
-  ) => Effect.Effect<Source<Req>, AcquisitionFailure, R | Scope.Scope>;
+  ) => Effect.Effect<Source<Req, CloseReport>, AcquisitionFailure, R | Scope.Scope>;
 }
 
 export interface SourceOptions {
@@ -131,7 +131,7 @@ export class Ledger extends Context.Service<
     readonly source: <Req extends ClipRequest, R>(
       opener: Opener<Req, R>,
       options?: SourceOptions,
-    ) => Effect.Effect<Source<Req>, AcquisitionFailure, R | Scope.Scope>;
+    ) => Effect.Effect<Source<Req, CloseReport>, AcquisitionFailure, R | Scope.Scope>;
     /**
      * Ends every recorded session of this ledger's coordinator that it does not hold, each until
      * Reactor confirms it.
@@ -413,7 +413,7 @@ const make = Effect.fnUntraced(function* (options: Options) {
    */
   const watched = Effect.fnUntraced(function* <Req extends ClipRequest>(
     entry: Entry,
-    source: Source<Req>,
+    source: Source<Req, CloseReport>,
   ) {
     const settled = yield* Deferred.make<CloseReport>();
     const begun = yield* Ref.make(false);
@@ -427,7 +427,7 @@ const make = Effect.fnUntraced(function* (options: Options) {
     });
     const close = Effect.andThen(Effect.uninterruptible(once), Deferred.await(settled));
     yield* Effect.addFinalizer(() => Effect.asVoid(close));
-    return { ...source, close } satisfies Source<Req>;
+    return { ...source, close } satisfies Source<Req, CloseReport>;
   });
 
   /**
@@ -505,7 +505,7 @@ const make = Effect.fnUntraced(function* (options: Options) {
           }),
         );
         if (stored !== undefined) yield* outlived(entry.sessionId)(stored);
-        return Option.none<Source<Req>>();
+        return Option.none<Source<Req, CloseReport>>();
       }),
     );
 
@@ -588,7 +588,7 @@ const make = Effect.fnUntraced(function* (options: Options) {
   const source = Effect.fn("Ledger.source")(function* <Req extends ClipRequest, R>(
     opener: Opener<Req, R>,
     sourceOptions: SourceOptions = {},
-  ): Effect.fn.Return<Source<Req>, AcquisitionFailure, R | Scope.Scope> {
+  ): Effect.fn.Return<Source<Req, CloseReport>, AcquisitionFailure, R | Scope.Scope> {
     const chosen = yield* Ref.make<Entry | undefined>(undefined);
     const opened = yield* acquire(opener, sourceOptions, chosen).pipe(
       // A session chosen to resume, and stopped before its resume took it over, is left as it was.

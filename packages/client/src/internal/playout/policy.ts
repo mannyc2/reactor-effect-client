@@ -13,8 +13,7 @@
  * plan has seen, never on another session's command.
  */
 import { dual } from "effect/Function";
-import type { Request } from "../../H3.js";
-import type { CommandFailure } from "../../ReactorError.js";
+import type { CommandError } from "./errors.js";
 import type {
   AsRunStatus,
   BuildSpread,
@@ -47,7 +46,7 @@ export type Late =
   | { readonly readyByMs: number };
 
 /** A submission as the runtime normalized it: durations in milliseconds, lanes as indexes. */
-export interface Spec<Req extends ClipRequest = Request> {
+export interface Spec<Req extends ClipRequest> {
   readonly key: ItemKey;
   readonly lane: number;
   readonly request: Req;
@@ -79,7 +78,7 @@ export interface Probe {
   readonly submitInMs: number;
 }
 
-export type EditInput<Req extends ClipRequest = Request> =
+export type EditInput<Req extends ClipRequest> =
   | { readonly _tag: "Submit"; readonly spec: Spec<Req> }
   | {
       readonly _tag: "SubmitGroup";
@@ -106,7 +105,7 @@ export type EditInput<Req extends ClipRequest = Request> =
   | { readonly _tag: "Replace"; readonly key: ItemKey; readonly spec: Spec<Req> }
   | { readonly _tag: "Withdraw"; readonly key: ItemKey };
 
-export type Command<Req extends ClipRequest = Request> =
+export type Command<Req extends ClipRequest> =
   | {
       readonly _tag: "Enqueue";
       readonly request: Req;
@@ -124,27 +123,15 @@ export type Command<Req extends ClipRequest = Request> =
 export type CommandResult =
   | { readonly _tag: "Done"; readonly clipId?: string | undefined }
   /** Its outcome says whether the provider may have applied it, and whether a retry may mend it. */
-  | { readonly _tag: "Failed"; readonly cause: CommandFailure }
+  | { readonly _tag: "Failed"; readonly cause: CommandError }
   /** It died or was interrupted, so whether the provider applied it cannot be told. */
   | { readonly _tag: "Died" };
 
-/**
- * Whether a command was refused unsent because its session was not in a state
- * to take it, as when its connection drops, or Reactor or its moderation ends
- * the session, before its source can say so. Only a change in what the session
- * reports can mend that, so it waits for one.
- */
-const unready = (cause: CommandFailure): boolean =>
-  cause.context.outcome === "not-submitted" &&
-  (cause.reason._tag === "InvalidState" ||
-    cause.reason._tag === "TerminalSession" ||
-    cause.reason._tag === "Moderated");
-
 /** Whether a command that failed may have taken effect unseen. */
 const uncertain = (result: Exclude<CommandResult, { readonly _tag: "Done" }>): boolean =>
-  result._tag === "Died" || result.cause.context.outcome === "unknown";
+  result._tag === "Died" || result.cause.reason._tag === "Unknown";
 
-export type Input<Req extends ClipRequest = Request> =
+export type Input<Req extends ClipRequest> =
   /** `batch`: the edits take effect together, make-before-break, as `Playout.edit` promises. */
   | {
       readonly _tag: "Edit";
@@ -186,7 +173,7 @@ export type EditReply =
   | { readonly _tag: "AddedGroup"; readonly key: ItemKey; readonly parts: ReadonlyArray<ItemKey> }
   | { readonly _tag: "Withdrawal" };
 
-export type Action<Req extends ClipRequest = Request> =
+export type Action<Req extends ClipRequest> =
   | {
       readonly _tag: "Command";
       readonly id: number;
@@ -241,7 +228,13 @@ export type Action<Req extends ClipRequest = Request> =
   /** Every place of a group has settled. */
   | { readonly _tag: "GroupSettled"; readonly key: ItemKey; readonly outcome: GroupOutcome };
 
-export interface Config<Req extends ClipRequest = Request> {
+export interface Config<Req extends ClipRequest> {
+  readonly timing: {
+    readonly seamMs: number;
+    readonly readinessMarginMs: number;
+    readonly commandMs: number;
+    readonly continuedBuildFactor: number;
+  };
   /** The length a request without `seconds` is planned at: its model's default. */
   readonly defaultSeconds: number;
   /** The length its model builds for a request of `seconds`. */
@@ -285,7 +278,7 @@ export interface Now {
 type Phase = "Accepted" | "Building" | "Ready" | "Started" | "Settled" | "Unknown";
 type DropReason = "late" | "withdrawn" | "replaced" | "displaced";
 
-interface Item<Req extends ClipRequest = Request> {
+interface Item<Req extends ClipRequest> {
   readonly spec: Spec<Req>;
   readonly order: number;
   readonly generation: number;
@@ -365,7 +358,7 @@ interface Item<Req extends ClipRequest = Request> {
   readonly followsAired?: boolean | undefined;
 }
 
-interface Session<Req extends ClipRequest = Request> {
+interface Session<Req extends ClipRequest> {
   readonly id: string;
   readonly openedAt: number;
   readonly lifetimeMs: number;
@@ -489,7 +482,7 @@ interface Group {
   readonly anchor?: { readonly key: ItemKey; readonly side: "before" | "after" } | undefined;
 }
 
-export interface State<Req extends ClipRequest = Request> {
+export interface State<Req extends ClipRequest> {
   readonly items: ReadonlyMap<ItemKey, Item<Req>>;
   readonly groups: ReadonlyMap<ItemKey, Group>;
   readonly settled: ReadonlyArray<ItemKey>;
@@ -591,7 +584,7 @@ export interface State<Req extends ClipRequest = Request> {
     | undefined;
 }
 
-export interface Step<Req extends ClipRequest = Request> {
+export interface Step<Req extends ClipRequest> {
   readonly state: State<Req>;
   readonly actions: ReadonlyArray<Action<Req>>;
   /**
@@ -650,21 +643,6 @@ const cutMarginMs = 1_000;
 const refusalHoldMs = 1_000;
 const exposureMarginMs = 1_500;
 const lookaheadMarginSeconds = 1;
-/**
- * How long before a boundary a clip must be Ready to air there ahead of the clips queued: H3 arms
- * its queue's head as a clip ends, so the plan must have seen the clip Ready and its move must
- * have landed. A state read and a move take 0.1 to 0.2 s on hosted H3, and a command already in
- * flight on the session holds the move up to 0.1 s more.
- */
-const readinessMarginMs = 250;
-/**
- * One command and the state read after it, which `place` leaves room for beyond the readiness
- * margin: a command already queued when the build slot frees, such as the move a clip's Ready asks
- * for, goes before a follower's enqueue. They take 0.1 to 0.2 s on hosted H3.
- */
-const commandMs = 200;
-/** A clip's end to the next one's start: hosted median 36 ms, n = 44. */
-const seamMs = 40;
 /** The key the clip `place` asks about goes by in a forward run; no item's. */
 const probeKey = ItemKey.make("\u0000placement probe");
 /**
@@ -772,13 +750,6 @@ const estimatesOf = (
   };
 };
 
-/**
- * Until a continued build is measured, one is projected at this multiple of an
- * independent build: on hosted H3 a continued 5 s clip took 5.45 s to build,
- * against 2.1 to 2.2 s for independent ones (0.7.0 scheduler-edits run).
- */
-const continuedBuildFactor = 2.5;
-
 /** The p95 of three or more `values`, else the longest of one or two; undefined with none. */
 const longestOf = (values: ReadonlyArray<number>): number | undefined => {
   if (values.length === 0) return undefined;
@@ -812,6 +783,7 @@ const buildRateOf = (
   subject: number | "filler",
   rule: "median" | "long",
   continued: boolean,
+  continuedBuildFactor: number,
 ): number | undefined => {
   const pick = (
     values: ReadonlyArray<BuildSample<number | "filler">>,
@@ -2132,7 +2104,13 @@ const decide = <Req extends ClipRequest>(
     if (known.length === 0) rates.set(subject, known);
     const index = (rule === "long" ? 2 : 0) + (continued ? 1 : 0);
     const worked = (known[index] ??= {
-      rate: buildRateOf(state.samples, subject, rule, continued),
+      rate: buildRateOf(
+        state.samples,
+        subject,
+        rule,
+        continued,
+        config.timing.continuedBuildFactor,
+      ),
     });
     return worked.rate;
   };
@@ -3558,7 +3536,11 @@ const decide = <Req extends ClipRequest>(
         } else if (item.withdraw !== undefined)
           // Refused with no clip made: the withdrawal waiting on it has nothing left to remove.
           settle(item.spec.key, { _tag: "Dropped", reason: item.withdraw });
-        else if (result._tag === "Failed" && result.cause.isRetryable)
+        else if (
+          result._tag === "Failed" &&
+          result.cause.reason._tag !== "Unknown" &&
+          result.cause.reason.next === "retry"
+        )
           set(item.spec.key, {
             phase: "Accepted",
             sessionId: undefined,
@@ -3567,7 +3549,8 @@ const decide = <Req extends ClipRequest>(
           });
         else if (
           result._tag === "Failed" &&
-          unready(result.cause) &&
+          result.cause.reason._tag === "NotSubmitted" &&
+          result.cause.reason.next === "await-change" &&
           // Refused again while the session says it takes commands, nothing is left to wait for.
           !(item.unsent?.sessionId === sessionId && owner?.source?.available === true)
         )
@@ -3593,7 +3576,7 @@ const decide = <Req extends ClipRequest>(
         );
         // A removal whose outcome is unknown goes again at once: if it applied, the next is
         // refused, and the clip is gone. One refused goes again once the queues change.
-        const unknown = result._tag === "Failed" && result.cause.context.outcome === "unknown";
+        const unknown = result._tag === "Failed" && result.cause.reason._tag === "Unknown";
         updateSession(sessionId, {
           refusedSince: result._tag === "Done" ? undefined : (lane.refusedSince ?? now.mono),
         });
@@ -4433,8 +4416,8 @@ const decide = <Req extends ClipRequest>(
       value.autoplay === false ||
       (value.source?.playing !== undefined &&
         value.startSeen === value.source.playing.clipId &&
-        playingRestMs(value) > readinessMarginMs &&
-        now.mono < (playingRestFallsTo(value, readinessMarginMs) ?? Infinity));
+        playingRestMs(value) > config.timing.readinessMarginMs &&
+        now.mono < (playingRestFallsTo(value, config.timing.readinessMarginMs) ?? Infinity));
     const autoplay =
       value.wantAutoplay && state.cutting?.sessionId !== value.id && !(guarded && fenceable);
     const removal = removalDue(value, autoplay);
@@ -4639,7 +4622,7 @@ const decide = <Req extends ClipRequest>(
     // ahead of it. A clip of unknown length may play for a while: what else can air goes.
     const starting =
       playing === undefined ||
-      (playing.seconds !== undefined && playingRestMs(value) <= readinessMarginMs);
+      (playing.seconds !== undefined && playingRestMs(value) <= config.timing.readinessMarginMs);
     const held = !fenceable && starting && readyOf(value).length > 0;
     const candidates = eligible(floorSeconds);
     for (const item of candidates) {
@@ -5409,7 +5392,10 @@ const decide = <Req extends ClipRequest>(
     const after = first + buildMs(item, false);
     const from = Math.max(-Infinity, ...inFlight) + after;
     return {
-      due: from + readinessMarginMs >= end ? now.mono : end - readinessMarginMs - after,
+      due:
+        from + config.timing.readinessMarginMs >= end
+          ? now.mono
+          : end - config.timing.readinessMarginMs - after,
     };
   }
   /**
@@ -5528,7 +5514,7 @@ const decide = <Req extends ClipRequest>(
       // wait for. With nothing on air, the first clip Ready airs at once.
       const boundary = before === undefined ? Infinity : before.start + before.clip.seconds * 1000;
       const readyAt = run.probe.readyAt ?? now.mono;
-      if (readyAt + readinessMarginMs + commandMs > boundary) continue;
+      if (readyAt + config.timing.readinessMarginMs + config.timing.commandMs > boundary) continue;
       const start = run.aired[index]?.start ?? now.mono;
       const next = run.aired[index + 1]?.clip;
       const built =
@@ -6627,7 +6613,7 @@ const decide = <Req extends ClipRequest>(
         if (!left) {
           onAir = targetId;
           // The grace, then the replacement's first clip after a seam.
-          t += (current ? config.graceMs : 0) + seamMs;
+          t += (current ? config.graceMs : 0) + config.timing.seamMs;
           current = false;
         }
       }
@@ -6635,7 +6621,7 @@ const decide = <Req extends ClipRequest>(
         (clip) => clip.sessionId === onAir && clip.readyAt <= t && airsAt(clip, t),
       );
       const moved = queued.filter(
-        (clip) => !clip.projected || clip.readyAt + readinessMarginMs <= t,
+        (clip) => !clip.projected || clip.readyAt + config.timing.readinessMarginMs <= t,
       );
       const head =
         moved.length > 0 ? airOrderIn(moved)[0] : queued.sort((a, b) => a.readyAt - b.readyAt)[0];
@@ -6667,7 +6653,7 @@ const decide = <Req extends ClipRequest>(
         current = false;
         return true;
       }
-      const start = current ? t + seamMs : t;
+      const start = current ? t + config.timing.seamMs : t;
       aired.push({ clip: head, start });
       remove(head);
       const item = head.item;
@@ -6768,7 +6754,7 @@ const decide = <Req extends ClipRequest>(
       // On air a fence goes up only while the clip playing has more than the readiness margin
       // left: as it falls there, a follower's guard stops holding autoplay off.
       if (following && value.id === state.air && value.autoplay !== false)
-        later(playingRestFallsTo(value, readinessMarginMs));
+        later(playingRestFallsTo(value, config.timing.readinessMarginMs));
       for (const entry of value.unknownFiller) later(entry.since + config.unknownTimeoutMs);
       later(value.openedAt + value.lifetimeMs - config.leadMs);
       later(value.openedAt + value.lifetimeMs);

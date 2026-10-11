@@ -1,4 +1,6 @@
 /** Requested source workflows over the real client and simulated Reactor, written before FastH3Source. */
+import type { AcquisitionFailure } from "../src/ReactorError.js";
+import type { CloseReport } from "../src/Session.js";
 import { assert, layer } from "@effect/vitest";
 import {
   Context,
@@ -7,6 +9,7 @@ import {
   Effect,
   Layer,
   Option,
+  Redacted,
   Stream,
   SubscriptionRef,
   Tracer,
@@ -15,6 +18,7 @@ import * as FastH3 from "../src/FastH3.js";
 import * as FastH3Source from "../src/FastH3Source.js";
 import * as H3 from "../src/H3.js";
 import * as H3Source from "../src/H3Source.js";
+import { CommandFailure } from "../src/ReactorError.js";
 import * as Playout from "../src/Playout.js";
 import { CoordinatorClient, ReactorTest } from "../src/index.js";
 import { environment } from "./fixtures/Simulated.js";
@@ -28,9 +32,10 @@ const key = (value: string) => Playout.ItemKey.make(value);
 const tag = (value: string): Playout.ClipTag => ({ _tag: "Item", key: key(value) });
 const request = (prompt: string): FastH3.Request => ({ prompt, seconds: 5.167 });
 
-class Channel extends Context.Service<Channel, Playout.Service<FastH3.Request>>()(
-  "reactor-effect-client/test/FastH3Source.test/Channel",
-) {}
+class Channel extends Context.Service<
+  Channel,
+  Playout.Service<FastH3.Request, CloseReport, AcquisitionFailure>
+>()("reactor-effect-client/test/FastH3Source.test/Channel") {}
 
 const tokens = Effect.fnUntraced(function* (modelName: string, maxSessionDuration: Duration.Input) {
   const test = yield* ReactorTest.ReactorTest;
@@ -45,7 +50,7 @@ const tokens = Effect.fnUntraced(function* (modelName: string, maxSessionDuratio
 
 const channelLayer = (
   lifetime: Duration.Input,
-  renewal?: Playout.Options<never, FastH3.Request>["renewal"],
+  renewal?: Playout.Options<never, FastH3.Request, CloseReport, AcquisitionFailure>["renewal"],
 ) =>
   Layer.effect(
     Channel,
@@ -53,6 +58,7 @@ const channelLayer = (
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const sessionTokens = yield* tokens(FastH3.modelName, lifetime);
       return yield* Playout.make({
+        evidence: FastH3Source.evidence,
         model: FastH3Source.model,
         open: FastH3Source.open({ tokens: sessionTokens }),
         lanes: [{ name: "line" }],
@@ -167,6 +173,7 @@ layer(environment({ timing }))("a continued FastH3 item", (it) => {
         Layer.effect(
           Channel,
           Playout.make({
+            evidence: FastH3Source.evidence,
             model: FastH3Source.model,
             open: FastH3Source.open({ tokens: sessionTokens }).pipe(
               Effect.tap((source) =>
@@ -310,12 +317,16 @@ layer(environment({ timing, fastH3History: 1 }))("a FastH3 source's continuation
         ),
       ).pipe(Effect.withSpan("caller.refused", { root: true }, { captureStackTrace: false }));
       assert.deepStrictEqual(
-        [refused._tag, refused.reason._tag, refused.context.outcome],
-        ["CommandFailure", "Remote", "replied"],
+        [refused._tag, refused.reason, refused.operation],
+        ["CommandError", { _tag: "Replied", next: "none" }, "enqueue"],
       );
-      assert.strictEqual(refused.context.operation, "enqueue");
-      assert.isString(refused.context.requestId);
-      assert.strictEqual(refused.context.generation, 1n);
+      const refusedDetail =
+        refused.detail === undefined ? undefined : Redacted.value(refused.detail);
+      if (!CommandFailure.is(refusedDetail))
+        return assert.fail("the original command failure was not retained");
+      assert.strictEqual(refusedDetail.reason._tag, "Remote");
+      assert.isString(refusedDetail.context.requestId);
+      assert.strictEqual(refusedDetail.context.generation, 1n);
       assert.deepStrictEqual(
         (yield* test.log)
           .slice(beforeRefusal)
@@ -334,12 +345,16 @@ layer(environment({ timing, fastH3History: 1 }))("a FastH3 source's continuation
       const beforeUnknown = (yield* test.log).length;
       const unknown = yield* Effect.flip(source.enqueue(request("lost"), tag("lost"), d));
       assert.deepStrictEqual(
-        [unknown._tag, unknown.reason._tag, unknown.context.outcome],
-        ["CommandFailure", "Timeout", "unknown"],
+        [unknown._tag, unknown.reason._tag, unknown.operation],
+        ["CommandError", "Unknown", "enqueue"],
       );
-      assert.strictEqual(unknown.context.operation, "enqueue");
-      assert.isString(unknown.context.requestId);
-      assert.strictEqual(unknown.context.generation, 1n);
+      const unknownDetail =
+        unknown.detail === undefined ? undefined : Redacted.value(unknown.detail);
+      if (!CommandFailure.is(unknownDetail))
+        return assert.fail("the original command failure was not retained");
+      assert.strictEqual(unknownDetail.reason._tag, "Timeout");
+      assert.isString(unknownDetail.context.requestId);
+      assert.strictEqual(unknownDetail.context.generation, 1n);
       // This interval proves no delayed resend after the command and reconcile deadlines.
       yield* Effect.sleep("30 seconds");
       const afterUnknown = (yield* test.log).slice(beforeUnknown);
@@ -397,12 +412,15 @@ layer(environment({ timing }))("a FastH3 source's model", (it) => {
         [],
       );
       const wrongModel = yield* Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
         open: Effect.succeed(fast),
         lanes: [{ name: "line" }],
       });
       const failure = yield* wrongModel.failure.pipe(Effect.timeout("1 minute"));
-      assert.strictEqual(failure._tag, "ReactorError");
-      if (failure._tag === "ReactorError") assert.strictEqual(failure.reason._tag, "InvalidState");
+      assert.strictEqual(failure._tag, "PlayoutStopped");
+      if (failure._tag === "PlayoutStopped")
+        assert.strictEqual(failure.reason._tag, "ModelMismatch");
       assert.deepStrictEqual(
         (yield* test.log)
           .slice(before)

@@ -316,8 +316,12 @@ const program = Effect.gen(function* () {
    * Node program. Example tests are left out: they need Vitest.
    */
   const exampleSources = {
-    portable: ["packages/client/examples/src/Rundown.ts"],
+    portable: [
+      "packages/client/examples/src/Channel.ts",
+      "packages/client/examples/src/Rundown.ts",
+    ],
     browser: [
+      "packages/client/examples/src/Channel.ts",
       "packages/client/examples/src/Rundown.ts",
       "packages/browser/examples/src/Api.ts",
       "packages/browser/examples/src/WebCrypto.ts",
@@ -330,6 +334,7 @@ const program = Effect.gen(function* () {
       "packages/browser/examples/src/playground.ts",
     ],
     node: [
+      "packages/client/examples/src/Channel.ts",
       "packages/client/examples/src/Rundown.ts",
       "packages/client/examples/src/main.ts",
       "packages/browser/examples/src/Api.ts",

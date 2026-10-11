@@ -17,10 +17,11 @@ import type { Opener } from "./Ledger.js";
 import type { ClipModel, Source } from "./Playout.js";
 import type { Reactor, CreateOptions } from "./Reactor.js";
 import type { AcquisitionFailure, CommandFailure } from "./ReactorError.js";
+import type { CloseReport } from "./Session.js";
 import { clipModel } from "./internal/fastH3/clipModel.js";
 import * as Source_ from "./internal/h3/source.js";
 
-export { Allocation } from "./H3Source.js";
+export { Allocation, evidence } from "./H3Source.js";
 export type { Allocated } from "./H3Source.js";
 
 /** FastH3 as the playout plans for it: its documented request limits. */
@@ -120,7 +121,7 @@ const fastH3: Source_.SourceModel<FastH3.Request, FastH3.Clip> = {
 export const open = <E = never, R = never>(
   options: OpenOptions<E, R>,
 ): Effect.Effect<
-  Source<FastH3.Request>,
+  Source<FastH3.Request, CloseReport>,
   AcquisitionFailure,
   R | Reactor | Crypto.Crypto | Scope.Scope
 > => Source_.open(fastH3)(options);
@@ -133,7 +134,7 @@ export const open = <E = never, R = never>(
 export const resume = (
   options: ResumeOptions,
 ): Effect.Effect<
-  Source<FastH3.Request>,
+  Source<FastH3.Request, CloseReport>,
   AcquisitionFailure,
   Reactor | Crypto.Crypto | Scope.Scope
 > => Source_.resume(fastH3)(options);

@@ -4,7 +4,8 @@ The portable core of [reactor-effect](https://github.com/mannyc2/reactor-effect-
 audio and video production with [Effect](https://effect.website). `SpeechModel` streams generated
 speech through a provider selected at the application boundary; `CartesiaSpeech` supplies the
 first TTS adapter. Reactor is the provider behind `Reactor`, `Session`, `H3`, `FastH3` and
-`ViduS2Avatar`. `Playout` schedules clips from Reactor or application renderers.
+`ViduS2Avatar`. `Playout` schedules finite clips from Reactor or application renderers, with the
+model and cleanup evidence selected explicitly by the application.
 
 The core runs on Node, Bun and browsers and loads no native code. HTTP speech requires an Effect
 `HttpClient`. Reactor media transport comes from `reactor-effect-browser` or
@@ -70,8 +71,31 @@ releases the local response but cannot establish remote cancellation or billing 
 
 `Playout` remains a finite-clip scheduler. To schedule synthesized speech with it, finish a
 bounded build with a measured duration and use `LocalSource` to present it. Streaming speech with
-an unknown final duration does not yet have a playout adapter. The Cartesia path has no hosted
-qualification; Reactor's recorded evidence does not qualify another provider.
+an unknown final duration does not yet have a playout adapter. For an unbuilt clip, placement,
+admission and deadline decisions use past clips with the same requested duration, or the model's
+estimate. Those decisions can be wrong when content determines length. The Cartesia path has no
+hosted qualification; Reactor's recorded evidence does not qualify another provider.
+
+## Choosing a playout source
+
+`Playout.make({ model: H3Source.model, evidence: H3Source.evidence, open, lanes })` schedules H3.
+Choose `FastH3Source.model` and `FastH3Source.evidence` for FastH3, or your model and
+`LocalSource.evidence` for a local renderer. `LocalSource.open` also requires the same model.
+Every model supplies request limits, a finite duration forecast and `timing`: seam, readiness
+margin, command round trip and continued-build factor. H3 and FastH3 each retain 40 ms, 250 ms,
+200 ms and 2.5; the FastH3 values are inherited from H3, not measured on FastH3.
+
+Applications own their `Context.Service` over `Playout.Service<Req, Report, E>` and provide it
+with `Layer.effect(Tag, Playout.make(options))`. Reactor adapters use `Session.CloseReport` and
+`ReactorError.AcquisitionFailure`; a local source closes with `void`. `Cleanup<Report>` retains
+every recorded report that may still bill and the latest eight settled reports. Returned close
+reports and fresh failed-open reports preserve ledger errors; failed-resume cleanup consumed
+inside `Ledger` does not reach the playout's cleanup.
+
+Source commands use `Playout.CommandError` with `NotSubmitted`, `Replied` or `Unknown` reasons.
+Events and media use `SourceError`; the scheduler's own terminal failures use `PlayoutStopped`
+or `PlayoutClosed`. Original adapter diagnostics remain redacted. See
+[Playout](https://mannyc2.github.io/reactor-effect-client/concepts/playout/) for the contracts.
 
 ## A first clip, offline
 
@@ -162,7 +186,7 @@ a namespace. Nothing under `internal/` is reachable.
 | [`Ledger`](https://mannyc2.github.io/reactor-effect-client/guides/cost-control/)                | The paid sessions an application owns, in a store it provides: recorded before they connect, ended until Reactor confirms it |
 | [`Media`](https://mannyc2.github.io/reactor-effect-client/concepts/media/)                      | Decoded frames and platform tracks of one connection generation, and `recorder`                                              |
 | [`Peer`](https://mannyc2.github.io/reactor-effect-client/reference/modules/)                    | The transport port a host implements, and the `PeerFactory` service                                                          |
-| [`ReactorError`](https://mannyc2.github.io/reactor-effect-client/concepts/errors/)              | Every failure the client raises, its tagged reason and its dispatch outcome                                                  |
+| [`ReactorError`](https://mannyc2.github.io/reactor-effect-client/concepts/errors/)              | Reactor failures, their tagged reasons and dispatch outcomes                                                                 |
 | [`ReactorTest`](https://mannyc2.github.io/reactor-effect-client/guides/testing-offline/)        | Reactor simulated in memory: the coordinator, peers, H3, FastH3 and Vidu S2-Avatar, on the Effect clock                      |
 
 Each module's doc comments state its options' defaults and bounds.

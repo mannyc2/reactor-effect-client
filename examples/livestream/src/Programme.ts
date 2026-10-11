@@ -2,6 +2,7 @@ import { Clock, Context, Duration, Effect, Layer, Ref } from "effect";
 import { Playout } from "reactor-effect-client";
 import { ChannelBusy, ChannelUnavailable, PromptRejected } from "./Api.ts";
 import type { Submitted } from "./Api.ts";
+import { Channel } from "./Channel.ts";
 import { Settings } from "./Settings.ts";
 
 /**
@@ -26,7 +27,7 @@ export class Programme extends Context.Service<
   static readonly layer = Layer.effect(
     Programme,
     Effect.gen(function* () {
-      const playout = yield* Playout.Playout;
+      const playout = yield* Channel;
       const { clipSeconds, lead } = yield* Settings;
       const prompts = yield* Ref.make(new Map<string, string>());
       const count = yield* Ref.make(0);

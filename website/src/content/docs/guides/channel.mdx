@@ -53,7 +53,7 @@ has the whole model; these are the parts a channel uses.
    ```ts
    import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
    import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
-   import { Effect, Layer, Redacted, Stream } from "effect";
+   import { Context, Effect, Layer, Redacted, Stream } from "effect";
    import * as FetchHttpClient from "effect/http/FetchHttpClient";
    import {
      CoordinatorClient,
@@ -63,6 +63,7 @@ has the whole model; these are the parts a channel uses.
      Reactor,
      ReactorTest,
    } from "reactor-effect-client";
+   import type { ReactorError, Session } from "reactor-effect-client";
    import { NativePeer } from "reactor-effect-native";
 
    const house = [
@@ -84,15 +85,25 @@ has the whole model; these are the parts a channel uses.
    as filler, renewed 45 seconds before each cap:
 
    ```ts
-   const Channel = Playout.layer({
-     open,
-     lanes: [{ name: "breaking", cut: true }, { name: "viewer" }],
-     filler: {
-       runway: { floor: "8 seconds", target: "16 seconds" },
-       clip: ({ index, seconds }) => ({ prompt: house[index % house.length] ?? "", seconds }),
-     },
-     renewal: { lead: "45 seconds" },
-   });
+   class Channel extends Context.Service<
+     Channel,
+     Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>
+   >()("app/Channel") {}
+
+   const ChannelLive = Layer.effect(
+     Channel,
+     Playout.make({
+       model: H3Source.model,
+       evidence: H3Source.evidence,
+       open,
+       lanes: [{ name: "breaking", cut: true }, { name: "viewer" }],
+       filler: {
+         runway: { floor: "8 seconds", target: "16 seconds" },
+         clip: ({ index, seconds }) => ({ prompt: house[index % house.length] ?? "", seconds }),
+       },
+       renewal: { lead: "45 seconds" },
+     }),
+   );
    ```
 
    `filler.clip` gets the length to ask for in `seconds`: usually the shortest `filler.lengths`
@@ -107,7 +118,7 @@ has the whole model; these are the parts a channel uses.
 
    ```ts
    const submitPrompt = Effect.fn("submitPrompt")(function* (id: string, prompt: string) {
-     const playout = yield* Playout.Playout;
+     const playout = yield* Channel;
      return yield* playout.submit({
        key: Playout.ItemKey.make(`viewer-${id}`),
        lane: "viewer",
@@ -125,7 +136,7 @@ has the whole model; these are the parts a channel uses.
 
    ```ts
    const logAir = Effect.gen(function* () {
-     const playout = yield* Playout.Playout;
+     const playout = yield* Channel;
      yield* playout.events.pipe(
        Stream.runForEach((event) => {
          switch (event._tag) {
@@ -142,7 +153,7 @@ has the whole model; these are the parts a channel uses.
      );
    });
 
-   const Air = Layer.effectDiscard(Effect.forkScoped(logAir)).pipe(Layer.provideMerge(Channel));
+   const Air = Layer.effectDiscard(Effect.forkScoped(logAir)).pipe(Layer.provideMerge(ChannelLive));
    ```
 
 5. **The network edge.** The same channel runs live or offline; only the layers beneath it change.
@@ -268,8 +279,9 @@ minutes: no multi-hour session has run yet.
   [Playout concept](/reactor-effect-client/concepts/playout/).
 - **A start is a provider fact.** `Started` means H3 reported the clip started, not that a viewer
   saw a frame.
-- **Media needs decoded frames.** `playout.video` fails with `UnsupportedCapability` on a host with
-  only platform tracks, such as a browser. Run the channel on the native host.
+- **Media needs decoded frames.** `playout.video` fails with `SourceError` reason `Media` on a host
+  with only platform tracks, such as a browser. The original `UnsupportedCapability` is retained
+  in redacted `detail`. Run the channel on the native host.
 
 <Aside type="note">
   On 0.9.0 only the one-session `showreel` check (2026-10-01) has run on hosted Reactor; the renewal runs above are of

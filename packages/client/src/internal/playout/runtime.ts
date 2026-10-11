@@ -20,23 +20,24 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Tracer from "effect/Tracer";
 import type * as Playout from "../../Playout.js";
+import { Deadline } from "../deadline.js";
 import { currentParent, spanOptions } from "../trace.js";
-import { AcquisitionFailure, CommandFailure, ReactorError } from "../../ReactorError.js";
-import type { ReactorFailure } from "../../ReactorError.js";
-import { mayStillBill } from "../../Session.js";
-import type { CloseReport } from "../../Session.js";
 import {
+  CommandError,
   InvalidFiller,
   InvalidItem,
   ItemKey,
   KeyMismatch,
   LaneBusy,
   PlayoutClosed,
+  PlayoutStopped,
+  SourceError,
   WouldMissDeadline,
 } from "./errors.js";
 import type { SubmitError } from "./errors.js";
@@ -124,11 +125,35 @@ const fingerprint = (value: unknown): string =>
     return typeof field === "bigint" ? field.toString() : field;
   });
 
-export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequest>(
-  options: Playout.Options<R, Req>,
-  model: Playout.ClipModel<Req>,
-) {
+export const make = Effect.fnUntraced(function* <
+  R,
+  Req extends Playout.ClipRequest,
+  Report,
+  E extends { readonly message: string },
+>(options: Playout.Options<R, Req, Report, E>) {
+  const { model, evidence } = options;
+  type Failure = E | SourceError | PlayoutStopped | PlayoutClosed | InvalidFiller;
+  const timingMillis = (field: "seam" | "readinessMargin" | "commandRoundTrip") =>
+    Schema.decodeEffect(Deadline)(model.timing[field]).pipe(
+      Effect.map(Duration.toMillis),
+      Effect.mapError(() => new Error(`ClipModel.timing.${field} must be finite and non-negative`)),
+      Effect.orDie,
+    );
+  const continuedBuildFactor = yield* Schema.decodeEffect(
+    Schema.Finite.check(Schema.isGreaterThan(0)),
+  )(model.timing.continuedBuildFactor).pipe(
+    Effect.mapError(
+      () => new Error("ClipModel.timing.continuedBuildFactor must be finite and positive"),
+    ),
+    Effect.orDie,
+  );
   const config: Policy.Config<Req> = {
+    timing: {
+      seamMs: yield* timingMillis("seam"),
+      readinessMarginMs: yield* timingMillis("readinessMargin"),
+      commandMs: yield* timingMillis("commandRoundTrip"),
+      continuedBuildFactor,
+    },
     defaultSeconds: model.defaultSeconds,
     builtSeconds: model.builtSeconds,
     lanes: options.lanes.map((lane) => ({
@@ -189,28 +214,28 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
     new Map<
       string,
       {
-        readonly source: Playout.Source<Req>;
+        readonly source: Playout.Source<Req, Report>;
         readonly scope: Scope.Closeable;
         readonly lane: Queue.Queue<QueuedCommand<Req>>;
       }
     >(),
   );
-  const onAir = yield* SubscriptionRef.make<Playout.Source<Req> | undefined>(undefined);
+  const onAir = yield* SubscriptionRef.make<Playout.Source<Req, Report> | undefined>(undefined);
   // Counts the steps that changed the plan, so `forecasts` reads it again only after one.
   const revision = yield* SubscriptionRef.make(0);
   // Why the playout stopped; it dies with a defect that stopped it.
-  const failure = yield* Deferred.make<ReactorFailure | InvalidFiller>();
+  const failure = yield* Deferred.make<Failure>();
   /** Completes once the playout has stopped, however it stopped. */
   const stopped = Deferred.await(failure).pipe(Effect.exit);
   // Why the latest open failed while no open has succeeded since, and why the latest session was
   // lost: the error, or the defect when there was no error.
   const lastOpenError = yield* Ref.make<
-    Result.Result<ReactorFailure, Cause.Cause<never>> | undefined
+    Result.Result<E | PlayoutStopped, Cause.Cause<never>> | undefined
   >(undefined);
-  const lastLostError = yield* Ref.make<
-    Result.Result<ReactorError, Cause.Cause<never>> | undefined
-  >(undefined);
-  const cleanup = yield* Ref.make<Playout.Cleanup>({ sessions: 0, retained: [] });
+  const lastLostError = yield* Ref.make<Result.Result<SourceError, Cause.Cause<never>> | undefined>(
+    undefined,
+  );
+  const cleanup = yield* Ref.make<Playout.Cleanup<Report>>({ sessions: 0, retained: [] });
 
   const now = Effect.all({ mono: monotonic, wall: Clock.currentTimeMillis });
   const nextId = Ref.modify(ids, (id) => [id + 1, id + 1] as const);
@@ -275,18 +300,20 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
     return Effect.raceFirst(settled, done);
   };
 
-  const record = (report: CloseReport): Effect.Effect<void> =>
+  const record = (report: Report): Effect.Effect<void> =>
     Ref.update(cleanup, (value) => {
       const all = [...value.retained, report];
-      const settled = all.filter((entry) => !mayStillBill(entry)).slice(-retainedReports);
+      const risky = all.map(evidence.mayStillBill);
+      const settled = all.flatMap((_, index) => (risky[index] === true ? [] : [index]));
+      const keep = new Set(settled.slice(-retainedReports));
       return {
         sessions: value.sessions + 1,
-        retained: all.filter((entry) => mayStillBill(entry) || settled.includes(entry)),
+        retained: all.filter((_, index) => risky[index] === true || keep.has(index)),
       };
     });
 
   /** Closes `source` and records its report. A close that dies leaves none: it is reported. */
-  const closeRecorded = (source: Playout.Source<Req>): Effect.Effect<void> =>
+  const closeRecorded = (source: Playout.Source<Req, Report>): Effect.Effect<void> =>
     Effect.flatMap(Effect.exit(source.close), (closed) =>
       Exit.isSuccess(closed) ? record(closed.value) : reportDefects(closed.cause),
     );
@@ -307,9 +334,19 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
   /** What a command for a session already gone gets: it was never sent. */
   const gone = (command: Policy.Command<Req>): Policy.CommandResult => ({
     _tag: "Failed",
-    cause: CommandFailure.from(ReactorError.fromCode("InvalidState", "the session is gone"), {
-      operation: command._tag,
-      outcome: "not-submitted",
+    cause: CommandError.make({
+      reason: { _tag: "NotSubmitted", next: "await-change" },
+      operation: (
+        {
+          Enqueue: "enqueue",
+          Remove: "remove",
+          Move: "move",
+          Autoplay: "setAutoplay",
+          Stop: "stop",
+          Play: "play",
+        } satisfies Record<Policy.Command<Req>["_tag"], CommandError["operation"]>
+      )[command._tag],
+      message: "the session is gone",
     }),
   });
 
@@ -321,7 +358,7 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       const command = action.command;
       // A method that throws when called, rather than returning an effect, dies here as its
       // effect would have: its lane carries on.
-      const result = Effect.suspend((): Effect.Effect<string | void, CommandFailure> => {
+      const result = Effect.suspend((): Effect.Effect<string | void, CommandError> => {
         switch (command._tag) {
           case "Enqueue":
             return source.enqueue(command.request, command.tag, command.continueFrom);
@@ -371,10 +408,21 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
   const open = Effect.gen(function* () {
     const child = yield* Scope.fork(scope);
     const opened = yield* options.open.pipe(
+      Effect.catchCause((cause) =>
+        Effect.failCause(
+          Cause.map(cause, (error) => ({ error, evidence: evidence.failedOpen(error) })),
+        ),
+      ),
       Effect.timeoutOrElse({
         duration: openTimeout,
         orElse: () =>
-          Effect.fail(ReactorError.fromCode("Timeout", "opening a session took too long")),
+          Effect.fail({
+            error: PlayoutStopped.make({
+              reason: { _tag: "OpenTimeout" },
+              message: "opening a session took too long",
+            }),
+            evidence: undefined,
+          }),
       }),
       Effect.withSpan("Playout.open", spanOptions({ acquisition }), { captureStackTrace: false }),
       Scope.provide(child),
@@ -384,15 +432,19 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
     if (Exit.isFailure(opened)) {
       yield* closeScope(child, opened);
       const found = Cause.findError(opened.cause);
-      yield* Ref.set(lastOpenError, found);
+      yield* Ref.set(
+        lastOpenError,
+        Result.map(found, (failure) => failure.error),
+      );
       if (Result.isFailure(found)) yield* ErrorReporter.report(opened.cause);
       else yield* reportDefects(opened.cause);
-      const error = Result.getOrUndefined(found);
-      // A failed acquisition still reports what it allocated, and that may still bill. Any other
-      // failure, a timeout or a defect among them, may have allocated unseen.
-      const allocated = !AcquisitionFailure.is(error) || error.cleanup.allocation !== "none";
-      if (AcquisitionFailure.is(error) && allocated) yield* record(error.cleanup);
-      const retryAfter = error?.retryAfter;
+      const failed = Result.getOrUndefined(found);
+      const error = failed?.error;
+      // A timeout or defect may have allocated unseen; an adapter classifies its own failures.
+      const allocation = failed?.evidence;
+      const allocated = allocation?._tag !== "NotAllocated";
+      if (allocation?._tag === "Allocated") yield* record(allocation.report);
+      const retryAfter = allocation?.retryAfter;
       return yield* offer({
         _tag: "OpenFailed",
         reason: error?.message ?? "opening a session died",
@@ -407,10 +459,10 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       // the first. It is closed unused, and the playout fails, since opening again gives the same.
       yield* closeRecorded(source);
       yield* closeScope(child, Exit.void);
-      const duplicate = ReactorError.fromCode(
-        "InvalidState",
-        "an opened source's session id is already in use",
-      );
+      const duplicate = PlayoutStopped.make({
+        reason: { _tag: "SessionInUse" },
+        message: "an opened source's session id is already in use",
+      });
       yield* Ref.set(lastOpenError, Result.succeed(duplicate));
       return yield* offer({
         _tag: "OpenFailed",
@@ -424,10 +476,10 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
       // never counted; opening again gives the same source.
       yield* closeRecorded(source);
       yield* closeScope(child, Exit.void);
-      const mismatch = ReactorError.fromCode(
-        "InvalidState",
-        `an opened source runs ${source.model.name}, and this playout plans for ${model.name}`,
-      );
+      const mismatch = PlayoutStopped.make({
+        reason: { _tag: "ModelMismatch" },
+        message: `an opened source runs ${source.model.name}, and this playout plans for ${model.name}`,
+      });
       yield* Ref.set(lastOpenError, Result.succeed(mismatch));
       return yield* offer({
         _tag: "OpenFailed",
@@ -488,21 +540,27 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
    */
   const failureOf = Effect.fnUntraced(function* (
     action: Extract<Policy.Action<Req>, { _tag: "Fail" }>,
-  ): Effect.fn.Return<Result.Result<ReactorFailure | InvalidFiller, Cause.Cause<never>>> {
+  ): Effect.fn.Return<Result.Result<Failure, Cause.Cause<never>>> {
     switch (action.cause) {
       case "filler":
         return Result.succeed(InvalidFiller.make({ index: action.index, message: action.reason }));
       case "moderation":
-        return Result.succeed(ReactorError.fromCode("Moderated", action.reason));
+        return Result.succeed(
+          PlayoutStopped.make({ reason: { _tag: "Moderated" }, message: action.reason }),
+        );
       case "open":
         return (
           (yield* Ref.get(lastOpenError)) ??
-          Result.succeed(ReactorError.fromCode("InvalidState", action.reason))
+          Result.succeed(
+            PlayoutStopped.make({ reason: { _tag: "NoSession" }, message: action.reason }),
+          )
         );
       case "lost":
         return (
           (yield* Ref.get(lastLostError)) ??
-          Result.succeed(ReactorError.fromCode("InvalidState", action.reason))
+          Result.succeed(
+            PlayoutStopped.make({ reason: { _tag: "NoSession" }, message: action.reason }),
+          )
         );
     }
   });
@@ -642,7 +700,7 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
       yield* apply({ _tag: "Close" });
-      yield* Deferred.succeed(failure, ReactorError.fromCode("Closed", "the playout closed"));
+      yield* Deferred.succeed(failure, PlayoutClosed.make({}));
       for (const sessionId of (yield* Ref.get(sources)).keys()) yield* closeSource(sessionId);
     }),
   );
@@ -992,7 +1050,7 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
     return Policy.forecast(config, stoppedAlready ? { ...value, closed: true } : value, at);
   });
 
-  const service: Playout.Service<Req> = {
+  const service: Playout.Service<Req, Report, E> = {
     submit: Effect.fn("Playout.submit")(function* (item: Playout.ItemSpec<Req>) {
       const { results } = yield* edit([{ _tag: "Submit", item }], false);
       const [first] = results;

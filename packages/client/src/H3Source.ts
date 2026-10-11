@@ -21,7 +21,9 @@ import * as Source_ from "./internal/h3/source.js";
 import type { Opener } from "./Ledger.js";
 import type { Reactor, CreateOptions } from "./Reactor.js";
 import type { AcquisitionFailure } from "./ReactorError.js";
-import type { Session } from "./Session.js";
+import type { CloseReport, Session } from "./Session.js";
+
+export { evidence } from "./internal/h3/source.js";
 
 /** H3 Reference Turbo Realtime as the playout plans for it: its documented request limits. */
 export const model: ClipModel<H3.Request> = clipModel;
@@ -128,8 +130,11 @@ const h3: Source_.SourceModel<H3.Request, H3.Clip> = {
  */
 export const open = <E = never, R = never>(
   options: OpenOptions<E, R>,
-): Effect.Effect<Source, AcquisitionFailure, R | Reactor | Crypto.Crypto | Scope.Scope> =>
-  Source_.open(h3)(options);
+): Effect.Effect<
+  Source<H3.Request, CloseReport>,
+  AcquisitionFailure,
+  R | Reactor | Crypto.Crypto | Scope.Scope
+> => Source_.open(h3)(options);
 
 /**
  * Adopts a session `open` allocated, from its owner record and a token bound
@@ -141,8 +146,11 @@ export const open = <E = never, R = never>(
  */
 export const resume = (
   options: ResumeOptions,
-): Effect.Effect<Source, AcquisitionFailure, Reactor | Crypto.Crypto | Scope.Scope> =>
-  Source_.resume(h3)(options);
+): Effect.Effect<
+  Source<H3.Request, CloseReport>,
+  AcquisitionFailure,
+  Reactor | Crypto.Crypto | Scope.Scope
+> => Source_.resume(h3)(options);
 
 /**
  * A ledger opener for H3 sessions: `ledger.source(H3Source.opener({ tokens }))`. It opens with

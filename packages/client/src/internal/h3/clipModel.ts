@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import type { ClipModel, ClipTag } from "../../Playout.js";
 import type { ReactorError } from "../../ReactorError.js";
-import * as Tag from "../playout/tag.js";
+import * as Tag from "./playoutTag.js";
 import {
   alignFrames,
   h3ReferenceTurboRealtime,
@@ -69,5 +69,13 @@ export const clipModel: ClipModel<Request> = {
   defaultSeconds: requestSeconds.min,
   builtSeconds: (seconds) =>
     alignFrames(h3ReferenceTurboRealtime, seconds) / h3ReferenceTurboRealtime.fps,
+  // Hosted H3: 36 ms median seam (44 clips), 0.1–0.2 s for a command and state read.
+  // Continued 5 s clips built in 5.45 s, against 2.1–2.2 s for independent clips.
+  timing: {
+    seam: "40 millis",
+    readinessMargin: "250 millis",
+    commandRoundTrip: "200 millis",
+    continuedBuildFactor: 2.5,
+  },
   check,
 };

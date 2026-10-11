@@ -4,6 +4,44 @@
  */
 import * as Schema from "effect/Schema";
 
+/** A source command's dispatch outcome and what can make a later attempt useful. */
+export class CommandError extends Schema.TaggedError<CommandError>()("CommandError", {
+  reason: Schema.Union([
+    Schema.TaggedStruct("NotSubmitted", {
+      next: Schema.Literals(["retry", "await-change", "none"]),
+    }),
+    Schema.TaggedStruct("Replied", { next: Schema.Literals(["retry", "none"]) }),
+    Schema.TaggedStruct("Unknown", {}),
+  ]),
+  operation: Schema.Literals(["enqueue", "remove", "move", "setAutoplay", "stop", "play"]),
+  message: Schema.String,
+  /** Provider diagnostics are private and never decide a retry. */
+  detail: Schema.Defect().pipe(Schema.Redacted, Schema.optionalKey),
+}) {}
+
+/** A source was lost, its media failed, or its opening options were invalid. */
+export class SourceError extends Schema.TaggedError<SourceError>()("SourceError", {
+  reason: Schema.Union([
+    Schema.TaggedStruct("Lost", {}),
+    Schema.TaggedStruct("Media", {}),
+    Schema.TaggedStruct("InvalidInput", {}),
+  ]),
+  message: Schema.String,
+  detail: Schema.Defect().pipe(Schema.Redacted, Schema.optionalKey),
+}) {}
+
+/** A failure the playout itself produces, without interpreting a provider's errors. */
+export class PlayoutStopped extends Schema.TaggedError<PlayoutStopped>()("PlayoutStopped", {
+  reason: Schema.Union([
+    Schema.TaggedStruct("OpenTimeout", {}),
+    Schema.TaggedStruct("SessionInUse", {}),
+    Schema.TaggedStruct("ModelMismatch", {}),
+    Schema.TaggedStruct("Moderated", {}),
+    Schema.TaggedStruct("NoSession", {}),
+  ]),
+  message: Schema.String,
+}) {}
+
 export const ItemKey = Schema.NonEmptyString.pipe(Schema.brand("ItemKey"));
 export type ItemKey = typeof ItemKey.Type;
 

@@ -77,7 +77,8 @@ session and asks again until Reactor confirms it; `defaultApiUrl`.
 `documentedVersion`, `source`, `requestSeconds` and `canvases`; the `Request`, `Clip`, `Queue`
 and `State` Schemas; `Acceptance`, `Submission`, `ProviderSnapshot` and the clip's operation facts.
 Frames or clip ids supply a clip's opener and closer. `FastH3Source` opens and owns a session for
-the playout. See [FastH3](/reactor-effect-client/concepts/h3/#fasth3) and
+the playout, with `open`, `resume`, `opener`, `model` and `evidence`. See
+[FastH3](/reactor-effect-client/concepts/h3/#fasth3) and
 [Air FastH3 through the playout](/reactor-effect-client/guides/fasth3/).
 
 ### `ViduS2Avatar`
@@ -98,20 +99,25 @@ location. See [Loading references](/reactor-effect-client/concepts/h3/#loading-r
 
 ### `Playout`
 
-`reactor-effect-client/Playout`. The H3 `Playout` service, generic `Service<Req>`, `make`, `layer`
-and `lineup`; `Options`, `ModelOptions`, `ClipModel` and `ClipRequest`;
+`reactor-effect-client/Playout`. The provider-neutral `make` and `lineup`;
+`Service<Req, Report, E>`, `Options<R, Req, Report, E>`, `ClipModel` (including required planning
+`timing`) and `ClipRequest`;
 the item specs `ItemSpec`, `GroupSpec`, `InsertSpec`, `Edit`, `LaneSpec`, `Start`, `Window`,
 `Cue`, `PlaceProbe` and `Placement`; `ItemKey` (a branded Schema); the evidence `AsRunStatus`,
-`AsRunEvent`, `Settled`, `Event`, `SessionEvent` and `State`; the source contract `Source`,
-`SourceEvent` and `SourceState`; `Cleanup`; and the errors `InvalidItem`, `KeyMismatch`,
-`LaneBusy`, `WouldMissDeadline`, `PlayoutClosed` and `InvalidFiller`. See
+`AsRunEvent`, `Settled`, `Event`, `SessionEvent` and `State`; the source contract
+`Source<Req, Report>`, `SourceEvent` and `SourceState`; `Cleanup<Report>` and
+`Evidence<Report, E>`; and the errors `InvalidItem`, `KeyMismatch`, `LaneBusy`,
+`WouldMissDeadline`, `PlayoutClosed`, `InvalidFiller`, `CommandError`, `SourceError` and
+`PlayoutStopped`. `make` requires a model and evidence. Applications own their `Context.Service`
+tags and use `Layer.effect` to provide the playout. See
 [Playout](/reactor-effect-client/concepts/playout/).
 
 ### `H3Source` and `LocalSource`
 
-`reactor-effect-client/H3Source`: `open`, `resume`, `opener` (for a `Ledger`), `model`, the owner
-record `Allocation` (a Schema), `Allocated`, `OpenOptions` and `ResumeOptions`.
-`reactor-effect-client/LocalSource`: `open`, `Options`, `LocalClip`, `Rendered` and `Sink`. See
+`reactor-effect-client/H3Source`: `open`, `resume`, `opener` (for a `Ledger`), `model`, `evidence`,
+the owner record `Allocation` (a Schema), `Allocated`, `OpenOptions` and `ResumeOptions`.
+`reactor-effect-client/LocalSource`: `open` (with a required model), `evidence`, `Options`,
+`LocalClip`, `Rendered` and `Sink`; its source closes with `void`. See
 [Sources](/reactor-effect-client/concepts/sources/).
 
 ### `Ledger`

@@ -1,6 +1,5 @@
 import { Effect, Layer } from "effect";
 import { HttpRouter } from "effect/http";
-import { Playout } from "reactor-effect-client";
 import { Broadcast, ChannelMedia } from "./Broadcast.ts";
 import * as Channel from "./Channel.ts";
 import { Evidence } from "./Evidence.ts";
@@ -13,7 +12,7 @@ import { Settings } from "./Settings.ts";
 const Media = Layer.effect(
   ChannelMedia,
   Effect.gen(function* () {
-    const playout = yield* Playout.Playout;
+    const playout = yield* Channel.Channel;
     return ChannelMedia.of({ video: playout.video, audio: playout.audio });
   }),
 );

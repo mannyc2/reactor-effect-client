@@ -7,8 +7,8 @@
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { ClipTag } from "../../Playout.js";
-import { callerFits } from "../h3/state.js";
-import { ItemKey } from "./errors.js";
+import { callerFits } from "./state.js";
+import { ItemKey } from "../playout/errors.js";
 
 const Envelope = Schema.fromJsonString(
   Schema.Struct({ reactor_effect_h3: Schema.Literal(1), caller: Schema.String }),

@@ -20,6 +20,8 @@ if (path === undefined) throw new Error("example smoke requires the compiled Run
 // The consumer holds the staged example source beside this fixture.
 /** @type {typeof import("./packages/client/examples/src/Rundown.ts")} */
 const { Rundown } = await import(pathToFileURL(path).href);
+/** @type {typeof import("./packages/client/examples/src/Channel.ts")} */
+const { Channel } = await import(new URL("./Channel.js", pathToFileURL(path)).href);
 
 const webCrypto = Layer.sync(Crypto.Crypto, () =>
   Crypto.make({
@@ -48,7 +50,17 @@ const open = Effect.gen(function* () {
 });
 
 const simulated = Rundown.layer.pipe(
-  Layer.provideMerge(Playout.layer({ open, lanes: [{ name: "show" }] })),
+  Layer.provideMerge(
+    Layer.effect(
+      Channel,
+      Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
+        open,
+        lanes: [{ name: "show" }],
+      }),
+    ),
+  ),
   Layer.provideMerge(Reactor.layer()),
   Layer.provideMerge(CoordinatorClient.layer()),
   Layer.provideMerge(

@@ -11,7 +11,6 @@ import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { ReactorError } from "../ReactorError.js";
 
 /** A tuple or object form, which `Duration` reads without a Schema of its own. */
 const parts = <S extends Schema.Codec<Duration.Input, Duration.Input>>(form: S) =>
@@ -53,16 +52,3 @@ export const Deadline = Schema.Union([
       "a finite duration that is not negative",
   ),
 );
-
-/** A decoder of the option `name`: anything but a finite, non-negative duration is `InvalidInput`. */
-export const decode =
-  (name: string) =>
-  (input: Duration.Input): Effect.Effect<Duration.Duration, ReactorError> =>
-    Schema.decodeEffect(Deadline)(input).pipe(
-      Effect.mapError((cause) =>
-        ReactorError.fromCode("InvalidInput", `${name} is not a finite, non-negative duration`, {
-          outcome: "not-submitted",
-          detail: cause,
-        }),
-      ),
-    );

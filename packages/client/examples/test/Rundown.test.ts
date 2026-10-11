@@ -3,6 +3,7 @@
  * programme run in milliseconds, with no network and nothing paid. Faults stand
  * in for a failed build and a reply lost on its way back.
  */
+import { Channel } from "../src/Channel.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, layer } from "@effect/vitest";
 import { Effect, Layer } from "effect";
@@ -30,7 +31,17 @@ const open = Effect.gen(function* () {
 });
 
 const simulated = Rundown.layer.pipe(
-  Layer.provideMerge(Playout.layer({ open, lanes: [{ name: "show" }] })),
+  Layer.provideMerge(
+    Layer.effect(
+      Channel,
+      Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
+        open,
+        lanes: [{ name: "show" }],
+      }),
+    ),
+  ),
   Layer.provideMerge(Reactor.layer()),
   Layer.provideMerge(CoordinatorClient.layer()),
   Layer.provideMerge(
