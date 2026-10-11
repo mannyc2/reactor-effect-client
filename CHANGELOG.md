@@ -74,6 +74,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The session and cost-control guidance no longer promises that Reactor ends a dropped session after 30 seconds. Reactor documents that deadline, but a hosted session whose owner was killed stayed live past 60 seconds and was billed until the API key ended it. End sessions explicitly and cap them.
 - The cost-control guide records and ends sessions with the `Ledger`, in place of its hand-written owner records and start-up pass, and the livestream example opens its sessions through the ledger, kept in `ledger-<mode>.json` in place of `allocations.jsonl`.
 - The H3 guide loads references with `References`, and the terminal, avatar and native capture examples read theirs through it; the capture example refuses a bad image before it mints a token.
+- The browser examples add a character page: one voice from `SpeechModel`, streamed by a server that keeps the provider key, heard on its own or spoken by a persistent Live2D character whose mouth follows what Web Audio plays. A line ends when it has been heard, and Say or Stop interrupts it at once. The Live2D adapter builds against a Cubism SDK for Web each user supplies; no Core or model ships here.
 
 ## [0.10.0] - 2026-10-02
 

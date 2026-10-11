@@ -11,22 +11,23 @@ example has run there yet, though paid checks ran most of the SDK they use
 bun install && bun run build      # once, at the repository root
 ```
 
-| Example                                   | What it shows                                                                                                                                               | Without a key         |
-| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| [Quickstart](./quickstart)                | One H3 clip from prompt to its end, with its frames decoded in your process, in one file                                                                    | runs on `ReactorTest` |
-| [Terminal viewer](./terminal)             | H3 drawn in your terminal as 24-bit colour text from decoded frames, with every clip followed to its end: no browser anywhere                               | runs on `ReactorTest` |
-| [Avatar](./avatar)                        | A Vidu S2-Avatar character made from a photo: one call with a greeting and an answer to `say`, its picture decoded in your process, both sides' transcripts | runs on `ReactorTest` |
-| [Live channel](./livestream)              | Your own 24/7 AI channel: viewers prompt it, a house rotation fills the gaps, sessions renew with no dark air, many browsers watch, RTMP restreaming        | runs on `ReactorTest` |
-| [H3 Studio](../packages/browser/examples) | A page that runs its own session: H3's queue live, references, each clip's lifecycle, failures with their dispatch outcome                                  | runs in the browser   |
-| [Capture](../packages/native/examples)    | A command line that writes one clip's decoded frames and audio to an MP4                                                                                    | live only             |
-| [Rundown](../packages/client/examples)    | An application service over `Playout`, run and tested offline on the test clock                                                                             | runs on `ReactorTest` |
+| Example                                                  | What it shows                                                                                                                                               | Without a key         |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| [Quickstart](./quickstart)                               | One H3 clip from prompt to its end, with its frames decoded in your process, in one file                                                                    | runs on `ReactorTest` |
+| [Terminal viewer](./terminal)                            | H3 drawn in your terminal as 24-bit colour text from decoded frames, with every clip followed to its end: no browser anywhere                               | runs on `ReactorTest` |
+| [Avatar](./avatar)                                       | A Vidu S2-Avatar character made from a photo: one call with a greeting and an answer to `say`, its picture decoded in your process, both sides' transcripts | runs on `ReactorTest` |
+| [Live channel](./livestream)                             | Your own 24/7 AI channel: viewers prompt it, a house rotation fills the gaps, sessions renew with no dark air, many browsers watch, RTMP restreaming        | runs on `ReactorTest` |
+| [H3 Studio](../packages/browser/examples)                | A page that runs its own session: H3's queue live, references, each clip's lifecycle, failures with their dispatch outcome                                  | runs in the browser   |
+| [Character](../packages/browser/examples#character-page) | One voice from a streaming speech model, heard on its own or spoken by a persistent Live2D character whose mouth follows playback                           | plays local audio     |
+| [Capture](../packages/native/examples)                   | A command line that writes one clip's decoded frames and audio to an MP4                                                                                    | live only             |
+| [Rundown](../packages/client/examples)                   | An application service over `Playout`, run and tested offline on the test clock                                                                             | runs on `ReactorTest` |
 
 Offline, the simulated H3 sends a flat colour per clip, so what you see is the SDK at work rather
 than the model's picture. H3 Studio's offline build runs in the
 [playground](https://mannyc2.github.io/reactor-effect-client/playground/) on the documentation site.
 The [examples page](https://mannyc2.github.io/reactor-effect-client/examples/) walks through each.
 
-The [streaming speech example](../packages/client/examples#streaming-speech) consumes a provider-neutral speech service backed by Cartesia. It saves arriving PCM blocks and reports time to first audio, with explicit credentials, model and voice.
+The [streaming speech example](../packages/client/examples#streaming-speech) consumes a provider-neutral speech service backed by Cartesia. It saves arriving PCM blocks and reports time to first audio, with explicit credentials, model and voice. The [character page](../packages/browser/examples#character-page) plays the same service in a browser, through a server that keeps the key.
 
 ## Which shape fits
 

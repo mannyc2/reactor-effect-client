@@ -7,10 +7,14 @@
   "include": [
     "src/app.ts",
     "src/playground.ts",
+    "src/character.ts",
     "src/Api.ts",
+    "src/Avatar.ts",
     "src/Live.ts",
     "src/Offline.ts",
     "src/Page.ts",
+    "src/Speaker.ts",
+    "src/Speech.ts",
     "src/Stage.ts",
     "src/Studio.ts",
     "src/WebCrypto.ts"
