@@ -18,7 +18,7 @@ import {
 import { CubismMatrix44 } from "../cubism/Framework/src/math/cubismmatrix44";
 import type { ACubismMotion } from "../cubism/Framework/src/motion/acubismmotion";
 import { CubismUserModel } from "../cubism/Framework/src/model/cubismusermodel";
-import type { Adapter, Character } from "../src/Avatar.ts";
+import type { Adapter, Live2DModel } from "../src/Avatar.ts";
 
 /** The motion group a model's idle motions are filed under, by Cubism's convention. */
 const idleGroup = "Idle";
@@ -165,7 +165,7 @@ class Model extends CubismUserModel {
   }
 }
 
-export const load: Adapter["load"] = async (options): Promise<Character> => {
+export const load: Adapter["load"] = async (options): Promise<Live2DModel> => {
   if (!CubismFramework.isStarted()) {
     const settings = new FrameworkOption();
     settings.logFunction = (message: string) => console.warn(message);
