@@ -38,21 +38,25 @@ capabilities and compose their providers with Effect Layers:
 
 | Capability                | Implementation                                              | Output                                            |
 | ------------------------- | ----------------------------------------------------------- | ------------------------------------------------- |
-| Streaming text to speech  | `SpeechModel` with `CartesiaSpeech`                         | PCM audio blocks as they arrive                   |
+| Streaming text to speech  | `SpeechModel` with `CartesiaSpeech` or `OpenRouterSpeech`   | PCM audio blocks as they arrive                   |
+| Browser speech playback   | `AudioPlayback` with `BrowserAudio`                         | Audible PCM, output level, and an audio track     |
+| Persistent characters     | `Character` with `BrowserCharacter` and your renderer       | Audio-driven animation and a captured video track |
 | Generated video and audio | Reactor's `H3`, `FastH3`, and `ViduS2Avatar`                | Session media and model-specific controls         |
 | Scheduled production      | `Playout` with `H3Source`, `FastH3Source`, or `LocalSource` | Ordered clips, media streams, and as-run evidence |
 
-`CartesiaSpeech.model` uses Effect 4.0's native `effect/ai/Model`: an ordinary Layer with provider
+The speech adapters use Effect 4.0's native `effect/ai/Model`: an ordinary Layer with provider
 and model identity. The application consumes `SpeechModel`, so it can supply another speech
 implementation without changing its audio consumer. No Reactor session or native addon is needed
 for HTTP speech generation.
 
 Generation and presentation have different lifetimes. Streaming speech can emit audio before its
-length is known. `Playout` schedules finite clips with known or estimated lengths; the experiment
-does not yet schedule an unfinished speech stream. Applications own playback, mixing, editorial
-priority, and proof that an audience received the output. Placement, admission and deadline decisions
-forecast an unbuilt clip from past clips with the same requested length, or the model's estimate.
-Those decisions can be wrong when content determines duration, as with speech.
+length is known. `BrowserAudio` plays that stream immediately; `BrowserCharacter` drives an
+application's renderer from the audio actually playing. Their browser tracks can be recorded or
+published by the application. `Playout` schedules finite clips with known or estimated lengths;
+it does not schedule an unfinished speech stream or a persistent character. Applications own
+mixing, editorial priority, and proof that an audience received the output. Placement, admission
+and deadline decisions forecast an unbuilt clip from past clips with the same requested length,
+or the model's estimate. Those decisions can be wrong when content determines duration, as with speech.
 
 `Playout.make` requires an explicit model and cleanup evidence: `H3Source.model` with
 `H3Source.evidence`, `FastH3Source.model` with `FastH3Source.evidence`, or a renderer's model with
@@ -63,6 +67,9 @@ and construct it with `Layer.effect`; provider reports and open failures keep th
 The [speech example](./packages/client/examples#streaming-speech) saves incoming PCM and reports
 time to first audio. The Cartesia adapter follows its documented bytes API; hosted speech quality
 and latency have not been qualified. The existing Reactor evidence below remains provider-specific.
+The [character page](./packages/browser/examples#character-page) consumes the library's browser
+playback and animation APIs, with OpenRouter speech or a local audio file and an optional Live2D
+character. Its server, Cubism loader, model assets and UI belong to the example.
 
 ## Try it in a minute, no API key
 
@@ -131,25 +138,26 @@ The hosted figures come from paid runs between 2026-09-24 and 2026-10-01, on the
 
 ## Examples
 
-| Example                                  | What it shows                                                                                                                                                                                        | Without a key         |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| [Quickstart](./examples/quickstart)      | One clip from prompt to its end, with its frames decoded, in one file                                                                                                                                | runs on `ReactorTest` |
-| [Terminal viewer](./examples/terminal)   | H3 drawn in your terminal from decoded frames: no browser anywhere                                                                                                                                   | runs on `ReactorTest` |
-| [Avatar](./examples/avatar)              | A Vidu S2-Avatar character made from a photo: one call, its picture decoded in your process, both sides' transcripts                                                                                 |
-| [Live channel](./examples/livestream)    | Your own 24/7 AI channel: viewers prompt it, filler covers the gaps, sessions renew with no dark air, many browsers watch; needs ffmpeg, and can restream over RTMP (tried against a local listener) | runs on `ReactorTest` |
-| [H3 Studio](./packages/browser/examples) | A page that runs its own session over WebRTC: H3's queue live, references, each clip's lifecycle                                                                                                     | runs in the browser   |
-| [Capture](./packages/native/examples)    | A command line that writes a clip's decoded frames and audio to an MP4                                                                                                                               | paid only             |
-| [Rundown](./packages/client/examples)    | An application service over `Playout`, tested offline on the test clock                                                                                                                              | runs on `ReactorTest` |
+| Example                                                      | What it shows                                                                                                                                                                                        | Without a key            |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| [Quickstart](./examples/quickstart)                          | One clip from prompt to its end, with its frames decoded, in one file                                                                                                                                | runs on `ReactorTest`    |
+| [Terminal viewer](./examples/terminal)                       | H3 drawn in your terminal from decoded frames: no browser anywhere                                                                                                                                   | runs on `ReactorTest`    |
+| [Avatar](./examples/avatar)                                  | A Vidu S2-Avatar character made from a photo: one call, its picture decoded in your process, both sides' transcripts                                                                                 |
+| [Live channel](./examples/livestream)                        | Your own 24/7 AI channel: viewers prompt it, filler covers the gaps, sessions renew with no dark air, many browsers watch; needs ffmpeg, and can restream over RTMP (tried against a local listener) | runs on `ReactorTest`    |
+| [H3 Studio](./packages/browser/examples)                     | A page that runs its own session over WebRTC: H3's queue live, references, each clip's lifecycle                                                                                                     | runs in the browser      |
+| [Character page](./packages/browser/examples#character-page) | Streaming speech through library playback, heard alone or with a persistent Live2D character                                                                                                         | plays a local audio file |
+| [Capture](./packages/native/examples)                        | A command line that writes a clip's decoded frames and audio to an MP4                                                                                                                               | paid only                |
+| [Rundown](./packages/client/examples)                        | An application service over `Playout`, tested offline on the test clock                                                                                                                              | runs on `ReactorTest`    |
 
 The [streaming speech example](./packages/client/examples#streaming-speech) uses a separate TTS provider and needs explicit Cartesia credentials, model and voice.
 
 ## Packages
 
-| Package                                        | What it gives you                                                                                                                                                                                       | Runs in                |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
-| [`reactor-effect-client`](./packages/client)   | `SpeechModel` and `CartesiaSpeech`, `Reactor` and `Session`, `CoordinatorClient` and tokens, `H3`, `FastH3`, `ViduS2Avatar`, `Playout` with `H3Source`, `FastH3Source` and `LocalSource`, `ReactorTest` | Node, Bun and browsers |
-| [`reactor-effect-browser`](./packages/browser) | `BrowserPeer` on the browser's `RTCPeerConnection`, and `BrowserMedia` for the session's tracks                                                                                                         | Browsers               |
-| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a Node-API addon over Reactor's `reactor-webrtc` crate, prebuilt for Linux x64 (glibc) and macOS on Apple silicon                                                                       | Node and Bun           |
+| Package                                        | What it gives you                                                                                                                                                                                          | Runs in                |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| [`reactor-effect-client`](./packages/client)   | `SpeechModel`, `CartesiaSpeech`, `OpenRouterSpeech`, `AudioPlayback` and `Character`; `Reactor`, `Session`, `CoordinatorClient`, `H3`, `FastH3`, `ViduS2Avatar`, `Playout`, its sources, and `ReactorTest` | Node, Bun and browsers |
+| [`reactor-effect-browser`](./packages/browser) | `BrowserAudio` for PCM playback, `BrowserCharacter` for animation and canvas capture, `BrowserPeer` for WebRTC, and `BrowserMedia` for session tracks                                                      | Browsers               |
+| [`reactor-effect-native`](./packages/native)   | `NativePeer` on a Node-API addon over Reactor's `reactor-webrtc` crate, prebuilt for Linux x64 (glibc) and macOS on Apple silicon                                                                          | Node and Bun           |
 
 ```sh
 npm install --save-exact reactor-effect-client effect@4.0.0

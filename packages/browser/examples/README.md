@@ -84,8 +84,8 @@ The server's endpoint is for a local demo. A real deployment authenticates and r
 ## Character page
 
 `/character` on the same server: one voice, heard on its own or spoken by a Live2D character.
-Both modes use the same speech model and the same playback; the character only adds a picture that
-follows what is heard.
+Both modes use the same speech model and the library's `BrowserAudio` playback; the character adds
+an application renderer driven by `BrowserCharacter`, following what is heard.
 
 ```sh
 OPENROUTER_API_KEY=… OPENROUTER_SPEECH_MODEL=… OPENROUTER_SPEECH_VOICE=… bun run start
@@ -105,9 +105,10 @@ browser can decode through the same playback, with no provider and no cost.
   endpoint, so the key stays on the server. A line has at most 500 characters. Saying one calls
   OpenRouter and uses the selected model's pricing. Interrupting a line releases its request on
   the server; that does not prove the provider stopped generating or billing it.
-- **Playback.** `Speaker` schedules each block on a Web Audio context as it arrives, at most one
-  second ahead of the output, so a line generated faster than real time waits in its stream (and in
-  network buffers) rather than piling up in the audio graph. A line arriving slower than real time
+- **Playback.** `BrowserAudio.make` acquires the library's scoped Web Audio output. It schedules
+  each block as it arrives, at most one second ahead of the output, so a line generated faster than
+  real time waits in its stream (and in network buffers) rather than piling up in the audio graph.
+  A line arriving slower than real time
   plays with gaps. A line ends when the output has played its last block, not when its response
   ends, and interrupting it silences everything it scheduled at once.
 - **Character.** The model is the page's, not the line's: it loads once and keeps its idle motion,
@@ -115,7 +116,16 @@ browser can decode through the same playback, with no provider and no cost.
   playing, read from an analyser on each animation frame, so it opens with the sound you hear rather
   than with the network, and closes when the sound stops, however the line ended. Audio only releases
   the character; leaving the page interrupts the line and releases both. A line has no known length
-  and the character never ends, so neither is a `Playout` clip.
+  and the character never ends, so neither is a `Playout` clip. `Avatar` adapts the loaded model to
+  the client's `Character.Renderer`; `BrowserCharacter.animate` owns the animation cadence and
+  mouth smoothing, and returns render or playback failures to the page.
+
+The reusable contracts live in `reactor-effect-client` and their browser implementations in
+`reactor-effect-browser`. This page owns its UI, local audio decoder, speech endpoint, credential
+configuration and Cubism loader. Other applications can use the same library APIs with a different
+speech provider or renderer. `BrowserAudio` also exposes its scoped audio track, and
+`BrowserCharacter.capture` acquires a canvas video track, for application recording or publishing;
+this page's controls demonstrate local playback.
 
 ### Live2D setup
 
@@ -144,16 +154,15 @@ beside `Framework/`) and WebGL 2, and targets SDK 5-r.5. Core loads before the F
 initialised. Automated package checks do not download the SDK or a model; rendering can be
 checked locally with Hiyori and the page's audio-file control.
 
-| File                   | What it is                                                                                 |
-| ---------------------- | ------------------------------------------------------------------------------------------ |
-| `src/character.ts`     | The character page: its controls, the line playing, the mode, and the level meter          |
-| `src/Speech.ts`        | The page's `SpeechModel`, over the server's speech endpoint                                |
-| `src/Speaker.ts`       | Web Audio playback of PCM blocks, bounded and interruptible, and the level of the output   |
-| `src/Avatar.ts`        | The character's lifetime and frame loop, its mouth, and the adapter contract it implements |
-| `live2d/adapter.ts`    | Loads Cubism Core before importing the model renderer                                      |
-| `live2d/model.ts`      | The model, motions, textures and rendering over the Cubism SDK's Framework                 |
-| `tsconfig.live2d.json` | Compiles the adapter with the Framework's looser settings                                  |
-| `web/character.html`   | The page and its styles                                                                    |
+| File                   | What it is                                                                                                |
+| ---------------------- | --------------------------------------------------------------------------------------------------------- |
+| `src/character.ts`     | The character page: its controls, the line playing, the mode, and the level meter                         |
+| `src/Speech.ts`        | The page's `SpeechModel`, over the server's speech endpoint                                               |
+| `src/Avatar.ts`        | Loads and scopes the Cubism model, adapts it to `Character.Renderer`, and runs `BrowserCharacter.animate` |
+| `live2d/adapter.ts`    | Loads Cubism Core before importing the model renderer                                                     |
+| `live2d/model.ts`      | The model, motions, textures and rendering over the Cubism SDK's Framework                                |
+| `tsconfig.live2d.json` | Compiles the adapter with the Framework's looser settings                                                 |
+| `web/character.html`   | The page and its styles                                                                                   |
 
 `bun run check:examples` bundles the character page with the Studio and checks it reaches neither
 Node nor native code. The adapter is outside the repository's typecheck and lint, since it needs the
