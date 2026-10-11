@@ -234,10 +234,60 @@ const build = Effect.fnUntraced(function* <
   const scope = yield* Effect.scope;
   const crypto = yield* Crypto.Crypto;
   const limits = {
-    command: yield* Deadline.decode("H3 replyTimeout")(options.replyTimeout ?? "15 seconds"),
-    upload: yield* Deadline.decode("H3 uploadTimeout")(options.uploadTimeout ?? "60 seconds"),
-    setup: yield* Deadline.decode("H3 setupTimeout")(options.setupTimeout ?? "60 seconds"),
-    reconcile: yield* Deadline.decode("H3 reconcileWindow")(options.reconcileWindow ?? "5 seconds"),
+    command: yield* Schema.decodeEffect(Deadline.Deadline)(
+      options.replyTimeout ?? "15 seconds",
+    ).pipe(
+      Effect.mapError((cause) =>
+        ReactorError.fromCode(
+          "InvalidInput",
+          "H3 replyTimeout is not a finite, non-negative duration",
+          {
+            outcome: "not-submitted",
+            detail: cause,
+          },
+        ),
+      ),
+    ),
+    upload: yield* Schema.decodeEffect(Deadline.Deadline)(
+      options.uploadTimeout ?? "60 seconds",
+    ).pipe(
+      Effect.mapError((cause) =>
+        ReactorError.fromCode(
+          "InvalidInput",
+          "H3 uploadTimeout is not a finite, non-negative duration",
+          {
+            outcome: "not-submitted",
+            detail: cause,
+          },
+        ),
+      ),
+    ),
+    setup: yield* Schema.decodeEffect(Deadline.Deadline)(options.setupTimeout ?? "60 seconds").pipe(
+      Effect.mapError((cause) =>
+        ReactorError.fromCode(
+          "InvalidInput",
+          "H3 setupTimeout is not a finite, non-negative duration",
+          {
+            outcome: "not-submitted",
+            detail: cause,
+          },
+        ),
+      ),
+    ),
+    reconcile: yield* Schema.decodeEffect(Deadline.Deadline)(
+      options.reconcileWindow ?? "5 seconds",
+    ).pipe(
+      Effect.mapError((cause) =>
+        ReactorError.fromCode(
+          "InvalidInput",
+          "H3 reconcileWindow is not a finite, non-negative duration",
+          {
+            outcome: "not-submitted",
+            detail: cause,
+          },
+        ),
+      ),
+    ),
   };
   // A provider attaches to an already connected session. It neither allocates
   // nor connects it, and never takes ownership of its remote lifetime.

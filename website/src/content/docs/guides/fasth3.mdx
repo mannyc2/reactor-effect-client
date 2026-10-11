@@ -40,16 +40,18 @@ explains allocation records and supervision.
 
 ## A FastH3 playout
 
-Give `Playout.make` both the FastH3 model and opener. To make it a service, declare a tag for the
+Give `Playout.make` the FastH3 model, evidence and opener. To make it a service, declare a tag for the
 FastH3 request type and construct it with `Layer.effect`:
 
 ```ts
 import { Context, Effect, Layer } from "effect";
 import { CoordinatorClient, FastH3, FastH3Source, Playout } from "reactor-effect-client";
+import type { ReactorError, Session } from "reactor-effect-client";
 
-class Channel extends Context.Service<Channel, Playout.Service<FastH3.Request>>()(
-  "app/FastH3Channel",
-) {}
+class Channel extends Context.Service<
+  Channel,
+  Playout.Service<FastH3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>
+>()("app/FastH3Channel") {}
 
 const ChannelLive = Layer.effect(
   Channel,
@@ -61,6 +63,7 @@ const ChannelLive = Layer.effect(
     });
     return yield* Playout.make({
       model: FastH3Source.model,
+      evidence: FastH3Source.evidence,
       open: FastH3Source.open({ tokens }),
       lanes: [{ name: "main" }],
     });
@@ -80,12 +83,15 @@ const submitClip = Effect.gen(function* () {
 Compose `ChannelLive` with the coordinator, Reactor and host layers at the application's entry
 point, as in [the channel guide](/reactor-effect-client/guides/channel/). Read the channel's
 `events`, `video` and `audio` through your `Channel` tag. Closing the layer ends the channel and
-its sessions. `Playout.Playout` and `Playout.layer` remain the H3 service; a FastH3 channel uses
-its own tag as above.
+its sessions. Every application owns its service tag, including H3 channels.
 
 Playout sends an item without `seconds` at 5.167 seconds, FastH3's rounded minimum of 124 frames
 at 24 fps. Calling the provider or source directly with no `seconds` preserves the session's
 length setting, initially 14.375 seconds.
+
+`FastH3Source.model.timing` uses a 40 ms seam, 250 ms readiness margin, 200 ms command round trip
+and 2.5 continued-build factor. These planning values are inherited from H3, not measured on
+FastH3. The model's finite duration forecast does not establish a generated stream's final length.
 
 ## Continuation and renewal
 
@@ -103,8 +109,8 @@ built-only rule applies to automatically chosen playout hints.
 The source checks a hint against its latest lists before dispatch. If it is already missing,
 the source omits it from the single submission and annotates the current span with
 `reactor.continuation: "dropped"`. If the source clip disappears between that check and the send,
-the provider's actual failure and dispatch outcome are returned unchanged. No enqueue-failure
-handler refreshes the lists or sends another enqueue.
+the source maps the provider's actual failure to `Playout.CommandError`, retaining its dispatch
+outcome and the original failure in redacted `detail`. No enqueue-failure handler refreshes the lists or sends another enqueue.
 
 ## Offline and hosted evidence
 

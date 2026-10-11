@@ -1,5 +1,5 @@
 /**
- * Plays a schedule of clips to air across Reactor sessions. Applications submit
+ * Plays a schedule of finite clips to air across scoped sources. Applications submit
  * keyed items into priority lanes; one plan decides what to build, in what
  * order, what to withdraw, and when a renewing session takes over; each
  * session only executes its window of that plan. What actually aired is
@@ -11,35 +11,35 @@
  * effect, such as `H3Source.open`, so the same plan runs on paid H3, a local
  * renderer (`LocalSource`) or the simulated Reactor in `ReactorTest`.
  */
-import * as Context from "effect/Context";
 import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import { dual } from "effect/Function";
-import * as Layer from "effect/Layer";
 import type * as Redacted from "effect/Redacted";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
-import type { Request } from "./H3.js";
 import type {
+  CommandError,
   InvalidFiller,
   InvalidItem,
   ItemKey,
   PlayoutClosed,
+  PlayoutStopped,
+  SourceError,
   SubmitError,
 } from "./internal/playout/errors.js";
-import { clipModel } from "./internal/h3/clipModel.js";
 import * as Runtime from "./internal/playout/runtime.js";
 import type { AudioFrame, MediaPressure, VideoFrame } from "./Media.js";
-import type { CommandFailure, ReactorError, ReactorFailure } from "./ReactorError.js";
-import type { CloseReport } from "./Session.js";
 
 export {
+  CommandError,
   InvalidFiller,
   InvalidItem,
   ItemKey,
   KeyMismatch,
   LaneBusy,
   PlayoutClosed,
+  PlayoutStopped,
+  SourceError,
   WouldMissDeadline,
 } from "./internal/playout/errors.js";
 export type { SubmitError } from "./internal/playout/errors.js";
@@ -132,9 +132,9 @@ export interface Window {
   readonly firm: boolean;
 }
 
-interface ClipSpec<Req extends ClipRequest = Request> {
+interface ClipSpec<Req extends ClipRequest> {
   readonly key: ItemKey;
-  /** `request.seconds` is the requested length; the playout asks for its model's default length without it, H3's by default. */
+  /** `request.seconds` is the requested length; the playout asks for its model's default length without it. */
   readonly request: Req;
   readonly cues?: ReadonlyArray<Cue> | undefined;
   /**
@@ -152,7 +152,7 @@ interface ClipSpec<Req extends ClipRequest = Request> {
 export interface PlaceProbe {
   /** The key it will be submitted under; a refusal names it. */
   readonly key: ItemKey;
-  /** The requested length; the model's default length when absent, H3's by default. */
+  /** The requested length; the model's default length when absent. */
   readonly seconds?: number | undefined;
   /** As it will be submitted: `"previous"` projects a continued build. */
   readonly continuity?: "previous" | undefined;
@@ -332,7 +332,7 @@ export const forecastGroup: {
   return { startsAt: first.startsAt, endsAt: last.endsAt, parts, drops };
 });
 
-export interface ItemSpec<Req extends ClipRequest = Request> extends ClipSpec<Req> {
+export interface ItemSpec<Req extends ClipRequest> extends ClipSpec<Req> {
   readonly lane: string;
   readonly window?: Window | undefined;
   readonly start?: Start | undefined;
@@ -363,9 +363,9 @@ export interface ItemSpec<Req extends ClipRequest = Request> extends ClipSpec<Re
   readonly follows?: ClipTag | undefined;
 }
 
-export type GroupPart<Req extends ClipRequest = Request> = ClipSpec<Req>;
+export type GroupPart<Req extends ClipRequest> = ClipSpec<Req>;
 
-export interface GroupSpec<Req extends ClipRequest = Request> {
+export interface GroupSpec<Req extends ClipRequest> {
   readonly key: ItemKey;
   readonly lane: string;
   /**
@@ -390,7 +390,7 @@ export interface GroupSpec<Req extends ClipRequest = Request> {
  * boundary. Before one, it does, unless the anchor was judged by `readyBy` and
  * kept already: then it airs at the next boundary too.
  */
-export interface InsertSpec<Req extends ClipRequest = Request> extends ClipSpec<Req> {
+export interface InsertSpec<Req extends ClipRequest> extends ClipSpec<Req> {
   readonly before?: ItemKey | undefined;
   readonly after?: ItemKey | undefined;
   readonly window?: Window | undefined;
@@ -425,7 +425,7 @@ export interface InsertSpec<Req extends ClipRequest = Request> extends ClipSpec<
 }
 
 /** The clip that takes a queued item's place, under a key of its own. */
-export type ReplacementSpec<Req extends ClipRequest = Request> = ClipSpec<Req>;
+export type ReplacementSpec<Req extends ClipRequest> = ClipSpec<Req>;
 
 /**
  * A group placed right before or after an anchor, as `insert` places a clip: give exactly one of
@@ -435,7 +435,7 @@ export type ReplacementSpec<Req extends ClipRequest = Request> = ClipSpec<Req>;
  * such a place, so it is refused with `InvalidItem` in any other. Its anchor and side are part of
  * it: sent again under its key with another, it is refused with `KeyMismatch`.
  */
-export type InsertGroupSpec<Req extends ClipRequest = Request> = {
+export type InsertGroupSpec<Req extends ClipRequest> = {
   readonly key: ItemKey;
   readonly parts: readonly [GroupPart<Req>, ...ReadonlyArray<GroupPart<Req>>];
   /** It applies to the first part. */
@@ -446,7 +446,7 @@ export type InsertGroupSpec<Req extends ClipRequest = Request> = {
 );
 
 /** One edit of a batch applied together. */
-export type Edit<Req extends ClipRequest = Request> =
+export type Edit<Req extends ClipRequest> =
   | { readonly _tag: "Submit"; readonly item: ItemSpec<Req> }
   | { readonly _tag: "SubmitGroup"; readonly group: GroupSpec<Req> }
   | { readonly _tag: "Insert"; readonly insert: InsertSpec<Req> }
@@ -473,7 +473,7 @@ export type FailureReason =
    * session reports has changed, as after a reconnect; refused again while the
    * session reports itself ready, it fails here.
    */
-  | { readonly _tag: "Command"; readonly cause: CommandFailure }
+  | { readonly _tag: "Command"; readonly cause: CommandError }
   /** Its session was lost while it played, or before it was built on two sessions in a row. */
   | { readonly _tag: "Lost"; readonly sessionId: string }
   /** Content moderation ended its session over it; it is never built again. */
@@ -826,13 +826,24 @@ export interface ClipRequest {
  * is counted at. A source states the model it runs, and the playout refuses a
  * source whose model has another name than its own.
  */
-export interface ClipModel<Req extends ClipRequest = Request> {
+export interface ClipModel<Req extends ClipRequest> {
   /** Names the model in refusals; two different models must not share a name. */
   readonly name: string;
   /** The lengths a request may ask for, in seconds: filler's default `lengths` and `place`'s bounds. */
   readonly lengths: { readonly min: number; readonly max: number };
   /** The length a request without `seconds` is sent and planned at. */
   readonly defaultSeconds: number;
+  /** Planning estimates, fixed when the playout is made. */
+  readonly timing: {
+    /** Expected gap from a clip ending to the next starting. */
+    readonly seam: Duration.Input;
+    /** How far before a boundary a clip must be Ready to be moved ahead. */
+    readonly readinessMargin: Duration.Input;
+    /** A command and its following state read, reserved in placement estimates. */
+    readonly commandRoundTrip: Duration.Input;
+    /** Continued build cost relative to independent builds until measured; finite and positive. */
+    readonly continuedBuildFactor: number;
+  };
   /**
    * The length the model builds for a request of `seconds` within `lengths`: H3 and FastH3 align
    * it up to their frame grid. The playout counts a clip not built yet at this length and measures
@@ -849,7 +860,12 @@ export interface ClipModel<Req extends ClipRequest = Request> {
 
 /**
  * One session as the playout drives it: its evidence, its commands and its
- * media. What the playout relies on:
+ * media. Clips must be finite. For an unbuilt clip the plan estimates its aired
+ * length from the last clip requesting the same length, or from the model's
+ * built length before that is measured. Content-dependent durations can make
+ * placement, admission and deadline estimates wrong.
+ *
+ * What the playout relies on:
  *
  * - `sessionId` is unique among the sources open at once; the playout refuses
  *   a second under the same id.
@@ -885,7 +901,7 @@ export interface ClipModel<Req extends ClipRequest = Request> {
  *   a second later, and one that succeeded is not sent again before its start
  *   shows in them, or a second passes.
  */
-export interface Source<Req extends ClipRequest = Request> {
+export interface Source<Req extends ClipRequest, Report> {
   /**
    * The model this source runs; the playout refuses one whose name differs from its own.
    * A source without one is not checked.
@@ -897,28 +913,28 @@ export interface Source<Req extends ClipRequest = Request> {
    * counted by the playout from then; `Infinity` for none.
    */
   readonly lifetime: Duration.Duration;
-  readonly events: Stream.Stream<SourceEvent, ReactorError>;
+  readonly events: Stream.Stream<SourceEvent, SourceError>;
   readonly enqueue: (
     request: Req,
     tag: ClipTag,
     continueFrom?: string,
-  ) => Effect.Effect<string, CommandFailure>;
-  readonly remove: (clipId: string) => Effect.Effect<void, CommandFailure>;
-  readonly move: (clipId: string, position: number) => Effect.Effect<void, CommandFailure>;
-  readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, CommandFailure>;
+  ) => Effect.Effect<string, CommandError>;
+  readonly remove: (clipId: string) => Effect.Effect<void, CommandError>;
+  readonly move: (clipId: string, position: number) => Effect.Effect<void, CommandError>;
+  readonly setAutoplay: (enabled: boolean) => Effect.Effect<void, CommandError>;
   /**
    * Stops `clipId` if it still plays, and completes once the provider reports
    * it ended. A provider's stop may name no clip, so one that ended first, or
    * another clip playing by then, is left alone. The playout turns autoplay
    * off first, so nothing starts in its place.
    */
-  readonly stop: (clipId: string) => Effect.Effect<void, CommandFailure>;
+  readonly stop: (clipId: string) => Effect.Effect<void, CommandError>;
   /** Plays `clipId`, a Ready clip, while nothing plays. */
-  readonly play: (clipId: string) => Effect.Effect<void, CommandFailure>;
-  readonly video: Stream.Stream<VideoFrame, ReactorError>;
-  readonly audio: Stream.Stream<AudioFrame, ReactorError>;
+  readonly play: (clipId: string) => Effect.Effect<void, CommandError>;
+  readonly video: Stream.Stream<VideoFrame, SourceError>;
+  readonly audio: Stream.Stream<AudioFrame, SourceError>;
   /** Idempotent; closing an owned session terminates it. */
-  readonly close: Effect.Effect<CloseReport>;
+  readonly close: Effect.Effect<Report>;
 }
 
 export interface FillContext {
@@ -942,9 +958,31 @@ export interface FillContext {
   readonly seconds: number;
 }
 
-export interface Options<R = never, Req extends ClipRequest = Request> {
+/** How this playout interprets its sources' complete cleanup and open-failure evidence. */
+export interface Evidence<Report, E> {
+  /** Reports kept in cleanup regardless of the settled-report retention limit. */
+  readonly mayStillBill: (report: Report) => boolean;
+  readonly failedOpen: (error: E) =>
+    | { readonly _tag: "NotAllocated"; readonly retryAfter: Duration.Duration | undefined }
+    | {
+        readonly _tag: "Allocated";
+        readonly report: Report;
+        readonly retryAfter: Duration.Duration | undefined;
+      };
+}
+
+export interface Options<
+  R,
+  Req extends ClipRequest,
+  Report,
+  E extends { readonly message: string },
+> {
+  /** Interprets the report and open error types, fixed for this playout's lifetime. */
+  readonly evidence: Evidence<Report, E>;
+  /** The model this playout plans for; each opened source must name the same model. */
+  readonly model: ClipModel<Req>;
   /** Opens one session. Called for the first and for each replacement. */
-  readonly open: Effect.Effect<Source<Req>, ReactorFailure, R | Scope.Scope>;
+  readonly open: Effect.Effect<Source<Req, Report>, E, R | Scope.Scope>;
   readonly lanes: ReadonlyArray<LaneSpec>;
   /** The bottom lane, never owed: generated clips that keep the air covered. */
   readonly filler?:
@@ -957,7 +995,7 @@ export interface Options<R = never, Req extends ClipRequest = Request> {
          * its model's documented limits fails the playout with `InvalidFiller`.
          */
         readonly clip: (context: FillContext) => Req;
-        /** Lengths a filler clip may take; the model's request range by default, H3's by default. */
+        /** Lengths a filler clip may take; the model's request range by default. */
         readonly lengths?: { readonly min: number; readonly max: number } | undefined;
         /**
          * What goes first when an item's build would outlast the air secured.
@@ -1021,9 +1059,8 @@ export interface Options<R = never, Req extends ClipRequest = Request> {
          * when a session airs its first clip; more clips on the session already
          * on air don't end it. 3 by default. Each open is retried a second
          * longer after each failure, but at most this many seconds later, and
-         * never sooner than a refusal's `Retry-After`. An open that failed with
-         * an `AcquisitionFailure` whose `cleanup.allocation` is `"none"`, such
-         * as a refusal with a 4xx status, billed nothing: refused while a
+         * never sooner than a refusal's `Retry-After`. An open whose evidence
+         * says `NotAllocated` billed nothing: refused while a
          * session holds the air, it counts neither then nor later, so it is
          * asked again however often it fails. Running out while a session holds
          * the air doesn't end the playout: opening pauses until that session's
@@ -1037,15 +1074,16 @@ export interface Options<R = never, Req extends ClipRequest = Request> {
 
 /**
  * Close reports of the sessions this playout retired, failed opens that
- * allocated included: every one that may still bill (`Session.mayStillBill`)
- * and the latest others.
+ * allocated included: every one the evidence classifier says may still bill
+ * and the latest eight settled reports, in their original order. Only reports
+ * returned by a source or its failed-open classifier reach this collection.
  */
-export interface Cleanup {
+export interface Cleanup<Report> {
   readonly sessions: number;
-  readonly retained: ReadonlyArray<CloseReport>;
+  readonly retained: ReadonlyArray<Report>;
 }
 
-export interface Service<Req extends ClipRequest = Request> {
+export interface Service<Req extends ClipRequest, Report, E extends { readonly message: string }> {
   readonly submit: (item: ItemSpec<Req>) => Effect.Effect<ItemHandle, SubmitError>;
   /**
    * Parts that air in order, each place, a part and any replacement of it, once the one before it
@@ -1145,54 +1183,28 @@ export interface Service<Req extends ClipRequest = Request> {
    * when the playout stops. It fails with the on-air source's media failure;
    * reading it again starts from the session then on air.
    */
-  readonly video: Stream.Stream<VideoFrame, ReactorError>;
+  readonly video: Stream.Stream<VideoFrame, SourceError>;
   /** The on-air session's sound, as `video` is its picture. */
-  readonly audio: Stream.Stream<AudioFrame, ReactorError>;
+  readonly audio: Stream.Stream<AudioFrame, SourceError>;
   /**
    * Why the playout stopped: a session could not be opened or kept, a filler
    * request was outside its model's limits (`InvalidFiller`), or its scope closed
-   * (`Closed`). A defect that stopped it, such as a throwing `filler.clip`,
+   * (`PlayoutClosed`). A defect that stopped it, such as a throwing `filler.clip`,
    * stays a defect: this dies with it.
    */
-  readonly failure: Effect.Effect<ReactorFailure | InvalidFiller>;
-  readonly cleanup: Effect.Effect<Cleanup>;
+  readonly failure: Effect.Effect<E | SourceError | PlayoutStopped | PlayoutClosed | InvalidFiller>;
+  readonly cleanup: Effect.Effect<Cleanup<Report>>;
 }
 
-export class Playout extends Context.Service<Playout, Service>()("reactor-effect-client/Playout") {}
-
-/** Options for a playout whose request limits and lengths come from its model. */
-export interface ModelOptions<R, Req extends ClipRequest> extends Options<R, Req> {
-  /** The model this playout plans for; each opened source must name the same model. */
-  readonly model: ClipModel<Req>;
-}
-
-/**
- * A playout in the caller's scope; closing the scope retires every session.
- * Pass `model` for another model's requests and lengths. The `Playout` service tag is H3's.
- */
-export function make<R, Req extends ClipRequest>(
-  options: ModelOptions<R, Req>,
-): Effect.Effect<Service<Req>, never, R | Scope.Scope>;
-export function make<R>(options: Options<R>): Effect.Effect<Service, never, R | Scope.Scope>;
-export function make<R, Req extends ClipRequest>(options: ModelOptions<R, Req> | Options<R>) {
-  return "model" in options
-    ? Runtime.make(options, options.model)
-    : Runtime.make(options, clipModel);
-}
-
-/**
- * H3's playout service in the caller's scope. For another model, declare your own service,
- * `class Channel extends Context.Service<Channel, Playout.Service<MyRequest>>()("app/Channel") {}`,
- * and build it with `Layer.effect(Channel, Playout.make({ model, … }))`:
- * a service key names one service type.
- */
-export const layer = <R>(options: Options<R>): Layer.Layer<Playout, never, R> =>
-  Layer.effect(Playout, make(options));
+/** A playout in the caller's scope; closing the scope retires every source. */
+export const make = <R, Req extends ClipRequest, Report, E extends { readonly message: string }>(
+  options: Options<R, Req, Report, E>,
+): Effect.Effect<Service<Req, Report, E>, never, R | Scope.Scope> => Runtime.make(options);
 
 /** The lineup: one lane of the application's items ahead of filler. */
-export const lineup = <Req extends ClipRequest = Request>(
-  filler: NonNullable<Options<never, Req>["filler"]>,
-): Pick<Options<never, Req>, "lanes" | "filler"> => ({
+export const lineup = <Req extends ClipRequest>(
+  filler: NonNullable<Options<never, Req, never, never>["filler"]>,
+): Pick<Options<never, Req, never, never>, "lanes" | "filler"> => ({
   lanes: [{ name: "line" }],
   filler,
 });

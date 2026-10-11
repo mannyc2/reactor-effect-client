@@ -1,4 +1,6 @@
 /** A local renderer as a playout source: its ids, the order of its evidence, its hooks and each clip's scope. */
+import type * as H3 from "../src/H3.js";
+import * as H3Source from "../src/H3Source.js";
 import { assert, describe, it } from "@effect/vitest";
 import {
   Cause,
@@ -19,7 +21,7 @@ import {
   Tracer,
   type Types,
 } from "effect";
-import { LocalSource, Playout, type ReactorError, ReactorTest } from "../src/index.js";
+import { LocalSource, Playout, ReactorTest } from "../src/index.js";
 
 const request = (prompt: string, seconds = 5) => ({ prompt, seconds });
 const tag = (key: string): Playout.ClipTag => ({ _tag: "Item", key: Playout.ItemKey.make(key) });
@@ -38,7 +40,7 @@ const until = <A>(
   );
 
 /** Every event `source` reports from now on, in order. */
-const record = Effect.fnUntraced(function* (source: Playout.Source) {
+const record = Effect.fnUntraced(function* (source: Playout.Source<H3.Request, void>) {
   const events = yield* SubscriptionRef.make<ReadonlyArray<Playout.SourceEvent>>([]);
   yield* source.events.pipe(
     Stream.runForEach((event) => SubscriptionRef.update(events, (all) => [...all, event])),
@@ -94,8 +96,8 @@ class Unstaged extends Schema.TaggedError<Unstaged>()("Unstaged", {}) {}
 describe("LocalSource", () => {
   it.effect("gives each session it opens an id of its own", () =>
     Effect.gen(function* () {
-      const first = yield* LocalSource.open();
-      const second = yield* LocalSource.open();
+      const first = yield* LocalSource.open({ model: H3Source.model });
+      const second = yield* LocalSource.open({ model: H3Source.model });
       assert.notStrictEqual(first.sessionId, second.sessionId);
     }),
   );
@@ -112,6 +114,7 @@ describe("LocalSource", () => {
     return Effect.gen(function* () {
       const released = yield* Deferred.make<void>();
       const source = yield* LocalSource.open({
+        model: H3Source.model,
         build: (clip) =>
           Effect.as(Deferred.await(released), { value: clip.request.prompt }).pipe(
             Effect.withSpan("renderer.build", {}, { captureStackTrace: false }),
@@ -166,6 +169,7 @@ describe("LocalSource", () => {
           Effect.gen(function* () {
             yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
             const source = yield* LocalSource.open({
+              model: H3Source.model,
               build: (clip) =>
                 clip.request.prompt === "bad"
                   ? Effect.fail("unrenderable")
@@ -191,11 +195,11 @@ describe("LocalSource", () => {
       const thrown = new Error("the renderer's own bug");
       /** How `events` ends for a reader from before clip "a" goes wrong, and for one from after. */
       const ends = <E>(
-        open: Effect.Effect<Playout.Source, E, Scope.Scope>,
+        open: Effect.Effect<Playout.Source<H3.Request, void>, E, Scope.Scope>,
         after?: (
-          source: Playout.Source,
+          source: Playout.Source<H3.Request, void>,
           clipId: string,
-        ) => Effect.Effect<void, ReactorError.CommandFailure>,
+        ) => Effect.Effect<void, Playout.CommandError>,
       ) =>
         Effect.gen(function* () {
           const source = yield* open;
@@ -209,9 +213,7 @@ describe("LocalSource", () => {
           return [early, late];
         });
       /** The defect `events` died with. */
-      const defect = (
-        ending: Option.Option<Exit.Exit<void, ReactorError.ReactorError>>,
-      ): unknown => {
+      const defect = (ending: Option.Option<Exit.Exit<void, Playout.SourceError>>): unknown => {
         if (Option.isNone(ending)) return assert.fail("the events never ended");
         if (Exit.isSuccess(ending.value)) return assert.fail("the events ended without a failure");
         const found = Cause.findDefect(ending.value.cause);
@@ -223,6 +225,7 @@ describe("LocalSource", () => {
       const hooks = [
         ...(yield* ends(
           LocalSource.open({
+            model: H3Source.model,
             build: () => {
               throw thrown;
             },
@@ -230,6 +233,7 @@ describe("LocalSource", () => {
         )),
         ...(yield* ends(
           LocalSource.open({
+            model: H3Source.model,
             build: () => Effect.succeed({ value: undefined }),
             present: () => {
               throw thrown;
@@ -239,6 +243,7 @@ describe("LocalSource", () => {
         // A presentation that dies as it is stopped.
         ...(yield* ends(
           LocalSource.open({
+            model: H3Source.model,
             build: () => Effect.succeed({ value: undefined }),
             present: () =>
               Deferred.succeed(presenting, undefined).pipe(
@@ -254,6 +259,7 @@ describe("LocalSource", () => {
       // loses the session too, rather than end playback unseen.
       const releases = yield* ends(
         LocalSource.open({
+          model: H3Source.model,
           build: () =>
             Effect.gen(function* () {
               const helper = yield* Effect.forkDetach(Effect.never);
@@ -283,6 +289,7 @@ describe("LocalSource", () => {
       const presenting = yield* Deferred.make<void>();
       const presentationStopped = yield* Deferred.make<void>();
       const playing = yield* LocalSource.open({
+        model: H3Source.model,
         build: (clip) => {
           if (clip.request.prompt === "b") throw thrown;
           return Effect.succeed({ value: undefined });
@@ -300,6 +307,7 @@ describe("LocalSource", () => {
       const building = yield* Deferred.make<void>();
       const buildStopped = yield* Deferred.make<void>();
       const built = yield* LocalSource.open({
+        model: H3Source.model,
         build: (clip) =>
           clip.request.prompt === "b"
             ? endless(building, buildStopped)
@@ -327,6 +335,7 @@ describe("LocalSource", () => {
           readonly value: string;
         }>();
         const source = yield* LocalSource.open({
+          model: H3Source.model,
           build: (clip) =>
             Effect.succeed({
               value: `voiced ${clip.request.prompt}`,
@@ -358,6 +367,7 @@ describe("LocalSource", () => {
       Effect.gen(function* () {
         yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
         const opened = LocalSource.open({
+          model: H3Source.model,
           build: (clip) =>
             Effect.map(
               Voice.use((voice) => voice.speak(clip.request.prompt)),
@@ -425,6 +435,7 @@ describe("LocalSource", () => {
       const openWhilePlaying = yield* Deferred.make<boolean>();
       const scope = yield* Scope.fork(yield* Effect.scope);
       const source = yield* LocalSource.open({
+        model: H3Source.model,
         build: (clip) =>
           Effect.gen(function* () {
             const prompt = clip.request.prompt;
@@ -483,6 +494,7 @@ describe("LocalSource", () => {
         const playing = yield* Deferred.make<void>();
         const parallel = yield* Scope.make("parallel");
         const stopping = yield* LocalSource.open({
+          model: H3Source.model,
           build: (clip) =>
             Effect.as(
               Effect.addFinalizer(() => note(`released ${clip.request.prompt}`)),
@@ -510,6 +522,7 @@ describe("LocalSource", () => {
         // Closed while a clip that ended is being released, which takes a second.
         const scope = yield* Scope.make();
         const releasing = yield* LocalSource.open({
+          model: H3Source.model,
           build: (clip) =>
             Effect.gen(function* () {
               const prompt = clip.request.prompt;

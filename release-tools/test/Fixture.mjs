@@ -138,6 +138,7 @@ const workspace = {
       ".": entry("index"),
       ...Object.fromEntries(
         [
+          "CartesiaSpeech",
           "CoordinatorClient",
           "H3",
           "H3Source",
@@ -149,6 +150,7 @@ const workspace = {
           "ReactorError",
           "ReactorTest",
           "Session",
+          "SpeechModel",
           "ViduS2Avatar",
           "FastH3",
           "FastH3Source",

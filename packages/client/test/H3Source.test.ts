@@ -1,4 +1,5 @@
 /** A connected H3 session as a playout source, on the simulated Reactor. */
+import type { CloseReport } from "../src/Session.js";
 import { assert, layer } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
@@ -15,7 +16,7 @@ import {
   Stream,
   Tracer,
 } from "effect";
-import { CoordinatorClient, H3Source, Reactor, ReactorTest } from "../src/index.js";
+import { CoordinatorClient, type H3, H3Source, Reactor, ReactorTest } from "../src/index.js";
 import { PeerFactory } from "../src/Peer.js";
 import type { Source, SourceEvent } from "../src/Playout.js";
 import { ReactorError } from "../src/ReactorError.js";
@@ -172,7 +173,7 @@ layer(
  * A source's events until they end, if they end within `wait`: the recovery it reported, why it
  * ended, and how long after reporting the drop.
  */
-const readUntilEnd = (source: Source, wait: Duration.Input) =>
+const readUntilEnd = (source: Source<H3.Request, CloseReport>, wait: Duration.Input) =>
   Effect.gen(function* () {
     const read: Array<readonly [SourceEvent["_tag"], number]> = [];
     const ended = yield* source.events.pipe(
@@ -216,7 +217,7 @@ layer(
       const read = yield* readUntilEnd(source, "1 minute");
       assert.deepStrictEqual(
         [read.recovery, read.failure, read.endedAt - (yield* Fiber.join(drop))],
-        [[], "Disconnected", 0],
+        [[], "Lost", 0],
       );
     }),
   );
@@ -245,7 +246,7 @@ layer(
       });
       const session = yield* Deferred.await(allocated);
       const read = yield* readUntilEnd(source, "1 minute");
-      assert.deepStrictEqual([read.recovery, read.failure], [["Reconnecting"], "Timeout"]);
+      assert.deepStrictEqual([read.recovery, read.failure], [["Reconnecting"], "Lost"]);
       assert.approximately(read.afterDrop ?? 0, 2_000, 50);
       assert.isTrue(Option.isSome(yield* reconnected(session)));
     }),
@@ -293,7 +294,7 @@ layer(
       yield* Effect.forkScoped(ReactorTest.flow());
       const { source } = yield* opened;
       const read = yield* readUntilEnd(source, "1 minute");
-      assert.deepStrictEqual([read.recovery, read.failure], [["Reconnecting"], "Timeout"]);
+      assert.deepStrictEqual([read.recovery, read.failure], [["Reconnecting"], "Lost"]);
       // At H3's 15 s reply deadline, after the 80 ms the reconnect took: before `recovery` ends.
       assert.approximately(read.afterDrop ?? 0, 15_080, 50);
     }),
@@ -352,7 +353,7 @@ layer(
     Effect.gen(function* () {
       const ended = yield* videoEnd;
       const failure = Option.flatMap(ended, Exit.findErrorOption);
-      assert.strictEqual(Option.getOrUndefined(failure)?.reason._tag, "UnsupportedCapability");
+      assert.strictEqual(Option.getOrUndefined(failure)?.reason._tag, "Media");
     }),
   );
 });

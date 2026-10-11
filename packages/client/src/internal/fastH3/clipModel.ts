@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import type { ClipModel, ClipTag } from "../../Playout.js";
 import type { ReactorError } from "../../ReactorError.js";
-import * as Tag from "../playout/tag.js";
+import * as Tag from "../h3/playoutTag.js";
 import { metadataMaxChars } from "../h3/profile.js";
 import { validateReference } from "../h3/references.js";
 import { builtSeconds, requestSeconds } from "./profile.js";
@@ -60,5 +60,12 @@ export const clipModel: ClipModel<Request> = {
   // FastH3's 14.375 s session default would outlast a playout item planned at the minimum.
   defaultSeconds: requestSeconds.min,
   builtSeconds,
+  // Planning estimates inherited from H3; not measured on hosted FastH3.
+  timing: {
+    seam: "40 millis",
+    readinessMargin: "250 millis",
+    commandRoundTrip: "200 millis",
+    continuedBuildFactor: 2.5,
+  },
   check,
 };

@@ -29,8 +29,9 @@ $2.10 a minute and $126 an hour from `ready` until it is terminated, idle or not
   billed.
 - **`Session.mayStillBill(report)`** is true when this process owned the session and no read
   confirmed its end, or when it asked for an allocation whose answer, and so whose id, never came.
-  An `AcquisitionFailure` carries the same report in `cleanup`, and a playout's `cleanup` keeps every
-  report that may still bill.
+  An `AcquisitionFailure` carries the same report in `cleanup`. With `H3Source.evidence` or
+  `FastH3Source.evidence`, a playout's `cleanup` keeps every recorded report that may still bill,
+  plus its eight latest settled reports.
 - **A ledger records every paid session before it connects.** A `Ledger` keeps an entry for each
   session this application owns, in a store the application provides: a JSON file
   (`Ledger.layerFile`), memory (`Ledger.layerMemory`) or a `Ledger.Store` of its own.
@@ -55,6 +56,12 @@ On hosted Reactor, all 27 paid sessions of the 21 runs from 2026-09-24 to 09-29 
 termination confirmed. Where the runs timed it, `CLOSED` read 0.63–0.86 s after the `DELETE`
 ([hosted evidence](/reactor-effect-client/reference/hosted-evidence/)).
 
+Returned close reports and fresh failed-open reports preserve their cleanup evidence, including
+ledger store errors. A failed resume is different: `Ledger` consumes its cleanup while settling
+the old entry, then tries a fresh open. That report never reaches `Playout.cleanup`; a store
+settlement failure on that path is handled by the ledger separately. A playout's retained reports
+therefore do not establish complete cleanup evidence for every resume attempt.
+
 ## A budgeted, recorded session
 
 <Steps>
@@ -71,6 +78,7 @@ termination confirmed. Where the runs timed it, `CLOSED` read 0.63–0.86 s afte
      Playout,
      Reactor,
      ReactorError,
+     Session,
    } from "reactor-effect-client";
 
    const mostItCanCost = Effect.fn("mostItCanCost")(function* (capSeconds: number) {
@@ -113,7 +121,11 @@ termination confirmed. Where the runs timed it, `CLOSED` read 0.63–0.86 s afte
    ```ts
    const withSessionBudget = <R>(
      limit: number,
-     openOne: Effect.Effect<Playout.Source, ReactorError.ReactorFailure, R>,
+     openOne: Effect.Effect<
+       Playout.Source<H3.Request, Session.CloseReport>,
+       ReactorError.AcquisitionFailure,
+       R
+     >,
    ) =>
      Effect.map(Ref.make(0), (opened) =>
        Ref.getAndUpdate(opened, (count) => count + 1).pipe(
@@ -134,7 +146,8 @@ termination confirmed. Where the runs timed it, `CLOSED` read 0.63–0.86 s afte
      );
    ```
 
-   `const budgeted = yield* withSessionBudget(4, open)` gives an `open` for `Playout.make`. Past the
+   `const budgeted = yield* withSessionBudget(4, open)` gives an `open` for
+   `Playout.make({ model: H3Source.model, evidence: H3Source.evidence, open: budgeted, lanes: [{ name: "show" }] })`. Past the
    budget, the playout airs its last session until that session's cap ends, then stops. With
    30-minute sessions, a budget of 4 bounds the channel at two hours of sessions, $252.
 

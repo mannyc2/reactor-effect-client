@@ -2,6 +2,8 @@
  * Placement must keep its predecessor even when the air ahead ends earlier than projected, and
  * start when it said with a clip ahead at a length not asked for before.
  */
+import type { CloseReport } from "../src/Session.js";
+import type * as H3 from "../src/H3.js";
 import { assert, layer } from "@effect/vitest";
 import { Deferred, Effect, Ref, Stream } from "effect";
 import { H3Source, LocalSource, Playout, ReactorTest } from "../src/index.js";
@@ -23,12 +25,14 @@ layer(simulated)("Playout placement", (it) => {
   it.effect("fences a follower before a reorder whose reply is still pending at the boundary", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
-      const source = yield* Deferred.make<Playout.Source>();
+      const source = yield* Deferred.make<Playout.Source<H3.Request, CloseReport>>();
       const predecessorId = yield* Deferred.make<string>();
       const fenced = yield* Deferred.make<void>();
       const restored = yield* Deferred.make<void>();
       const moved = yield* Deferred.make<void>();
       const playout = yield* Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
         open: H3Source.open({ tokens: yield* tokens }).pipe(
           Effect.map((opened) => ({
             ...opened,
@@ -85,8 +89,10 @@ layer(simulated)("Playout placement", (it) => {
   it.effect("never airs a follower before its predecessor when the covering clip stops early", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
-      const source = yield* Deferred.make<Playout.Source>();
+      const source = yield* Deferred.make<Playout.Source<H3.Request, CloseReport>>();
       const playout = yield* Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
         open: H3Source.open({ tokens: yield* tokens }).pipe(
           Effect.tap((opened) => Deferred.succeed(source, opened)),
         ),
@@ -141,7 +147,10 @@ layer(simulated)("Playout placement", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
         open: LocalSource.open({
+          model: H3Source.model,
           build: Effect.fnUntraced(function* (clip) {
             // The real renderer's next build is slower than the samples used by place.
             yield* Effect.sleep(
@@ -178,6 +187,8 @@ layer(simulated)("Playout placement", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const playout = yield* Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
         open: H3Source.open({ tokens: yield* tokens }),
         lanes: [{ name: "line" }],
       });

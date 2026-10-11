@@ -1,14 +1,15 @@
 /** The playout's pure policy on its own: inputs in, actions and as-run out, no clock and no I/O. */
+import type * as H3 from "../src/H3.js";
 import { assert, describe, it } from "@effect/vitest";
 import * as Policy from "../src/internal/playout/policy.js";
 import {
+  CommandError,
   forecastFor,
   type ClipTag,
   type SourceClip,
   type SourceEvent,
   type SourceState,
 } from "../src/Playout.js";
-import { CommandFailure, ReactorError } from "../src/ReactorError.js";
 import {
   buildFailed,
   check,
@@ -27,12 +28,12 @@ import {
 
 /** Runs inputs in order at one-millisecond steps and collects every action. */
 const run = (
-  inputs: ReadonlyArray<Policy.Input>,
-  start: Policy.State = Policy.initial,
+  inputs: ReadonlyArray<Policy.Input<H3.Request>>,
+  start: Policy.State<H3.Request> = Policy.initial,
   from = 0,
 ) => {
   let state = start;
-  const actions: Array<Policy.Action> = [];
+  const actions: Array<Policy.Action<H3.Request>> = [];
   inputs.forEach((input, index) => {
     const result = Policy.step(config, state, input, { mono: from + index, wall: from + index });
     state = result.state;
@@ -40,46 +41,55 @@ const run = (
   });
   return { state, actions };
 };
-const commands = (actions: ReadonlyArray<Policy.Action>) =>
+const commands = (actions: ReadonlyArray<Policy.Action<H3.Request>>) =>
   actions.flatMap((action) => (action._tag === "Command" ? [action] : []));
-const statuses = (actions: ReadonlyArray<Policy.Action>, name: string) =>
+const statuses = (actions: ReadonlyArray<Policy.Action<H3.Request>>, name: string) =>
   actions.flatMap((action) =>
     action._tag === "Emit" && action.event._tag === "AsRun" && action.event.event.key === name
       ? [action.event.event.status._tag]
       : [],
   );
 /** A session opened with autoplay already confirmed, so the next command is the plan's. */
-const opened = (id = "s1"): ReadonlyArray<Policy.Input> => [
+const opened = (id = "s1"): ReadonlyArray<Policy.Input<H3.Request>> => [
   { _tag: "Opened", sessionId: id, lifetimeMs: 600_000 },
   { _tag: "Source", sessionId: id, event: { _tag: "State", state: source() } },
   { _tag: "Result", id: 1, result: { _tag: "Done" } },
 ];
 
 /** Steps one input at `at` milliseconds, on both clocks. */
-const at = (state: Policy.State, input: Policy.Input, time: number) =>
+const at = (state: Policy.State<H3.Request>, input: Policy.Input<H3.Request>, time: number) =>
   Policy.step(config, state, input, { mono: time, wall: time });
 /** The command in flight on `sessionId`'s lane, or on the first lane that has one. */
-const inFlight = (state: Policy.State, sessionId?: string) =>
+const inFlight = (state: Policy.State<H3.Request>, sessionId?: string) =>
   state.sessions.find(
     (value) => value.busy !== undefined && (sessionId === undefined || value.id === sessionId),
   )?.busy;
 /** The answer to the command in flight on `sessionId`'s lane, or on the first busy one. */
 const answer = (
-  state: Policy.State,
+  state: Policy.State<H3.Request>,
   result: Policy.CommandResult,
   sessionId?: string,
-): Policy.Input => ({ _tag: "Result", id: inFlight(state, sessionId)?.id ?? -1, result });
+): Policy.Input<H3.Request> => ({
+  _tag: "Result",
+  id: inFlight(state, sessionId)?.id ?? -1,
+  result,
+});
 
 /**
  * A policy driven input by input, each at the time given: the state it reached and every action,
  * with shorthands for the inputs most cases send.
  */
-const drive = (options: { readonly config?: Policy.Config; readonly from?: Policy.State } = {}) => {
+const drive = (
+  options: {
+    readonly config?: Policy.Config<H3.Request>;
+    readonly from?: Policy.State<H3.Request>;
+  } = {},
+) => {
   const settings = options.config ?? config;
   let state = options.from ?? Policy.initial;
-  const actions: Array<Policy.Action> = [];
+  const actions: Array<Policy.Action<H3.Request>> = [];
   let clock = 0;
-  const send = (input: Policy.Input, time = clock + 1) => {
+  const send = (input: Policy.Input<H3.Request>, time = clock + 1) => {
     clock = Math.max(clock, time);
     const result = Policy.step(settings, state, input, { mono: clock, wall: clock });
     state = result.state;
@@ -98,7 +108,7 @@ const drive = (options: { readonly config?: Policy.Config; readonly from?: Polic
       if (inFlight(state, id)?.command._tag === "Autoplay")
         send(answer(state, { _tag: "Done" }, id));
     },
-    submit: (value: Policy.Spec, time?: number) =>
+    submit: (value: Policy.Spec<H3.Request>, time?: number) =>
       send(
         {
           _tag: "Edit",
@@ -108,7 +118,7 @@ const drive = (options: { readonly config?: Policy.Config; readonly from?: Polic
         },
         time,
       ),
-    edit: (edits: ReadonlyArray<Policy.EditInput>, batch = false, time?: number) =>
+    edit: (edits: ReadonlyArray<Policy.EditInput<H3.Request>>, batch = false, time?: number) =>
       send({ _tag: "Edit", id: 1000 + actions.length, edits, batch }, time),
     /** Answers the command in flight on `id`'s lane, or on the first busy one. */
     reply: (result: Policy.CommandResult, time?: number, id?: string) =>
@@ -193,7 +203,7 @@ const boundary = (
   shown(policy, sessionId, held, time + 41);
 };
 /** The items that started, in the order they did. */
-const startOrder = (actions: ReadonlyArray<Policy.Action>): ReadonlyArray<string> =>
+const startOrder = (actions: ReadonlyArray<Policy.Action<H3.Request>>): ReadonlyArray<string> =>
   actions.flatMap((action) =>
     action._tag === "Emit" &&
     action.event._tag === "AsRun" &&
@@ -418,7 +428,11 @@ describe("PlayoutPolicy", () => {
   // 0.7.0 took an insert after the playing clip as the next boundary; the rehearsed `edits`
   // check found the playout refusing it.
   it("inserts after the playing item at the next boundary, and refuses one before it", () => {
-    const edit = (id: number, name: string, side: "before" | "after"): Policy.Input => ({
+    const edit = (
+      id: number,
+      name: string,
+      side: "before" | "after",
+    ): Policy.Input<H3.Request> => ({
       _tag: "Edit",
       id,
       edits: [{ _tag: "Insert", spec: spec(name), anchor: key("p1"), side }],
@@ -473,7 +487,7 @@ describe("PlayoutPolicy", () => {
   });
 
   it("counts no air left for a playing clip the provider named without its length", () => {
-    const inputs: ReadonlyArray<Policy.Input> = [
+    const inputs: ReadonlyArray<Policy.Input<H3.Request>> = [
       ...opened(),
       {
         _tag: "Source",
@@ -522,7 +536,11 @@ describe("PlayoutPolicy", () => {
 
   it("keeps what plays from a start or an end over a report older than it", () => {
     const filler = (index: number) => clip(`f${String(index)}`, { _tag: "Filler", index });
-    const on = (event: SourceEvent): Policy.Input => ({ _tag: "Source", sessionId: "s1", event });
+    const on = (event: SourceEvent): Policy.Input<H3.Request> => ({
+      _tag: "Source",
+      sessionId: "s1",
+      event,
+    });
     // H3 answers a start or an end with the facts it held before it, and says they are not current.
     const stale = (playing: SourceClip | undefined) =>
       on({ _tag: "State", state: source({ available: false, playing }) });
@@ -707,9 +725,10 @@ describe("PlayoutPolicy", () => {
       policy.submit(spec("a"));
       policy.reply({
         _tag: "Failed",
-        cause: CommandFailure.from(ReactorError.fromCode(reason, "the session ended"), {
+        cause: CommandError.make({
+          reason: { _tag: "NotSubmitted", next: "await-change" },
           operation: "enqueue",
-          outcome: "not-submitted",
+          message: "the session ended",
         }),
       });
       policy.send({ _tag: "Lost", sessionId: "s1", reason: "gone" });
@@ -732,9 +751,13 @@ describe("PlayoutPolicy", () => {
       policy.edit([{ _tag: "Withdraw", key: key("a") }]);
       policy.reply({
         _tag: "Failed",
-        cause: CommandFailure.from(ReactorError.fromCode(refusal, "the provider refused it"), {
+        cause: CommandError.make({
+          reason: {
+            _tag: "NotSubmitted",
+            next: refusal === "Disconnected" ? "retry" : "await-change",
+          },
           operation: "enqueue",
-          outcome: "not-submitted",
+          message: "the provider refused it",
         }),
       });
       assert.deepStrictEqual(statuses(policy.actions, "a"), ["Accepted", "Dropped"]);
@@ -766,11 +789,10 @@ describe("PlayoutPolicy", () => {
     assert.deepStrictEqual(policy.busy(), { _tag: "Remove", clipId: "f1" });
     policy.reply({
       _tag: "Failed",
-      cause: CommandFailure.from(ReactorError.fromCode("InvalidState", "the clip is armed"), {
-        operation: "pop",
-        outcome: "replied",
-        requestId: "request",
-        generation: 1n,
+      cause: CommandError.make({
+        reason: { _tag: "Replied", next: "none" },
+        operation: "remove",
+        message: "the clip is armed",
       }),
     });
     policy.observe(retiring, "s1");
@@ -799,7 +821,10 @@ describe("PlayoutPolicy", () => {
   });
 
   it("fires a cue due at a clip's last moment when the clip finishes there", () => {
-    const cued: Policy.Spec = { ...spec("a"), cues: [{ name: "out", from: "end", offsetMs: 0 }] };
+    const cued: Policy.Spec<H3.Request> = {
+      ...spec("a"),
+      cues: [{ name: "out", from: "end", offsetMs: 0 }],
+    };
     let state = run([
       ...opened(),
       { _tag: "Edit", id: 1, edits: [{ _tag: "Submit", spec: cued }], batch: false },
@@ -873,8 +898,8 @@ describe("PlayoutPolicy", () => {
    */
   const continuing = (buildMs: number) => {
     let state = run(opened()).state;
-    const actions: Array<Policy.Action> = [];
-    const send = (input: Policy.Input, time: number) => {
+    const actions: Array<Policy.Action<H3.Request>> = [];
+    const send = (input: Policy.Input<H3.Request>, time: number) => {
       const result = at(state, input, time);
       state = result.state;
       actions.push(...result.actions);
@@ -958,7 +983,7 @@ describe("PlayoutPolicy", () => {
   });
 });
 
-const enqueued = (actions: ReadonlyArray<Policy.Action>, sessionId?: string) =>
+const enqueued = (actions: ReadonlyArray<Policy.Action<H3.Request>>, sessionId?: string) =>
   commands(actions).flatMap((action) =>
     action.command._tag === "Enqueue" && (sessionId === undefined || action.sessionId === sessionId)
       ? [action.command.tag._tag === "Item" ? String(action.command.tag.key) : "filler"]
@@ -966,7 +991,7 @@ const enqueued = (actions: ReadonlyArray<Policy.Action>, sessionId?: string) =>
   );
 const unknown = failed("unknown");
 /** A filler floor of 5 s and a target of 10 s, in clips of 5 s. */
-const filled: Policy.Config = {
+const filled: Policy.Config<H3.Request> = {
   ...config,
   filler: {
     floor: 5,
@@ -1266,7 +1291,7 @@ const protecting = (
   protect: "air" | "order",
   lengths = { min: 5, max: 15 },
   floor = 5,
-): Policy.Config => ({
+): Policy.Config<H3.Request> => ({
   ...config,
   filler: {
     floor,
@@ -1280,7 +1305,7 @@ const protecting = (
 
 describe("PlayoutPolicy, air before queue order", () => {
   /** s1 on air playing a clip of its own that may be continued, `rest` seconds of it left. */
-  const airing = (settings: Policy.Config, rest: number, from = measured) => {
+  const airing = (settings: Policy.Config<H3.Request>, rest: number, from = measured) => {
     const policy = drive({ config: settings, from });
     policy.tick(0);
     policy.send({ _tag: "Opened", sessionId: "s1", lifetimeMs: 600_000 });
@@ -1289,13 +1314,13 @@ describe("PlayoutPolicy, air before queue order", () => {
     if (policy.busy()?._tag === "Autoplay") policy.reply({ _tag: "Done" });
     return { policy, playing };
   };
-  const sent = (command: Policy.Command | undefined) =>
+  const sent = (command: Policy.Command<H3.Request> | undefined) =>
     command?._tag !== "Enqueue"
       ? undefined
       : command.tag._tag === "Item"
         ? String(command.tag.key)
         : `filler of ${command.request.seconds?.toFixed(2) ?? "?"} s`;
-  const long: Policy.Spec = { ...spec("long", 1, 15), continuity: true };
+  const long: Policy.Spec<H3.Request> = { ...spec("long", 1, 15), continuity: true };
 
   // A 15 s continued build, projected at 16 s with its margin, against 12 s secured.
   it("sends a filler clip ahead of a build that would outlast the air secured, then the build", () => {
@@ -1719,7 +1744,7 @@ describe("PlayoutPolicy, clip ids", () => {
   });
 });
 
-const withdrawn = (actions: ReadonlyArray<Policy.Action>) =>
+const withdrawn = (actions: ReadonlyArray<Policy.Action<H3.Request>>) =>
   actions.flatMap((action) => (action._tag === "Withdrawn" ? [action.outcome] : []));
 
 describe("PlayoutPolicy, edits", () => {
@@ -2320,7 +2345,8 @@ describe("PlayoutPolicy, time", () => {
   // A session lost before any clip sent to it started is a failed setup, as a failed open is.
   it("waits a second longer for each session lost before any clip sent to it started", () => {
     const policy = drive({ config: { ...config, leadMs: 60_000 } });
-    const opensIn = (step: Policy.Step) => step.actions.some((action) => action._tag === "Open");
+    const opensIn = (step: Policy.Step<H3.Request>) =>
+      step.actions.some((action) => action._tag === "Open");
     policy.tick(0);
     policy.open("s1", 120_000);
     policy.event({ _tag: "Started", clip: clip("x", undefined, 70) }, "s1", 10);
@@ -2368,7 +2394,8 @@ describe("PlayoutPolicy, time", () => {
   // second only up to three, so the next open still goes before s1's cap.
   it("waits at most a second for each of three failures before it opens again", () => {
     const policy = drive();
-    const opensIn = (step: Policy.Step) => step.actions.some((action) => action._tag === "Open");
+    const opensIn = (step: Policy.Step<H3.Request>) =>
+      step.actions.some((action) => action._tag === "Open");
     policy.tick(0);
     policy.open("s1", 60_000);
     const x = clip("x", undefined, 70);
@@ -2406,7 +2433,7 @@ describe("PlayoutPolicy, time", () => {
     policy.reply({ _tag: "Done", clipId: "c-a" });
     const aired = clip("c-a", item("a"), 5.167);
     policy.event({ _tag: "Started", clip: aired }, "s1", 1_000);
-    const cues = (actions: ReadonlyArray<Policy.Action>) =>
+    const cues = (actions: ReadonlyArray<Policy.Action<H3.Request>>) =>
       actions.flatMap((action) =>
         action._tag === "Emit" && action.event._tag === "Cue" ? [action.event.event.at] : [],
       );
@@ -2538,7 +2565,7 @@ describe("PlayoutPolicy, wakes", () => {
     );
     policy.observe({ ready: fillers, continuable: ["f0", "f1", "f2"] }, "s2", 30_030);
     policy.submit({ ...spec("first"), window: { notBeforeMs: 60_000, firm: false } }, 30_040);
-    const long: Policy.Spec = { ...spec("long", 1, 15), continuity: true };
+    const long: Policy.Spec<H3.Request> = { ...spec("long", 1, 15), continuity: true };
     // s2's 16.001 s stay Ready 1 ms above long's floor: the next deadline is s1's cap.
     assert.strictEqual(policy.submit(long, 30_050).wake, 60_001);
   });
@@ -3029,7 +3056,7 @@ describe("PlayoutPolicy, edit claims", () => {
   });
 
   /** The test config with a third lane, `low` or a `ticker` that replaces what waits in it. */
-  const withLane = (name: string, conflict: "queue" | "replace"): Policy.Config => ({
+  const withLane = (name: string, conflict: "queue" | "replace"): Policy.Config<H3.Request> => ({
     ...config,
     lanes: [...config.lanes, { name, conflict, cut: false, strict: false }],
   });
@@ -3226,7 +3253,7 @@ describe("PlayoutPolicy, groups", () => {
   const group = (
     lane = 1,
     names: ReadonlyArray<string> = ["p1", "p2", "p3"],
-  ): Policy.EditInput => ({
+  ): Policy.EditInput<H3.Request> => ({
     _tag: "SubmitGroup",
     key: key("g"),
     lane,
@@ -3237,7 +3264,7 @@ describe("PlayoutPolicy, groups", () => {
   // A pending batch holds what it adds, a group's first part among them. The part waiting behind it
   // counted no air ahead of it, so it was taken off and built again while the batch waited.
   it("builds each part of a group in a pending batch once, while its first part is held", () => {
-    const lanes: Policy.Config = {
+    const lanes: Policy.Config<H3.Request> = {
       ...config,
       lanes: [...config.lanes, { name: "news", conflict: "replace", cut: false, strict: false }],
     };
@@ -3484,7 +3511,7 @@ describe("PlayoutPolicy, groups", () => {
     key: key(name),
     message: "follows waits for a member of its group placed after it",
   });
-  const refusalOf = (actions: ReadonlyArray<Policy.Action>) =>
+  const refusalOf = (actions: ReadonlyArray<Policy.Action<H3.Request>>) =>
     actions.find((action) => action._tag === "Refused")?.refusal;
 
   // The check read the plan before the edit: an insert that follows another the same edit adds,
@@ -4067,7 +4094,7 @@ describe("PlayoutPolicy, groups", () => {
     assert.strictEqual(Policy.view(config, policy.state(), now).runwaySeconds, 0);
   });
 
-  const moved = (actions: ReadonlyArray<Policy.Action>) =>
+  const moved = (actions: ReadonlyArray<Policy.Action<H3.Request>>) =>
     commands(actions).filter((action) => action.command._tag === "Move").length;
 
   // An insert a pending batch withdraws ranks behind the rest of its lane until the batch commits,
@@ -4116,7 +4143,7 @@ describe("PlayoutPolicy, groups", () => {
   // part ranked at its own place once the insert was Ready ahead of it, and behind it otherwise:
   // each queue read moved one past the other.
   it("keeps a part behind an insert that continues from a lower lane's clip", () => {
-    const lanes: Policy.Config = {
+    const lanes: Policy.Config<H3.Request> = {
       ...config,
       lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false, strict: false }],
     };
@@ -4159,7 +4186,7 @@ describe("PlayoutPolicy, groups", () => {
   // counted it ahead of that clip, and a follower whose continued build would be Ready only after
   // that clip ended continued from it.
   it("counts no part waiting behind a held part ahead of a clip a follower continues from", () => {
-    const lanes: Policy.Config = {
+    const lanes: Policy.Config<H3.Request> = {
       ...config,
       lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false, strict: false }],
     };
@@ -4176,7 +4203,7 @@ describe("PlayoutPolicy, groups", () => {
     policy.event({ _tag: "Started", clip: x }, "s1", 30_000);
     shown(policy, "s1", held, 30_001);
     // x ends at 90,000, z airs to 100,000 and b to 130,000; the group starts at 110,000.
-    const first: Policy.Spec = {
+    const first: Policy.Spec<H3.Request> = {
       ...spec("p1", 2),
       start: { _tag: "At", time: 110_000, late: "nextBoundary" },
     };
@@ -4210,7 +4237,7 @@ describe("PlayoutPolicy, groups", () => {
   // out of turn: it was moved behind a lower lane's clip, which aired between the two parts, and it
   // left the air secured.
   it("keeps a part in turn behind a part whose replacement is still building", () => {
-    const lanes: Policy.Config = {
+    const lanes: Policy.Config<H3.Request> = {
       ...config,
       lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false, strict: false }],
     };
@@ -4254,7 +4281,7 @@ describe("PlayoutPolicy, groups", () => {
   // The same replacement left the part behind it out of the air secured, and filler went out to
   // cover air that was there.
   it("sends no filler for a part behind a part whose replacement is still building", () => {
-    const covering: Policy.Config = {
+    const covering: Policy.Config<H3.Request> = {
       ...config,
       maxBuildsInFlight: 2,
       filler: {
@@ -4296,12 +4323,12 @@ describe("PlayoutPolicy, groups", () => {
   });
 
   /** A lane below the line, whose clips air after its parts. */
-  const low: Policy.Config = {
+  const low: Policy.Config<H3.Request> = {
     ...config,
     lanes: [...config.lanes, { name: "low", conflict: "queue", cut: false, strict: false }],
   };
   /** x airs from 3 s to 23 s on s1, and the group `parts` is submitted, with y behind it in `low`. */
-  const lowBehind = (parts: ReadonlyArray<Policy.Spec>) => {
+  const lowBehind = (parts: ReadonlyArray<Policy.Spec<H3.Request>>) => {
     const policy = drive({ config: low });
     policy.tick(0);
     policy.open();
@@ -4379,7 +4406,10 @@ describe("PlayoutPolicy, groups", () => {
    * continued build would be Ready only after p1 ends: it continues from p2's clip, and sits
    * behind p2. Measured builds take 0.4 s a second; i's takes 1 s.
    */
-  const seatedInsert = (settings: Policy.Config = config, from: Policy.State = measured) => {
+  const seatedInsert = (
+    settings: Policy.Config<H3.Request> = config,
+    from: Policy.State<H3.Request> = measured,
+  ) => {
     const policy = drive({ config: settings, from });
     policy.tick(0);
     policy.open();
@@ -4840,7 +4870,7 @@ describe("PlayoutPolicy, strict lanes and readiness", () => {
     }
   };
   /** An `At` item due at `time`, kept or dropped by whether it is Ready `byMs` after it. */
-  const readyBy = (name: string, time: number, byMs: number): Policy.Spec => ({
+  const readyBy = (name: string, time: number, byMs: number): Policy.Spec<H3.Request> => ({
     ...spec(name),
     start: { _tag: "At", time, late: { readyByMs: byMs } },
   });
@@ -4851,7 +4881,7 @@ describe("PlayoutPolicy, strict lanes and readiness", () => {
     shown(policy, "s1", held, 2);
   };
   /** How `name` settled, if it did, with its reason. */
-  const dropped = (actions: ReadonlyArray<Policy.Action>, name: string) =>
+  const dropped = (actions: ReadonlyArray<Policy.Action<H3.Request>>, name: string) =>
     actions.flatMap((action) =>
       action._tag === "Emit" &&
       action.event._tag === "AsRun" &&
@@ -4862,7 +4892,7 @@ describe("PlayoutPolicy, strict lanes and readiness", () => {
     );
 
   it("a strict lane airs items in their places whatever their times", () => {
-    const starts = (settings: Policy.Config) => {
+    const starts = (settings: Policy.Config<H3.Request>) => {
       const policy = drive({ config: settings, from: measured });
       const held = queues();
       const log: Array<string> = [];
@@ -4938,7 +4968,12 @@ describe("PlayoutPolicy, strict lanes and readiness", () => {
   });
 
   /** What the forecast at `time` says becomes of `name`: "Airs", or the reason it drops. */
-  const foreseen = (settings: Policy.Config, state: Policy.State, time: number, name: string) => {
+  const foreseen = (
+    settings: Policy.Config<H3.Request>,
+    state: Policy.State<H3.Request>,
+    time: number,
+    name: string,
+  ) => {
     const fate = forecastFor(
       Policy.forecast(settings, state, { mono: time, wall: time }),
       key(name),
@@ -4949,7 +4984,7 @@ describe("PlayoutPolicy, strict lanes and readiness", () => {
   // An insert before an `At` anchor took the anchor's start whole, so one placed before a kept
   // readyBy item took a bound already past and was dropped late at the next look.
   it("an insert, or a group inserted, before a kept readyBy item airs before it", () => {
-    const starts = (edit: Policy.EditInput) => {
+    const starts = (edit: Policy.EditInput<H3.Request>) => {
       const policy = drive({ config: strictLine, from: measured });
       const held = queues();
       const log: Array<string> = [];
@@ -4992,7 +5027,7 @@ describe("PlayoutPolicy, strict lanes and readiness", () => {
   // run in the order of its pool: r2, Ready in time behind r1, which was not, aired when r1 was
   // submitted first, went late when r1 was inserted before it, and the forecast said it went late.
   it("readyBy items due at one look are judged as they air, whatever order they came in", () => {
-    const settings: Policy.Config = { ...strictLine, maxBuildsInFlight: 2 };
+    const settings: Policy.Config<H3.Request> = { ...strictLine, maxBuildsInFlight: 2 };
     const run = (how: "submitted" | "inserted") => {
       const policy = drive({ config: settings, from: measured });
       const held = queues();
@@ -5056,8 +5091,8 @@ describe("PlayoutPolicy, strict lanes and readiness", () => {
   // a part of a line whose first part was being taken back still held that line, Ready in time, and
   // it was dropped late. The forecast had the part go at once.
   it("a line whose first part goes late holds the next line no more, its removal landed or not", () => {
-    const settings: Policy.Config = { ...strictLine, maxBuildsInFlight: 4 };
-    const line = (name: string, byMs: number): Policy.EditInput => ({
+    const settings: Policy.Config<H3.Request> = { ...strictLine, maxBuildsInFlight: 4 };
+    const line = (name: string, byMs: number): Policy.EditInput<H3.Request> => ({
       _tag: "SubmitGroup",
       key: key(name),
       lane: 1,

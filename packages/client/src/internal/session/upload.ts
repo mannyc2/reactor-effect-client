@@ -5,6 +5,7 @@
  */
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import { ReactorError } from "../../ReactorError.js";
 import type { UploadOptions, UploadProgress, Uploaded, UploadReference } from "../../Session.js";
@@ -79,8 +80,19 @@ export const make = ({
         yield* reach({ notification: "submitted" });
         return { file, transfer: "confirmed", notification: "submitted" } satisfies Uploaded;
       });
-      const wait = yield* Deadline.decode("uploadTimeout")(
+      const wait = yield* Schema.decodeEffect(Deadline.Deadline)(
         options.uploadTimeout ?? settings.uploadTimeout,
+      ).pipe(
+        Effect.mapError((cause) =>
+          ReactorError.fromCode(
+            "InvalidInput",
+            "uploadTimeout is not a finite, non-negative duration",
+            {
+              outcome: "not-submitted",
+              detail: cause,
+            },
+          ),
+        ),
       );
       return yield* operation.pipe(
         Effect.timeoutOrElse({ duration: wait, orElse: timedOut("upload") }),

@@ -26,7 +26,7 @@ import { recorder } from "reactor-effect-client/Media";
 import type { Recorded, VideoFrame } from "reactor-effect-client/Media";
 import * as Playout from "reactor-effect-client/Playout";
 import * as Reactor from "reactor-effect-client/Reactor";
-import { ReactorError } from "reactor-effect-client/ReactorError";
+import { AcquisitionFailure, ReactorError } from "reactor-effect-client/ReactorError";
 import type { CommandFailure } from "reactor-effect-client/ReactorError";
 import type * as Session from "reactor-effect-client/Session";
 import type * as FileSystem from "effect/FileSystem";
@@ -1700,7 +1700,7 @@ const summarize = (event: Session.SessionEvent): Omit<Logged, "atMs" | "sessionI
 
 /** What a playout check has while its playout runs. */
 export interface Air<Req extends Playout.ClipRequest = H3.Request> {
-  readonly playout: Playout.Service<Req>;
+  readonly playout: Playout.Service<Req, Session.CloseReport, AcquisitionFailure>;
   readonly items: SubscriptionRef.SubscriptionRef<ReadonlyMap<string, Item>>;
   /** Every as-run event, in order. */
   readonly asRun: () => ReadonlyArray<{
@@ -1755,9 +1755,14 @@ const recordPlayout = (fields: Partial<NonNullable<Evidence.Evidence["playout"]>
  */
 export interface AirOptions<Req extends Playout.ClipRequest = H3.Request> {
   readonly lanes: ReadonlyArray<Playout.LaneSpec>;
-  readonly filler?: Playout.Options<never, Req>["filler"];
+  readonly filler?: Playout.Options<never, Req, Session.CloseReport, AcquisitionFailure>["filler"];
   readonly sessions: number;
-  readonly renewal?: Playout.Options<never, Req>["renewal"];
+  readonly renewal?: Playout.Options<
+    never,
+    Req,
+    Session.CloseReport,
+    AcquisitionFailure
+  >["renewal"];
   readonly maxModerations?: number;
   readonly maxBuildsInFlight?: number;
 }
@@ -1794,9 +1799,12 @@ const onAirFor = Effect.fnUntraced(function* <
     Effect.gen(function* () {
       const open = Effect.gen(function* () {
         if (opened++ >= options.sessions)
-          return yield* ReactorError.fromCode(
-            "InvalidState",
-            `the ${check} check opens ${options.sessions} session(s)`,
+          return yield* AcquisitionFailure.from(
+            ReactorError.fromCode(
+              "InvalidState",
+              `the ${check} check opens ${options.sessions} session(s)`,
+            ),
+            Reactor.noAcquisition,
           );
         const grant = yield* mint(check).pipe(
           Effect.mapError((error) =>
@@ -1804,6 +1812,7 @@ const onAirFor = Effect.fnUntraced(function* <
               ? ReactorError.fromCode("InvalidState", error.message)
               : error,
           ),
+          Effect.mapError((error) => AcquisitionFailure.from(error, Reactor.noAcquisition)),
         );
         const source = yield* family.open({
           tokens: CoordinatorClient.fixedTokens(grant),
@@ -1827,7 +1836,7 @@ const onAirFor = Effect.fnUntraced(function* <
               );
             }),
         });
-        const wrapped: Playout.Source<Req> = {
+        const wrapped: Playout.Source<Req, Session.CloseReport> = {
           ...source,
           ...(options.renewal === undefined ? { lifetime: Duration.infinity } : {}),
           // A failed playout closes its sessions on a fiber its scope may interrupt: the
@@ -1847,6 +1856,7 @@ const onAirFor = Effect.fnUntraced(function* <
         return wrapped;
       });
       const playout = yield* Playout.make({
+        evidence: family.evidence,
         model: family.clipModel,
         open,
         lanes: options.lanes,
@@ -2196,7 +2206,7 @@ const moderate = <Req extends Family.RequestInput, C extends H3.Clip>(
         Effect.map(run.now, (atMs) => {
           playoutLog.push({
             atMs,
-            event: `failed ${failure._tag === "InvalidFiller" ? failure._tag : failure.reason._tag}`,
+            event: `failed ${failure._tag === "InvalidFiller" || failure._tag === "PlayoutClosed" ? failure._tag : failure.reason._tag}`,
           });
         }),
       ),

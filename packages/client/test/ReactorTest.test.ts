@@ -187,6 +187,8 @@ layer(environment({ timing: ReactorTest.Timing.fixed({ buildSpeed: 2.4 }) }))("p
         const { cleanup, frames } = yield* Effect.scoped(
           Effect.gen(function* () {
             const playout = yield* Playout.make({
+              evidence: H3Source.evidence,
+              model: H3Source.model,
               open: H3Source.open({ tokens: yield* tokens }),
               lanes: [{ name: "line" }],
             });

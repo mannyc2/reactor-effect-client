@@ -36,31 +36,36 @@ import * as PubSub from "effect/PubSub";
 import * as Random from "effect/Random";
 import * as Redacted from "effect/Redacted";
 import * as References from "effect/References";
+import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type * as Take from "effect/Take";
 import * as Tracer from "effect/Tracer";
-import type { Request } from "./H3.js";
 import * as Deadline from "./internal/deadline.js";
-import { clipModel } from "./internal/h3/clipModel.js";
 import { currentParent, spanOptions } from "./internal/trace.js";
 import type { AudioFrame, VideoFrame } from "./Media.js";
 import type {
   ClipModel,
   ClipRequest,
+  Evidence,
   ClipTag,
   Source,
   SourceClip,
   SourceEvent,
   SourceState,
 } from "./Playout.js";
-import { noAcquisition } from "./Reactor.js";
-import { CommandFailure, ReactorError } from "./ReactorError.js";
+import { CommandError, SourceError } from "./internal/playout/errors.js";
+
+/** Local sources allocate no paid resources; cleanup counts retired sessions. */
+export const evidence: Evidence<void, unknown> = {
+  mayStillBill: () => false,
+  failedOpen: () => ({ _tag: "NotAllocated", retryAfter: undefined }),
+};
 
 /** A clip as the renderer's hooks see it. */
-export interface LocalClip<Req extends ClipRequest = Request> {
+export interface LocalClip<Req extends ClipRequest> {
   readonly clipId: string;
   readonly request: Req;
   readonly tag: ClipTag;
@@ -92,18 +97,11 @@ export interface Sink {
  * whose clips build for `buildRatio` of their requested length and play for
  * the length their model builds, so a stand-in for H3 airs H3's lengths.
  * Pass `model` to `open` for the model the source runs, which the playout's own
- * `model` must name alike; H3's by default. A renderer with its own lengths,
+ * `model` must name alike. A renderer with its own lengths,
  * such as speech shorter than H3's 5 s, declares them here and passes the same
  * model to `Playout.make`.
  */
-export type Options<
-  A = void,
-  E = never,
-  R = never,
-  E2 = never,
-  R2 = never,
-  Req extends ClipRequest = Request,
-> =
+export type Options<A, E, R, E2, R2, Req extends ClipRequest> =
   | {
       /** Renders a clip before it is Ready, in a scope the clip owns. */
       readonly build: (clip: LocalClip<Req>) => Effect.Effect<Rendered<A>, E, R | Scope.Scope>;
@@ -204,13 +202,14 @@ const nextToPlay = <A, Req extends ClipRequest>(
   if (local.play !== undefined) return local.ready.find((value) => value.clipId === local.play);
   return local.autoplay ? local.ready[0] : undefined;
 };
-const refused = (operation: string, message: string) =>
-  CommandFailure.from(ReactorError.fromCode("InvalidState", message), {
+const refused = (operation: CommandError["operation"], message: string) =>
+  CommandError.make({
+    reason: { _tag: "NotSubmitted", next: "await-change" },
     operation,
-    outcome: "not-submitted",
+    message,
   });
 const invalid = (message: string) =>
-  ReactorError.fromCode("InvalidInput", message, { outcome: "not-submitted" });
+  SourceError.make({ reason: { _tag: "InvalidInput" }, message });
 /** A hook's failure, in its own words, for `Failed`'s `provider`. */
 const words = (cause: Cause.Cause<unknown>) => cause.pipe(Cause.pretty, Redacted.make);
 /** A clip without a presentation plays for its length. */
@@ -228,11 +227,19 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2, Req extends ClipReque
   present: Present<A, E2, R2, Req>,
   lifetimeInput: Duration.Input | undefined,
   model: ClipModel<Req>,
-): Effect.fn.Return<Source<Req>, ReactorError, R | R2 | Scope.Scope> {
+): Effect.fn.Return<Source<Req, void>, SourceError, R | R2 | Scope.Scope> {
   const lifetime =
     lifetimeInput === undefined
       ? Duration.infinity
-      : yield* Deadline.decode("LocalSource lifetime")(lifetimeInput);
+      : yield* Schema.decodeEffect(Deadline.Deadline)(lifetimeInput).pipe(
+          Effect.mapError((cause) =>
+            SourceError.make({
+              reason: { _tag: "InvalidInput" },
+              message: "LocalSource lifetime is not a finite, non-negative duration",
+              detail: Redacted.make(cause),
+            }),
+          ),
+        );
   if (Duration.isZero(lifetime)) return yield* invalid("LocalSource lifetime must be positive");
   const hex = (yield* Random.nextIntBetween(0, Number.MAX_SAFE_INTEGER)).toString(16);
   const sessionId = `local-${hex.padStart(14, "0")}`;
@@ -261,10 +268,15 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2, Req extends ClipReque
             const timing = yield* References.TracerTimingEnabled;
             const endedAt = timing ? yield* Clock.currentTimeNanos : 0n;
             yield* Effect.sync(() => {
-              span.attribute("error.type", "InvalidState");
+              span.attribute("error.type", "SourceError");
               span.end(
                 endedAt,
-                Exit.fail(ReactorError.fromCode("InvalidState", `the local ${name} failed`)),
+                Exit.fail(
+                  SourceError.make({
+                    reason: { _tag: "Media" },
+                    message: `the local ${name} failed`,
+                  }),
+                ),
               );
             });
           });
@@ -288,7 +300,7 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2, Req extends ClipReque
     popped: new Set(),
     lost: undefined,
   });
-  const hub = yield* PubSub.unbounded<Take.Take<SourceEvent, ReactorError>>();
+  const hub = yield* PubSub.unbounded<Take.Take<SourceEvent, SourceError>>();
   /** Done once the source stops, lost or closed: the build slot and playback end, and so does a `stop`. */
   const stopped = yield* Deferred.make<void>();
   const video = yield* PubSub.sliding<VideoFrame>(256);
@@ -470,7 +482,7 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2, Req extends ClipReque
   // Made last, so it runs first as the source closes: a `stop` waiting on playback returns.
   yield* Scope.addFinalizer(owned, Deferred.succeed(stopped, undefined));
 
-  const source: Source<Req> = {
+  const source: Source<Req, void> = {
     sessionId,
     model,
     lifetime,
@@ -533,7 +545,7 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2, Req extends ClipReque
         });
         switch (removal._tag) {
           case "Refused":
-            return yield* refused("pop", removal.message);
+            return yield* refused("remove", removal.message);
           case "Released":
             // A finalizer that fails is the renderer's bug, and loses the session as a hook's would.
             return yield* guard(release(removal.clip.scope, Exit.void));
@@ -581,7 +593,7 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2, Req extends ClipReque
       ),
     video: Stream.fromPubSub(video),
     audio: Stream.fromPubSub(audio),
-    close: Effect.succeed(noAcquisition),
+    close: Effect.void,
   };
   return source;
 });
@@ -589,7 +601,7 @@ const make = Effect.fnUntraced(function* <A, E, R, E2, R2, Req extends ClipReque
 const configured = <A, E, R, E2, R2, Req extends ClipRequest>(
   options: Options<A, E, R, E2, R2, Req> | undefined,
   model: ClipModel<Req>,
-): Effect.Effect<Source<Req>, ReactorError, R | R2 | Scope.Scope> => {
+): Effect.Effect<Source<Req, void>, SourceError, R | R2 | Scope.Scope> => {
   if (options?.build !== undefined)
     return make(options.build, options.present ?? played, options.lifetime, model);
   const ratio = options?.buildRatio ?? 0;
@@ -609,20 +621,16 @@ const configured = <A, E, R, E2, R2, Req extends ClipRequest>(
  * to stop, then releases every clip. It fails with `InvalidInput` for a
  * `lifetime` that is not a positive, finite duration, or a `buildRatio` that
  * is negative or not finite. Pass `model` for your renderer's request limits
- * and lengths, and pass the same model to `Playout.make`; H3's by default.
+ * and lengths, and pass the same model to `Playout.make`.
  */
-export function open<A, E, R, E2, R2, Req extends ClipRequest>(
+export const open = <
+  Req extends ClipRequest,
+  A = void,
+  E = never,
+  R = never,
+  E2 = never,
+  R2 = never,
+>(
   options: Options<A, E, R, E2, R2, Req> & { readonly model: ClipModel<Req> },
-): Effect.Effect<Source<Req>, ReactorError, R | R2 | Scope.Scope>;
-export function open<A = void, E = never, R = never, E2 = never, R2 = never>(
-  options?: Options<A, E, R, E2, R2>,
-): Effect.Effect<Source, ReactorError, R | R2 | Scope.Scope>;
-export function open<A, E, R, E2, R2, Req extends ClipRequest>(
-  options?:
-    | (Options<A, E, R, E2, R2, Req> & { readonly model: ClipModel<Req> })
-    | Options<A, E, R, E2, R2>,
-) {
-  return options !== undefined && "model" in options
-    ? configured(options, options.model)
-    : configured(options, clipModel);
-}
+): Effect.Effect<Source<Req, void>, SourceError, R | R2 | Scope.Scope> =>
+  configured(options, options.model);

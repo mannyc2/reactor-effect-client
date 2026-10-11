@@ -18,7 +18,7 @@ import {
   SynchronizedRef,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import type { ReactorError } from "reactor-effect-client/ReactorError";
+import type { SourceError } from "reactor-effect-client/Playout";
 import type { AudioFrame, VideoFrame } from "reactor-effect-client/Media";
 import * as Fmp4 from "./Fmp4.ts";
 import { Settings } from "./Settings.ts";
@@ -180,8 +180,8 @@ const ticks: Stream.Stream<void> = Stream.unwrap(
 export class ChannelMedia extends Context.Service<
   ChannelMedia,
   {
-    readonly video: Stream.Stream<VideoFrame, ReactorError>;
-    readonly audio: Stream.Stream<AudioFrame, ReactorError>;
+    readonly video: Stream.Stream<VideoFrame, SourceError>;
+    readonly audio: Stream.Stream<AudioFrame, SourceError>;
   }
 >()("reactor-effect-example-livestream/Broadcast/ChannelMedia") {}
 

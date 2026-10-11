@@ -1,4 +1,5 @@
 /** The H3-family values a hosted check runs, over the public provider and source APIs. */
+import type { CloseReport } from "reactor-effect-client/Session";
 import type * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import { dual } from "effect/Function";
@@ -78,18 +79,19 @@ export interface Family<Req extends RequestInput, C extends H3.Clip> {
   readonly open: <E = never, R = never>(
     options: H3Source.OpenOptions<E, R>,
   ) => Effect.Effect<
-    Playout.Source<Req>,
+    Playout.Source<Req, CloseReport>,
     AcquisitionFailure,
     R | Reactor.Reactor | Crypto.Crypto | Scope.Scope
   >;
   readonly resume: (
     options: H3Source.ResumeOptions,
   ) => Effect.Effect<
-    Playout.Source<Req>,
+    Playout.Source<Req, CloseReport>,
     AcquisitionFailure,
     Reactor.Reactor | Crypto.Crypto | Scope.Scope
   >;
   readonly clipModel: Playout.ClipModel<Req>;
+  readonly evidence: Playout.Evidence<CloseReport, AcquisitionFailure>;
 }
 
 const referencePrompt = `Picture 1 is a plain gray backdrop. Audio 1 is a low, steady hum under the scene. ${prompt}`;
@@ -142,6 +144,7 @@ export const h3 = {
   open: H3Source.open,
   resume: H3Source.resume,
   clipModel: H3Source.model,
+  evidence: H3Source.evidence,
 } satisfies Family<H3.Request, H3.Clip>;
 
 export const fastH3 = {
@@ -185,6 +188,7 @@ export const fastH3 = {
   open: FastH3Source.open,
   resume: FastH3Source.resume,
   clipModel: FastH3Source.model,
+  evidence: FastH3Source.evidence,
 } satisfies Family<FastH3.Request, FastH3.Clip>;
 
 /** Authorization selected the model before a check asks for its family. */

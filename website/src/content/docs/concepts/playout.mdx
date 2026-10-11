@@ -1,12 +1,12 @@
 ---
 title: Playout
-description: "A keyed schedule that carries H3 across renewing sessions, switching at a clip boundary: lanes, filler, windows, placement and as-run evidence."
+description: "A keyed schedule of finite clips across renewing sources, switching at a clip boundary: lanes, filler, windows, placement and as-run evidence."
 ---
 
 import { Aside, CardGrid, LinkCard } from "@astrojs/starlight/components";
 
-`Playout` airs a schedule of clips across Reactor sessions. You submit keyed items into priority
-lanes; one plan decides what to build, in what order, what to withdraw, and when a fresh session
+`Playout` airs a schedule of finite clips across sources chosen by the application. You submit
+keyed items into priority lanes; one plan decides what to build, in what order, what to withdraw, and when a fresh session
 takes over before the current one reaches its cap. What actually aired comes back as as-run
 evidence, kept apart from what you asked for.
 
@@ -27,6 +27,8 @@ const house = [
 export const channel = Effect.gen(function* () {
   const coordinator = yield* CoordinatorClient.CoordinatorClient;
   const playout = yield* Playout.make({
+    model: H3Source.model,
+    evidence: H3Source.evidence,
     // Called for the first session and for each replacement.
     open: H3Source.open({
       tokens: coordinator.tokens({
@@ -57,17 +59,41 @@ export const channel = Effect.gen(function* () {
 }).pipe(Effect.scoped);
 ```
 
-The same program runs on the simulated Reactor, on paid H3, or on a renderer of your own: only
-the [source](/reactor-effect-client/concepts/sources/) behind `open` changes. A pure policy makes
-every decision, and the service applies them one provider command at a time on each session. It
+The same program runs on the simulated Reactor, on paid H3, or on a renderer of your own. Select
+the [source](/reactor-effect-client/concepts/sources/), model and cleanup evidence together. A pure
+policy makes every decision, and the service applies them one provider command at a time on each session. It
 wakes on a submission, a session's evidence or the plan's next deadline, and never polls.
-For another model, pass its `ClipModel` to `Playout.make` and the source. The `Playout` service
-tag and `layer` stay H3's; an application can name its own service with `Playout.Service<Req>`.
+`Playout.make` requires a `model` and `evidence`; it has no default provider. The model owns
+request validation, length estimates and planning timing. Evidence interprets source close reports
+and failed opens. `H3Source` and `FastH3Source` supply both; a local renderer uses its chosen
+model and `LocalSource.evidence`.
+
+Applications that share a playout through Effect declare their own service tag and construct it
+with `Layer.effect(Channel, Playout.make(options))`. Its service type is
+`Playout.Service<Req, Report, E>`, where `Req` is the request, `Report` is the source's close
+report and `E extends { message: string }` is its open failure. For H3, those are `H3.Request`,
+`Session.CloseReport` and `ReactorError.AcquisitionFailure`.
+
+## Finite clips and planning timing
+
+Each source delivers finite clips. For an unbuilt clip, the plan uses the last observed length of
+a clip that requested the same duration, or `ClipModel.builtSeconds` before one has been observed.
+That assumes requested length predicts actual length. Placement, admission and deadline decisions
+can be wrong when content determines duration, as with speech; the forecasts remain estimates
+from past clips, and planning does not suit every provider. A Ready clip supplies its observed
+duration. Streaming speech needs a bounded, measured clip before presentation through `LocalSource`;
+there is no speech-to-playout bridge.
+
+Every `ClipModel` supplies `timing`: `seam`, `readinessMargin` and `commandRoundTrip` are
+nonnegative finite durations, and `continuedBuildFactor` is finite and positive. `make` validates
+them once; an invalid code-authored model is a defect naming its field. H3 and FastH3 each use
+40 ms, 250 ms, 200 ms and 2.5 respectively. FastH3 inherits these values from H3; they are not
+FastH3 measurements. The model is fixed for a playout's lifetime.
 
 ## Items and keys
 
 An item is one clip: a key, a lane and a request for its model
-([H3](/reactor-effect-client/concepts/h3/) by default),
+([H3](/reactor-effect-client/concepts/h3/) in these examples),
 with an optional start, window, cues and continuity. `submit` returns an `ItemHandle` whose
 `started` resolves with the clip's start (or how it settled without one) and whose `outcome`
 resolves with how it settled.
@@ -80,7 +106,7 @@ A submission is refused before anything is sent with one of these tagged errors:
 
 | Error               | When                                                                    |
 | ------------------- | ----------------------------------------------------------------------- |
-| `InvalidItem`       | The request is outside its model's limits (H3's by default), naming each field and limit, or names an unknown lane or anchor |
+| `InvalidItem`       | The request is outside its model's limits, naming each field and limit, or names an unknown lane or anchor |
 | `KeyMismatch`       | The key is in use with a different spec                                 |
 | `LaneBusy`          | The lane skips new items while one waits or plays                       |
 | `WouldMissDeadline` | The plan cannot start the item before its firm `startBy`                |
@@ -194,9 +220,10 @@ land, up to a command's round trip past it.
 ```ts
 import { Clock, Effect } from "effect";
 import { Playout } from "reactor-effect-client";
+import type { H3, ReactorError, Session } from "reactor-effect-client";
 
 export const schedule = Effect.fn("schedule")(function* (
-  playout: Playout.Playout["Service"],
+  playout: Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>,
 ) {
   const now = yield* Clock.currentTimeMillis;
   // The next full minute, skipped if it would start over 2 s late.
@@ -247,9 +274,10 @@ Cues fire at offsets from a clip's observed start or end, as `Cue` events on `pl
 ```ts
 import { Effect, Stream } from "effect";
 import { Playout } from "reactor-effect-client";
+import type { H3, ReactorError, Session } from "reactor-effect-client";
 
 export const segment = Effect.fn("segment")(function* (
-  playout: Playout.Playout["Service"],
+  playout: Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>,
 ) {
   yield* playout.submit({
     key: Playout.ItemKey.make("kitchen-2"),
@@ -298,9 +326,10 @@ replaces it is Ready.
 ```ts
 import { Effect } from "effect";
 import { Playout } from "reactor-effect-client";
+import type { H3, ReactorError, Session } from "reactor-effect-client";
 
 export const correct = Effect.fn("correct")(function* (
-  playout: Playout.Playout["Service"],
+  playout: Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>,
 ) {
   const batch = yield* playout.edit([
     { _tag: "Withdraw", key: Playout.ItemKey.make("weather") },
@@ -366,9 +395,10 @@ order and where the group stopped.
 ```ts
 import { Clock, Effect } from "effect";
 import { Playout } from "reactor-effect-client";
+import type { H3, ReactorError, Session } from "reactor-effect-client";
 
 export const answer = Effect.fn("answer")(function* (
-  playout: Playout.Playout["Service"],
+  playout: Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>,
 ) {
   const now = yield* Clock.currentTimeMillis;
   // Its first beat at the moment it answers, the second right behind it.
@@ -419,9 +449,10 @@ replacement it calls for in one `edit`.
 ```ts
 import { Clock, Effect } from "effect";
 import { Playout } from "reactor-effect-client";
+import type { H3, ReactorError, Session } from "reactor-effect-client";
 
 export const say = Effect.fn("say")(function* (
-  playout: Playout.Playout["Service"],
+  playout: Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>,
   moment: number,
 ) {
   // The line airs at its moment, or behind the line before it, if made within 4 s of it.
@@ -443,7 +474,7 @@ export const say = Effect.fn("say")(function* (
 });
 
 export const acknowledge = Effect.fn("acknowledge")(function* (
-  playout: Playout.Playout["Service"],
+  playout: Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>,
   moment: number,
 ) {
   const now = yield* Clock.currentTimeMillis;
@@ -494,9 +525,10 @@ across a renewal too, or is dropped as `displaced`.
 ```ts
 import { Effect } from "effect";
 import { Playout } from "reactor-effect-client";
+import type { H3, ReactorError, Session } from "reactor-effect-client";
 
 export const acknowledge = Effect.fn("acknowledge")(function* (
-  playout: Playout.Playout["Service"],
+  playout: Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>,
   write: (placement: Playout.Placement) => Effect.Effect<string>,
 ) {
   const key = Playout.ItemKey.make("ack-1");
@@ -562,9 +594,10 @@ when, and `drainsAt` is when the last item it projects to air ends.
 ```ts
 import { Clock, Effect } from "effect";
 import { Playout } from "reactor-effect-client";
+import type { H3, ReactorError, Session } from "reactor-effect-client";
 
 export const lookAhead = Effect.fn("lookAhead")(function* (
-  playout: Playout.Playout["Service"],
+  playout: Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>,
   key: Playout.ItemKey,
 ) {
   const forecast = yield* playout.forecast;
@@ -711,9 +744,11 @@ provider's own words `Redacted` in `provider`, out of messages, logs and spans.
 
 ```ts
 import { Console, Stream } from "effect";
-import type { Playout } from "reactor-effect-client";
+import type { H3, Playout, ReactorError, Session } from "reactor-effect-client";
 
-export const asRunLog = (playout: Playout.Playout["Service"]) =>
+export const asRunLog = (
+  playout: Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>,
+) =>
   playout.asRun.pipe(
     Stream.map(({ key, status }) =>
       status._tag === "Started"
@@ -744,15 +779,17 @@ the 0.8.0 release candidate, measured seams of 46–168 ms. Both passed every cr
 ## Failure and cleanup
 
 `playout.failure` completes with why the playout stopped: a session it could not open or keep,
-`InvalidFiller`, `Moderated`, or `Closed` when its scope closed. A supervisor restarts it by
-failing with that reason under a `Schedule`:
+`InvalidFiller`, a `SourceError`, a `PlayoutStopped` reason, or `PlayoutClosed` when its scope
+closes. A supervisor restarts it by failing with that reason under a `Schedule`:
 
 ```ts
 import { Effect, Schedule } from "effect";
 import { Playout } from "reactor-effect-client";
 
 export const supervised = Effect.fn("supervised")(
-  function* <R>(options: Playout.Options<R>) {
+  function* <R, Req extends Playout.ClipRequest, Report, E extends { readonly message: string }>(
+    options: Playout.Options<R, Req, Report, E>,
+  ) {
     const playout = yield* Playout.make(options);
     // Submit the programme here. Closing the scope closes the
     // playout and its sessions.
@@ -763,9 +800,19 @@ export const supervised = Effect.fn("supervised")(
 );
 ```
 
-`playout.cleanup` holds the close reports of retired sessions and of opens that failed after
-allocating: every one that may still bill, and the latest others. Closing the playout's scope
-retires every session.
+`playout.cleanup` is `Cleanup<Report>`: `sessions` counts recorded reports, and `retained` keeps
+every report that `evidence.mayStillBill` marks risky plus the eight most recent settled reports,
+in their original order. Retention is by position, so equal primitive reports and `void` reports
+are counted separately. Closing the playout's scope retires every session.
+
+For H3 and FastH3, `Report` is `Session.CloseReport`. Returned close reports and fresh failed-open
+reports keep their cleanup evidence, including ledger store failures. An allocation with no known
+id remains risky and retained. A timeout or defect while opening may have allocated unseen work
+without a report to retain. `Ledger` also consumes a failed resume's cleanup before trying a fresh
+open: that report does not reach `playout.cleanup`, and a failure settling its store is handled
+by the ledger separately. Cleanup is therefore not a complete audit of every resume path.
+For `LocalSource`, reports are `void`, billing is always false, and `cleanup.sessions` is the
+meaningful count.
 
 | Option              | Default    | What it does                                                        |
 | ------------------- | ---------- | ------------------------------------------------------------------- |
@@ -787,7 +834,7 @@ An enqueue whose outcome stays unknown holds no build slot meanwhile, since H3 b
 - A `Started` status is H3's report that a clip started, not proof that a frame was presented or
   encoded.
 - On a host with only platform tracks, such as a browser, `playout.video` and `playout.audio` fail
-  with `UnsupportedCapability`.
+  with `SourceError` reason `Media`; the adapter keeps the original failure in redacted `detail`.
 - Editorial priority, pricing and what counts as on air for your audience stay with your
   application.
 

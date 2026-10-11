@@ -113,9 +113,15 @@ const program = Effect.gen(function* () {
 
 ## Keeping a channel on air: `Playout`
 
-For FastH3, use `Playout.make({ model: FastH3Source.model, open: ledger.source(FastH3Source.opener({ tokens })) })` with an application-owned `Playout.Service<FastH3.Request>` tag. Automatic continuations use only built, retained clips; hosted qualification is pending.
+`Playout.make` requires `model` and `evidence`. For FastH3, use
+`Playout.make({ model: FastH3Source.model, evidence: FastH3Source.evidence, open: ledger.source(FastH3Source.opener({ tokens })), lanes: [{ name: "show" }] })`.
+Automatic continuations use only built, retained clips; hosted qualification is pending.
 
-`Playout.layer({ open, lanes, filler, renewal })` where `open` is
+Applications own their `Context.Service` tags over `Playout.Service<Req, Report, E>` and construct
+them with `Layer.effect(Tag, Playout.make(options))`. Reactor sources use `Session.CloseReport`
+and `ReactorError.AcquisitionFailure` for `Report` and `E`. There is no library playout tag or layer.
+
+For H3, use `Playout.make({ model: H3Source.model, evidence: H3Source.evidence, open, lanes, filler, renewal })`, where `open` is
 `ledger.source(H3Source.opener({ tokens: coordinator.tokens({ ... }) }))`, with `ledger` the
 `Ledger` service. Submit keyed items with
 `playout.submit({ key: Playout.ItemKey.make("..."), lane, request: { prompt, seconds } })`; the
@@ -123,6 +129,26 @@ handle's `started` and `outcome` report what aired (`Ended`, `Dropped`, `Failed`
 terminal `Unknown`, which is never replayed). `renewal: { lead }` opens the next session `lead`
 before the cap and switches at a clip boundary. Read
 https://mannyc2.github.io/reactor-effect-client/concepts/playout/ before designing a schedule.
+
+`LocalSource.open` also requires a model. Pair it with `LocalSource.evidence`; its close report
+is `void`, and `cleanup.sessions` is the meaningful count. Every recorded risky report and the
+latest eight settled reports are retained in order, even if reports have equal values. Reactor
+fresh failed-open and returned close reports preserve ledger errors. Failed-resume reports that
+Ledger consumes do not reach playout cleanup.
+
+Models supply finite duration forecasts and required `timing`: nonnegative finite `seam`,
+`readinessMargin`, `commandRoundTrip`, and a finite positive `continuedBuildFactor`. H3 and
+FastH3 each use 40 ms, 250 ms, 200 ms and 2.5; FastH3 inherits H3's planning values without a
+FastH3 measurement. Placement, admission and deadline decisions forecast an unbuilt clip from
+past clips with the same requested duration, or the model's estimate. They can be wrong when
+content determines length. An unknown-duration speech stream needs a bounded, measured clip
+before presentation through `LocalSource`; no bridge exists.
+
+Source commands fail with `Playout.CommandError`: `NotSubmitted` permits `retry`, `await-change`
+or `none`; `Replied` permits `retry` or `none`; `Unknown` permits no resend. Source events and
+media fail with `SourceError` (`Lost`, `Media`, `InvalidInput`). Scheduler stop reasons are
+`PlayoutStopped` (`OpenTimeout`, `SessionInUse`, `ModelMismatch`, `Moderated`, `NoSession`) or
+`PlayoutClosed` on closure. Provider diagnostics stay redacted.
 
 ## A talking character: `ViduS2Avatar`
 

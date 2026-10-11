@@ -12,7 +12,7 @@ export class Evidence extends Context.Service<
   {
     /** Where the evidence is kept, created when the channel starts. */
     readonly directory: string;
-    readonly closed: (report: Playout.Cleanup) => Effect.Effect<void>;
+    readonly closed: (report: Playout.Cleanup<Session.CloseReport>) => Effect.Effect<void>;
   }
 >()("reactor-effect-example-livestream/Evidence") {
   static readonly layer = Layer.effect(
@@ -30,7 +30,9 @@ export class Evidence extends Context.Service<
         ),
       );
 
-      const closed = Effect.fn("Evidence.closed")(function* (report: Playout.Cleanup) {
+      const closed = Effect.fn("Evidence.closed")(function* (
+        report: Playout.Cleanup<Session.CloseReport>,
+      ) {
         // A session that may still be billing, one not confirmed terminated or
         // one whose allocation was never identified, is named.
         const unconfirmed = report.retained

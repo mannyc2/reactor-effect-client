@@ -36,6 +36,7 @@ export const packages = Object.freeze([
     name: "reactor-effect-client",
     exports: [
       ".",
+      "./CartesiaSpeech",
       "./CoordinatorClient",
       "./H3",
       "./H3Source",
@@ -47,6 +48,7 @@ export const packages = Object.freeze([
       "./ReactorError",
       "./ReactorTest",
       "./Session",
+      "./SpeechModel",
       "./ViduS2Avatar",
       "./FastH3",
       "./FastH3Source",

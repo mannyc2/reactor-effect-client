@@ -1,4 +1,5 @@
-import { Config, Duration, Effect, Layer, Path, Ref } from "effect";
+import type { CloseReport } from "reactor-effect-client/Session";
+import { Config, Context, Duration, Effect, Layer, Path, Ref } from "effect";
 import type { Crypto } from "effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import {
@@ -14,6 +15,12 @@ import { AcquisitionFailure, ReactorError } from "reactor-effect-client/ReactorE
 import { NativePeer } from "reactor-effect-native";
 import { Evidence } from "./Evidence.ts";
 import { Settings } from "./Settings.ts";
+
+/** The channel's H3 playout and its complete Reactor cleanup evidence. */
+export class Channel extends Context.Service<
+  Channel,
+  Playout.Service<H3.Request, CloseReport, AcquisitionFailure>
+>()("reactor-effect-example-livestream/Channel") {}
 
 /** What plays when no viewer has asked for anything. */
 const house = [
@@ -47,7 +54,9 @@ export const layer = Layer.unwrap(
     // A live channel allocates at most CHANNEL_MAX_SESSIONS sessions; past that
     // the playout airs its last session until its cap ends, then fails, and the
     // channel goes off air.
-    const budgeted = <R>(open: Effect.Effect<Playout.Source, AcquisitionFailure, R>) =>
+    const budgeted = <R>(
+      open: Effect.Effect<Playout.Source<H3.Request, CloseReport>, AcquisitionFailure, R>,
+    ) =>
       Ref.getAndUpdate(opened, (count) => count + 1).pipe(
         Effect.flatMap((count) =>
           settings.mode === "live" && count >= maxSessions
@@ -61,8 +70,13 @@ export const layer = Layer.unwrap(
         ),
       );
     const options: Playout.Options<
-      Reactor.Reactor | CoordinatorClient.CoordinatorClient | Crypto.Crypto | Ledger.Ledger
+      Reactor.Reactor | CoordinatorClient.CoordinatorClient | Crypto.Crypto | Ledger.Ledger,
+      H3.Request,
+      CloseReport,
+      AcquisitionFailure
     > = {
+      model: H3Source.model,
+      evidence: H3Source.evidence,
       open: Effect.gen(function* () {
         const coordinator = yield* CoordinatorClient.CoordinatorClient;
         const ledger = yield* Ledger.Ledger;
@@ -88,11 +102,11 @@ export const layer = Layer.unwrap(
     };
     // The evidence records what the playout closed once it has closed it: a
     // finalizer registered before the playout is built runs after the playout's own.
-    const recorded = <R>(input: Playout.Options<R>) =>
+    const recorded = <R>(input: Playout.Options<R, H3.Request, CloseReport, AcquisitionFailure>) =>
       Layer.effect(
-        Playout.Playout,
+        Channel,
         Effect.gen(function* () {
-          const built = yield* Ref.make<Playout.Playout["Service"] | undefined>(undefined);
+          const built = yield* Ref.make<Channel["Service"] | undefined>(undefined);
           yield* Effect.addFinalizer(() =>
             Ref.get(built).pipe(
               Effect.flatMap((playout) =>

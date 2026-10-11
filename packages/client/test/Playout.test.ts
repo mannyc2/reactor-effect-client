@@ -1,4 +1,6 @@
 /** The playout on the simulated Reactor, from submission to as-run, with the timing each case relies on. */
+import type { AcquisitionFailure } from "../src/ReactorError.js";
+import type { CloseReport } from "../src/Session.js";
 import { assert, layer } from "@effect/vitest";
 import {
   Cause,
@@ -49,12 +51,16 @@ const tokens = (maxSessionDuration: Duration.Input) =>
 
 /** A playout on paid-shaped H3 sessions, with its events recorded from the start. */
 const start = (
-  options: Partial<Options<never>> & { readonly lifetime?: Duration.Input } = {},
+  options: Partial<Options<never, H3.Request, CloseReport, AcquisitionFailure>> & {
+    readonly lifetime?: Duration.Input;
+  } = {},
   step: Duration.Input = "20 millis",
 ) =>
   Effect.gen(function* () {
     yield* Effect.forkScoped(ReactorTest.flow(step));
     const playout = yield* Playout.make({
+      evidence: H3Source.evidence,
+      model: H3Source.model,
       open: H3Source.open({ tokens: yield* tokens(options.lifetime ?? "10 minutes") }),
       lanes: [{ name: "urgent", cut: true }, { name: "line" }, { name: "quiet", conflict: "skip" }],
       ...options,
@@ -201,7 +207,10 @@ layer(hosted)("group outcomes", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
         open: LocalSource.open({
+          model: H3Source.model,
           build: (local) =>
             local.request.prompt === "two"
               ? Effect.fail("the renderer refused")
@@ -918,6 +927,8 @@ layer(hosted)("resume", (it) => {
       );
       const allocation = yield* Deferred.await(recorded);
       const playout = yield* Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
         open: H3Source.resume({ allocation, tokens: sessionTokens }),
         lanes: [{ name: "line" }],
       });
@@ -1558,6 +1569,8 @@ const forecast = (
     yield* test.inject({ _tag: "Video", video: "absent" });
     yield* test.inject({ _tag: "NoAudio" });
     const playout = yield* Playout.make({
+      evidence: H3Source.evidence,
+      model: H3Source.model,
       open: H3Source.open({ tokens: yield* tokens(lifetime) }),
       ...Playout.lineup({
         runway: { floor, target: floor },
@@ -1740,7 +1753,9 @@ const gridFiller = (floor: Duration.Input, target: Duration.Input) => ({
 });
 
 /** The next filler clip's start: what is submitted then builds well inside that clip. */
-const nextFiller = (playout: Playout.Service) =>
+const nextFiller = <Report, E extends { readonly message: string }>(
+  playout: Playout.Service<H3.Request, Report, E>,
+) =>
   playout.events.pipe(
     Stream.filter((event) => event._tag === "Filler" && event.phase === "Started"),
     Stream.runHead,
@@ -2285,6 +2300,8 @@ layer(
       for (let index = 0; index < 3; index++)
         yield* reactor.create({ model: H3.modelName, tokens: grant });
       const playout = yield* Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
         open: H3Source.open({ tokens: grant }),
         lanes: [{ name: "line" }],
       });
@@ -2696,6 +2713,7 @@ layer(hosted)("local renderer", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const speech: Playout.ClipModel<H3.Request> = {
+        timing: H3Source.model.timing,
         name: "speech",
         lengths: { min: 0.5, max: 30 },
         defaultSeconds: 2,
@@ -2704,6 +2722,7 @@ layer(hosted)("local renderer", (it) => {
       };
       const presented = yield* Ref.make<ReadonlyArray<number>>([]);
       const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
         model: speech,
         open: LocalSource.open({
           model: speech,
@@ -2757,7 +2776,10 @@ layer(hosted)("local renderer", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
         open: LocalSource.open({
+          model: H3Source.model,
           build: (local) =>
             local.request.prompt.startsWith("idle")
               ? Effect.succeed({ value: undefined })
@@ -2807,6 +2829,7 @@ layer(hosted)("local renderer", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const speech: Playout.ClipModel<H3.Request> = {
+        timing: H3Source.model.timing,
         name: "speech",
         lengths: { min: 0.5, max: 30 },
         defaultSeconds: 2,
@@ -2815,17 +2838,18 @@ layer(hosted)("local renderer", (it) => {
       };
       const opens = yield* Ref.make(0);
       const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
         model: speech,
         open: Effect.andThen(
           Ref.update(opens, (count) => count + 1),
-          LocalSource.open({ buildRatio: 0 }),
+          LocalSource.open({ model: H3Source.model, buildRatio: 0 }),
         ),
         lanes: [{ name: "speech" }],
       });
       const failure = yield* playout.failure.pipe(Effect.timeout("1 second"));
-      assert.strictEqual(failure._tag, "ReactorError");
-      if (failure._tag === "ReactorError") {
-        assert.strictEqual(failure.reason._tag, "InvalidState");
+      assert.strictEqual(failure._tag, "PlayoutStopped");
+      if (failure._tag === "PlayoutStopped") {
+        assert.strictEqual(failure.reason._tag, "ModelMismatch");
         assert.include(failure.message, "H3");
         assert.include(failure.message, "speech");
       }
@@ -2838,7 +2862,10 @@ layer(hosted)("local renderer", (it) => {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const presented = yield* Ref.make<ReadonlyArray<string>>([]);
       const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
         open: LocalSource.open({
+          model: H3Source.model,
           build: (local) => Effect.succeed({ value: local.request.prompt }),
           present: (local, prompt) =>
             Effect.andThen(
@@ -2861,7 +2888,10 @@ layer(hosted)("local renderer", (it) => {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const released = yield* Ref.make<ReadonlyArray<string>>([]);
       const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
         open: LocalSource.open({
+          model: H3Source.model,
           build: (local) =>
             Effect.gen(function* () {
               const prompt = local.request.prompt;
@@ -2912,7 +2942,10 @@ layer(hosted)("local renderer", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
         open: LocalSource.open({
+          model: H3Source.model,
           build: Effect.fnUntraced(function* (local) {
             yield* Effect.sleep(local.request.prompt === "u" ? "3 seconds" : "500 millis");
             return { value: undefined };
@@ -2947,7 +2980,9 @@ layer(hosted)("local renderer", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const playout = yield* Playout.make({
-        open: LocalSource.open({ buildRatio: 0.4, lifetime: "40 seconds" }),
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
+        open: LocalSource.open({ model: H3Source.model, buildRatio: 0.4, lifetime: "40 seconds" }),
         lanes: [{ name: "speech" }],
         renewal: { lead: "15 seconds" },
       });
@@ -2984,7 +3019,10 @@ layer(hosted)("local renderer", (it) => {
       Effect.gen(function* () {
         yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
         const playout = yield* Playout.make({
+          evidence: LocalSource.evidence,
+          model: H3Source.model,
           open: LocalSource.open({
+            model: H3Source.model,
             build: (local) => Effect.succeed({ value: local.request.prompt }),
             present: (local, prompt) =>
               prompt === "failing"
@@ -3019,7 +3057,10 @@ layer(hosted)("local renderer", (it) => {
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
         open: LocalSource.open({
+          model: H3Source.model,
           build: (local) => Effect.succeed({ value: local.request.prompt }),
           present: (local, prompt) =>
             prompt === "idle 0"
@@ -3063,13 +3104,18 @@ layer(hosted)("local renderer", (it) => {
       const bug = new Error("a source bug");
       let enqueues = 0;
       const playout = yield* Playout.make({
-        open: Effect.map(LocalSource.open({ buildRatio: 0.2 }), (source) => ({
-          ...source,
-          enqueue: (request, tag, continueFrom) => {
-            if (++enqueues === 2) throw bug;
-            return source.enqueue(request, tag, continueFrom);
-          },
-        })),
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
+        open: Effect.map(
+          LocalSource.open({ model: H3Source.model, buildRatio: 0.2 }),
+          (source) => ({
+            ...source,
+            enqueue: (request, tag, continueFrom) => {
+              if (++enqueues === 2) throw bug;
+              return source.enqueue(request, tag, continueFrom);
+            },
+          }),
+        ),
         lanes: [{ name: "speech" }],
       }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
       const items = yield* Effect.forEach(["a", "b", "c"], (name) =>
@@ -3094,18 +3140,24 @@ layer(hosted)("local renderer", (it) => {
       const reporter = ErrorReporter.make(({ error }) => {
         reported.push(error.message);
       });
-      const refusal = ReactorError.CommandFailure.from(
-        ReactorError.ReactorError.fromCode("InvalidInput", "the renderer refused it"),
-        { operation: "enqueue", outcome: "not-submitted" },
-      );
+      const refusal = Playout.CommandError.make({
+        reason: { _tag: "NotSubmitted", next: "none" },
+        operation: "enqueue",
+        message: "the renderer refused it",
+      });
       const playout = yield* Playout.make({
-        open: Effect.map(LocalSource.open({ buildRatio: 0.2 }), (source) => ({
-          ...source,
-          enqueue: (request, tag, continueFrom) =>
-            request.prompt === "b"
-              ? Effect.fail(refusal).pipe(Effect.ensuring(Effect.die(new Error("a source bug"))))
-              : source.enqueue(request, tag, continueFrom),
-        })),
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
+        open: Effect.map(
+          LocalSource.open({ model: H3Source.model, buildRatio: 0.2 }),
+          (source) => ({
+            ...source,
+            enqueue: (request, tag, continueFrom) =>
+              request.prompt === "b"
+                ? Effect.fail(refusal).pipe(Effect.ensuring(Effect.die(new Error("a source bug"))))
+                : source.enqueue(request, tag, continueFrom),
+          }),
+        ),
         lanes: [{ name: "speech" }],
       }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
       const items = yield* Effect.forEach(["a", "b", "c"], (name) =>
@@ -3132,26 +3184,30 @@ layer(hosted)("local renderer", (it) => {
         reported.push(error.message);
       });
       const failing = (what: string) =>
-        Effect.fail(ReactorError.ReactorError.fromCode("Timeout", `the ${what} failed`)).pipe(
-          Effect.ensuring(Effect.die(new Error(`an ${what} bug`))),
-        );
+        Effect.fail(
+          Playout.SourceError.make({ reason: { _tag: "Lost" }, message: `the ${what} failed` }),
+        ).pipe(Effect.ensuring(Effect.die(new Error(`an ${what} bug`))));
       let opens = 0;
       const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
         open: Effect.suspend(() => {
           const nth = ++opens;
           if (nth === 1) return failing("open");
-          return Effect.map(LocalSource.open({ buildRatio: 0.2 }), (source) =>
-            nth === 2
-              ? {
-                  ...source,
-                  events: Stream.merge(
-                    source.events,
-                    Stream.fromEffectDrain(
-                      Effect.andThen(Effect.sleep("2 seconds"), failing("events")),
+          return Effect.map(
+            LocalSource.open({ model: H3Source.model, buildRatio: 0.2 }),
+            (source) =>
+              nth === 2
+                ? {
+                    ...source,
+                    events: Stream.merge(
+                      source.events,
+                      Stream.fromEffectDrain(
+                        Effect.andThen(Effect.sleep("2 seconds"), failing("events")),
+                      ),
                     ),
-                  ),
-                }
-              : source,
+                  }
+                : source,
           );
         }),
         lanes: [{ name: "speech" }],
@@ -3375,9 +3431,9 @@ layer(hosted)("failure reasons", (it) => {
       const commandReason = commandFailure._tag === "Failed" ? commandFailure.reason : undefined;
       assert.deepStrictEqual(
         commandReason?._tag === "Command"
-          ? [commandReason._tag, commandReason.cause.context.outcome]
+          ? [commandReason._tag, commandReason.cause.reason._tag]
           : commandReason,
-        ["Command", "replied"],
+        ["Command", "Replied"],
       );
       const waiting = yield* playout.submit({
         key: key("waiting"),
@@ -3401,6 +3457,8 @@ layer(hosted)("sources", (it) => {
       const grant = yield* tokens("60 seconds");
       // A source that names every session alike, as a custom one might by mistake.
       const playout = yield* Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
         open: Effect.map(H3Source.open({ tokens: grant }), (source) => ({
           ...source,
           sessionId: "shared",
@@ -3426,15 +3484,22 @@ layer(hosted)("sources", (it) => {
       });
       let opens = 0;
       const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
         open: Effect.suspend(() =>
           ++opens === 1
             ? Effect.addFinalizer(() => Effect.die(new Error("a release bug"))).pipe(
                 Effect.andThen(Effect.sleep("1 second")),
                 Effect.andThen(
-                  Effect.fail(ReactorError.ReactorError.fromCode("Timeout", "the open failed")),
+                  Effect.fail(
+                    Playout.SourceError.make({
+                      reason: { _tag: "Lost" },
+                      message: "the open failed",
+                    }),
+                  ),
                 ),
               )
-            : LocalSource.open({ buildRatio: 0.2 }),
+            : LocalSource.open({ model: H3Source.model, buildRatio: 0.2 }),
         ),
         lanes: [{ name: "speech" }],
       }).pipe(Effect.provideService(ErrorReporter.CurrentErrorReporters, new Set([reporter])));
@@ -3474,8 +3539,10 @@ layer(hosted)("sources", (it) => {
       });
       let opens = 0;
       const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
         open: Effect.map(
-          LocalSource.open({ buildRatio: 0.2, lifetime: "20 seconds" }),
+          LocalSource.open({ model: H3Source.model, buildRatio: 0.2, lifetime: "20 seconds" }),
           (source) => ({
             ...source,
             sessionId: "shared",
@@ -3509,10 +3576,14 @@ layer(hosted)("sources", (it) => {
       const released: Array<number> = [];
       let opens = 0;
       yield* Playout.make({
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
         open: Effect.suspend(() => {
           const nth = ++opens;
           return Effect.addFinalizer(() => Effect.sync(() => released.push(nth))).pipe(
-            Effect.andThen(LocalSource.open({ buildRatio: 0.2, lifetime: "20 seconds" })),
+            Effect.andThen(
+              LocalSource.open({ model: H3Source.model, buildRatio: 0.2, lifetime: "20 seconds" }),
+            ),
             Effect.map((source) =>
               nth === 1
                 ? {
@@ -3616,7 +3687,7 @@ layer(hosted)("a crash loop", (it) => {
         },
       });
       const failure = yield* playout.failure;
-      assert.strictEqual(failure._tag, "ReactorError");
+      assert.strictEqual(failure._tag, "SourceError");
       assert.strictEqual((yield* test.sessions).length, 3);
     }),
   );
@@ -3665,6 +3736,8 @@ layer(hosted)("closing and failing", (it) => {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const scope = yield* Scope.make();
       const playout = yield* Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
         open: H3Source.open({ tokens: yield* tokens("10 minutes") }),
         lanes: [{ name: "line" }],
       }).pipe(Scope.provide(scope));
@@ -3754,6 +3827,8 @@ layer(hosted)("closing and failing", (it) => {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const scope = yield* Scope.make();
       const playout = yield* Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
         open: H3Source.open({ tokens: yield* tokens("10 minutes") }),
         lanes: [{ name: "line" }],
       }).pipe(Scope.provide(scope));
@@ -3772,6 +3847,8 @@ layer(hosted)("closing and failing", (it) => {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
       const scope = yield* Scope.make();
       const playout = yield* Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
         open: H3Source.open({ tokens: yield* tokens("10 minutes") }),
         lanes: [{ name: "line" }],
       }).pipe(Scope.provide(scope));
@@ -3848,6 +3925,8 @@ layer(hosted)("cleanup evidence", (it) => {
         allocation: "unknown" as const,
       };
       const playout = yield* Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
         open: Effect.fail(
           ReactorError.AcquisitionFailure.from(
             ReactorError.ReactorError.fromCode("Timeout", "create session timed out", {

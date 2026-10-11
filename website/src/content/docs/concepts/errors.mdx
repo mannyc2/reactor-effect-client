@@ -5,9 +5,9 @@ description: "Tagged failures with reasons, and whether a failed command may sti
 
 import { Aside, CardGrid, LinkCard } from "@astrojs/starlight/components";
 
-Every failure of a session, the H3 provider or a source is one of three tagged classes:
-`ReactorError`, `CommandFailure` and `AcquisitionFailure`; `Playout` adds its own refusals,
-[below](#the-playouts-own-errors). Each class carries a tagged `reason` to route on, and a `context`
+Reactor sessions, direct H3 commands and H3 source opens use three tagged classes:
+`ReactorError`, `CommandFailure` and `AcquisitionFailure`; `Playout` has provider-neutral failures,
+[below](#source-failures). Each Reactor class carries a tagged `reason` to route on, and a `context`
 that says, among other things, whether the request may have reached Reactor. Every operation's type
 names its exact failure, so the compiler shows you what can go wrong.
 
@@ -36,7 +36,7 @@ export const enqueue = Effect.fn("enqueue")(function* (
 | -------------------- | ------------------------------------------------- | --------------------------------------------- |
 | `CommandFailure`     | A command: an H3 command, `session.command`       | `reason`, and `context` with its dispatch evidence |
 | `AcquisitionFailure` | `create`, `attach`, `H3Source.open` and `resume`  | `reason`, `context`, and `cleanup`: the close report of whatever it allocated |
-| `ReactorError`       | Everything else: reads, streams, layers, uploads  | `reason` and `context`                        |
+| `ReactorError`       | Other Reactor operations: reads, streams, layers, uploads  | `reason` and `context`                        |
 
 Each keeps its own `_tag`, so `Effect.catchTag("CommandFailure", ...)` catches one class.
 `ReactorError.isReactorFailure(value)` recognizes any of the three, and each class has its own
@@ -227,6 +227,32 @@ of its tag, reason, message, operation, request, session, generation and outcome
 error itself. A playout's `Failed` item with reason `Clip` keeps H3's words the same way, in
 `provider`.
 
+## Source failures
+
+`Playout.Source` command methods fail with `Playout.CommandError`. Its tagged `reason` combines
+dispatch evidence with the permitted next action:
+
+| Reason | Next action |
+| --- | --- |
+| `NotSubmitted` | `retry`, `await-change` or `none` |
+| `Replied` | `retry` or `none` |
+| `Unknown` | No next action; the outcome cannot authorize a resend |
+
+`operation` names `enqueue`, `remove`, `move`, `setAutoplay`, `stop` or `play`. H3 adapters keep
+the original `CommandFailure`, including request and generation identity, in redacted `detail`.
+Policy routes on `reason`, never on that diagnostic value. Enqueue retries use `next: "retry"`;
+`await-change` waits for source state to change. Remove, move and autoplay reconcile unknown
+outcomes against later observations. A command that dies also has an uncertain outcome.
+
+`Playout.SourceError` serves source events and source/playout media streams, with reasons `Lost`,
+`Media` and `InvalidInput`. `LocalSource` also uses it to reject an invalid lifetime. Its optional
+`detail` is redacted.
+
+`Playout.PlayoutStopped` describes failures the scheduler produces: `OpenTimeout`, `SessionInUse`,
+`ModelMismatch`, `Moderated` or `NoSession`. The opener's own typed failure remains available
+through `playout.failure`; it is `AcquisitionFailure` for Reactor sources. Closing the playout uses
+`PlayoutClosed`.
+
 ## The playout's own errors
 
 `Playout` refuses a submission before anything is sent with its own tagged errors:
@@ -236,9 +262,10 @@ with `Effect.catchTags`:
 ```ts
 import { Effect } from "effect";
 import { Playout } from "reactor-effect-client";
+import type { H3, ReactorError, Session } from "reactor-effect-client";
 
 export const ask = Effect.fn("ask")(function* (
-  playout: Playout.Playout["Service"],
+  playout: Playout.Service<H3.Request, Session.CloseReport, ReactorError.AcquisitionFailure>,
   id: string,
   prompt: string,
 ) {

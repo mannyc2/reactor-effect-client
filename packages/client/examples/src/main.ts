@@ -11,6 +11,7 @@ import {
 } from "reactor-effect-client";
 import { Rundown } from "./Rundown.ts";
 import type { Segment } from "./Rundown.ts";
+import { Channel } from "./Channel.ts";
 
 const show: ReadonlyArray<Segment> = [
   { prompt: "A hand-painted sign that reads OPENING NIGHT", seconds: 5 },
@@ -39,7 +40,17 @@ const open = Effect.gen(function* () {
  * client and a host, and the Rundown does not change.
  */
 const Offline = Rundown.layer.pipe(
-  Layer.provide(Playout.layer({ open, lanes: [{ name: "show" }] })),
+  Layer.provide(
+    Layer.effect(
+      Channel,
+      Playout.make({
+        evidence: H3Source.evidence,
+        model: H3Source.model,
+        open,
+        lanes: [{ name: "show" }],
+      }),
+    ),
+  ),
   Layer.provideMerge(Reactor.layer()),
   Layer.provideMerge(CoordinatorClient.layer()),
   Layer.provideMerge(ReactorTest.layer({ timing: ReactorTest.Timing.hosted })),

@@ -13,7 +13,7 @@ import { Playout } from "reactor-effect-client";
 import { ChannelStatus } from "./Api.ts";
 import type { AsRunEntry, Outcome, Switch } from "./Api.ts";
 import { Broadcast } from "./Broadcast.ts";
-import { housePrompt } from "./Channel.ts";
+import { Channel, housePrompt } from "./Channel.ts";
 import { Programme } from "./Programme.ts";
 import { Settings } from "./Settings.ts";
 
@@ -336,7 +336,7 @@ export class Monitor extends Context.Service<
   static readonly layer = Layer.effect(
     Monitor,
     Effect.gen(function* () {
-      const playout = yield* Playout.Playout;
+      const playout = yield* Channel;
       const programme = yield* Programme;
       const broadcast = yield* Broadcast;
       const { name, mode, lead, clipSeconds } = yield* Settings;

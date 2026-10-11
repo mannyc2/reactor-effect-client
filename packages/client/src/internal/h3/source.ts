@@ -19,20 +19,32 @@ import type { DecodedMedia, MediaPressure } from "../../Media.js";
 import type {
   ClipModel,
   ClipRequest,
+  Evidence,
   Source,
   SourceClip,
   SourceEvent,
   SourceState,
 } from "../../Playout.js";
-import * as Tag from "../playout/tag.js";
+import { CommandError, SourceError } from "../playout/errors.js";
+import * as Tag from "./playoutTag.js";
 import { currentParent, spanOptions } from "../trace.js";
 import { noAcquisition, Reactor } from "../../Reactor.js";
 import { AcquisitionFailure, CommandFailure, ReactorError } from "../../ReactorError.js";
-import type { Session, Snapshot } from "../../Session.js";
+import type { CloseReport, Session, Snapshot } from "../../Session.js";
+import { mayStillBill } from "../../Session.js";
 
 import type { Clip } from "./messages.js";
 import type { Provider, ControlResult, ProviderEvent } from "./provider.js";
 import type { ProviderSnapshot } from "./state.js";
+
+/** Reactor cleanup and retry evidence carried through a playout source. */
+export const evidence: Evidence<CloseReport, AcquisitionFailure> = {
+  mayStillBill,
+  failedOpen: (error) =>
+    error.cleanup.allocation === "none"
+      ? { _tag: "NotAllocated", retryAfter: error.retryAfter }
+      : { _tag: "Allocated", report: error.cleanup, retryAfter: error.retryAfter },
+};
 
 export interface SourceRequest extends ClipRequest {
   readonly metadata?: string | undefined;
@@ -77,6 +89,62 @@ export interface SourceModel<Req extends SourceRequest, C extends Clip> {
     continueFrom: string | undefined,
   ) => Effect.Effect<string, CommandFailure>;
 }
+
+const commandError =
+  (operation: CommandError["operation"]) =>
+  (error: CommandFailure): CommandError => {
+    let reason: CommandError["reason"];
+    switch (error.context.outcome) {
+      case "unknown":
+        reason = { _tag: "Unknown" };
+        break;
+      case "replied":
+        reason = { _tag: "Replied", next: error.isRetryable ? "retry" : "none" };
+        break;
+      case "not-submitted": {
+        let next: "retry" | "await-change" | "none" = "none";
+        if (error.isRetryable) next = "retry";
+        else if (
+          error.reason._tag === "InvalidState" ||
+          error.reason._tag === "TerminalSession" ||
+          error.reason._tag === "Moderated"
+        )
+          next = "await-change";
+        reason = { _tag: "NotSubmitted", next };
+        break;
+      }
+    }
+    return CommandError.make({
+      reason,
+      operation,
+      message: error.message,
+      detail: Redacted.make(error),
+    });
+  };
+
+/** Translate failures without losing a defect reported beside one. */
+const mapCommandError =
+  (operation: CommandError["operation"]) =>
+  <A>(command: Effect.Effect<A, CommandFailure>): Effect.Effect<A, CommandError> =>
+    Effect.catchCause(command, (cause) =>
+      Effect.failCause(Cause.map(cause, commandError(operation))),
+    );
+
+const sourceError = <A>(
+  source: Stream.Stream<A, ReactorError>,
+  reason: "Lost" | "Media",
+): Stream.Stream<A, SourceError> =>
+  Stream.catchCause(source, (cause) =>
+    Stream.failCause(
+      Cause.map(cause, (error) =>
+        SourceError.make({
+          reason: { _tag: reason },
+          message: error.message,
+          detail: Redacted.make(error),
+        }),
+      ),
+    ),
+  );
 
 const clipOf = (clip: Clip): SourceClip => ({
   clipId: clip.clip_id,
@@ -220,7 +288,7 @@ const fromSession = Effect.fnUntraced(function* <Req extends SourceRequest, C ex
   session: Session,
   options: Options & { readonly resumed: boolean },
 ): Effect.fn.Return<
-  Omit<Source<Req>, "lifetime">,
+  Omit<Source<Req, CloseReport>, "lifetime">,
   ReactorError | CommandFailure,
   Crypto.Crypto | Scope.Scope
 > {
@@ -477,7 +545,7 @@ const fromSession = Effect.fnUntraced(function* <Req extends SourceRequest, C ex
   return {
     sessionId: session.id,
     model: model.model,
-    events,
+    events: sourceError(events, "Lost"),
     enqueue: (request, tag, continueFrom) =>
       Effect.gen(function* () {
         const caller = Tag.encode({ tag, metadata: request.metadata });
@@ -487,10 +555,12 @@ const fromSession = Effect.fnUntraced(function* <Req extends SourceRequest, C ex
             { operation: "enqueue", outcome: "not-submitted" },
           );
         return yield* model.enqueue(provider, request, caller, continueFrom);
-      }),
-    remove: (clipId) => Effect.asVoid(provider.pop(clipId)),
-    move: (clipId, position) => Effect.asVoid(provider.move(clipId, position)),
-    setAutoplay: (enabled) => Effect.asVoid(provider.setAutoplay(enabled)),
+      }).pipe(mapCommandError("enqueue")),
+    remove: (clipId) => provider.pop(clipId).pipe(Effect.asVoid, mapCommandError("remove")),
+    move: (clipId, position) =>
+      provider.move(clipId, position).pipe(Effect.asVoid, mapCommandError("move")),
+    setAutoplay: (enabled) =>
+      provider.setAutoplay(enabled).pipe(Effect.asVoid, mapCommandError("setAutoplay")),
     // With autoplay off nothing starts after the clip, so H3's stop, which names no clip, can
     // only hit it. It may have ended on its own first: a refusal because nothing plays is
     // harmless, and a clip that took its place is not stopped.
@@ -501,12 +571,18 @@ const fromSession = Effect.fnUntraced(function* <Req extends SourceRequest, C ex
           Effect.flatMap((stopped) => landed(clipId, stopped)),
           Effect.catchIf(replied, () => Effect.void),
         );
-      }),
-    play: (clipId) => Effect.asVoid(provider.play(clipId)),
-    video: track(session, (media) => media.video(model.tracks.video), overflowed("video")),
-    audio: track(session, (media) => media.audio(model.tracks.audio), overflowed("audio")),
+      }).pipe(mapCommandError("stop")),
+    play: (clipId) => provider.play(clipId).pipe(Effect.asVoid, mapCommandError("play")),
+    video: sourceError(
+      track(session, (media) => media.video(model.tracks.video), overflowed("video")),
+      "Media",
+    ),
+    audio: sourceError(
+      track(session, (media) => media.audio(model.tracks.audio), overflowed("audio")),
+      "Media",
+    ),
     close: session.close,
-  } satisfies Omit<Source<Req>, "lifetime">;
+  } satisfies Omit<Source<Req, CloseReport>, "lifetime">;
 });
 
 const failAcquisition = (session: Session) => (error: ReactorError | CommandFailure) =>
@@ -522,7 +598,11 @@ export const open =
   <Req extends SourceRequest, C extends Clip>(model: SourceModel<Req, C>) =>
   <E = never, R = never>(
     options: OpenOptions<E, R>,
-  ): Effect.Effect<Source<Req>, AcquisitionFailure, R | Reactor | Crypto.Crypto | Scope.Scope> =>
+  ): Effect.Effect<
+    Source<Req, CloseReport>,
+    AcquisitionFailure,
+    R | Reactor | Crypto.Crypto | Scope.Scope
+  > =>
     Effect.gen(function* () {
       const reactor = yield* Reactor;
       const grant = yield* options.tokens.create.pipe(
@@ -566,7 +646,11 @@ export const resume =
   <Req extends SourceRequest, C extends Clip>(model: SourceModel<Req, C>) =>
   (
     options: ResumeOptions,
-  ): Effect.Effect<Source<Req>, AcquisitionFailure, Reactor | Crypto.Crypto | Scope.Scope> =>
+  ): Effect.Effect<
+    Source<Req, CloseReport>,
+    AcquisitionFailure,
+    Reactor | Crypto.Crypto | Scope.Scope
+  > =>
     Effect.gen(function* () {
       const refuse = (message: string) =>
         AcquisitionFailure.from(

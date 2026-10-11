@@ -187,16 +187,58 @@ const extensions: Record<string, string> = {
 
 const build = Effect.fnUntraced(function* (session: Session, options: Options) {
   const limits = {
-    reply: yield* Deadline.decode("ViduS2Avatar replyTimeout")(
-      options.replyTimeout ?? "10 seconds",
+    reply: yield* Schema.decodeEffect(Deadline.Deadline)(options.replyTimeout ?? "10 seconds").pipe(
+      Effect.mapError((cause) =>
+        ReactorError.fromCode(
+          "InvalidInput",
+          "ViduS2Avatar replyTimeout is not a finite, non-negative duration",
+          {
+            outcome: "not-submitted",
+            detail: cause,
+          },
+        ),
+      ),
     ),
-    upload: yield* Deadline.decode("ViduS2Avatar uploadTimeout")(
+    upload: yield* Schema.decodeEffect(Deadline.Deadline)(
       options.uploadTimeout ?? "60 seconds",
+    ).pipe(
+      Effect.mapError((cause) =>
+        ReactorError.fromCode(
+          "InvalidInput",
+          "ViduS2Avatar uploadTimeout is not a finite, non-negative duration",
+          {
+            outcome: "not-submitted",
+            detail: cause,
+          },
+        ),
+      ),
     ),
-    avatar: yield* Deadline.decode("ViduS2Avatar avatarTimeout")(
+    avatar: yield* Schema.decodeEffect(Deadline.Deadline)(
       options.avatarTimeout ?? "60 seconds",
+    ).pipe(
+      Effect.mapError((cause) =>
+        ReactorError.fromCode(
+          "InvalidInput",
+          "ViduS2Avatar avatarTimeout is not a finite, non-negative duration",
+          {
+            outcome: "not-submitted",
+            detail: cause,
+          },
+        ),
+      ),
     ),
-    call: yield* Deadline.decode("ViduS2Avatar callTimeout")(options.callTimeout ?? "60 seconds"),
+    call: yield* Schema.decodeEffect(Deadline.Deadline)(options.callTimeout ?? "60 seconds").pipe(
+      Effect.mapError((cause) =>
+        ReactorError.fromCode(
+          "InvalidInput",
+          "ViduS2Avatar callTimeout is not a finite, non-negative duration",
+          {
+            outcome: "not-submitted",
+            detail: cause,
+          },
+        ),
+      ),
+    ),
   };
   // A provider attaches to a connected session; it neither allocates nor closes it.
   yield* session.ready;
