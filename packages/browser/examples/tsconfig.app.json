@@ -13,7 +13,6 @@
     "src/Live.ts",
     "src/Offline.ts",
     "src/Page.ts",
-    "src/Speaker.ts",
     "src/Speech.ts",
     "src/Stage.ts",
     "src/Studio.ts",

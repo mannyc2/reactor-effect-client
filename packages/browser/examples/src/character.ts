@@ -7,12 +7,14 @@
 import { Cause, Clock, Effect, Fiber, FiberHandle, Layer, Schema, Stream } from "effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import { HttpApiClient } from "effect/http-api";
+import * as BrowserAudio from "reactor-effect-browser/BrowserAudio";
+import * as BrowserCharacter from "reactor-effect-browser/BrowserCharacter";
+import { PlaybackError } from "reactor-effect-client/AudioPlayback";
 import type { AudioFrame } from "reactor-effect-client/Media";
 import { SpeechModel } from "reactor-effect-client/SpeechModel";
 import { Api } from "./Api.ts";
 import type { Character } from "./Api.ts";
 import * as Avatar from "./Avatar.ts";
-import * as Speaker from "./Speaker.ts";
 import * as Speech from "./Speech.ts";
 
 /** The page's element with this id, checked to be the kind the page uses it as. */
@@ -102,7 +104,7 @@ const fileFrames = (file: File): Stream.Stream<AudioFrame, AudioFileError> =>
 const page = Effect.gen(function* () {
   const api = yield* HttpApiClient.make(Api);
   const speech = yield* SpeechModel;
-  const speaker = yield* Speaker.make;
+  const speaker = yield* BrowserAudio.make;
   const setup = yield* api.character().pipe(
     Effect.orElseSucceed((): Character => ({
       speech: { _tag: "Unavailable" },
@@ -143,12 +145,16 @@ const page = Effect.gen(function* () {
       );
       yield* note(`${label}: played to its end`);
     }).pipe(
-      Effect.catch((error: E) => note(`${label}: failed, ${describe(error)}`)),
+      Effect.catch((error) =>
+        note(
+          `${label}: failed, ${Schema.is(PlaybackError)(error) ? error.reason.message : describe(error)}`,
+        ),
+      ),
       Effect.onInterrupt(() => note(`${label}: interrupted`)),
       Effect.ensuring(Effect.sync(() => (ui.state.textContent = "idle"))),
     );
 
-  const meter = Avatar.frames.pipe(
+  const meter = BrowserCharacter.frames.pipe(
     Stream.runForEach(() =>
       Effect.map(speaker.level, (level) => {
         ui.level.style.width = `${String(Math.min(100, level * 400))}%`;

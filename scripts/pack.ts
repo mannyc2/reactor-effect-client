@@ -333,7 +333,6 @@ const program = Effect.gen(function* () {
       "packages/browser/examples/src/app.ts",
       "packages/browser/examples/src/playground.ts",
       "packages/browser/examples/src/Speech.ts",
-      "packages/browser/examples/src/Speaker.ts",
       "packages/browser/examples/src/Avatar.ts",
       "packages/browser/examples/src/character.ts",
     ],

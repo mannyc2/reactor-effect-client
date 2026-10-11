@@ -36,6 +36,8 @@ export const packages = Object.freeze([
     name: "reactor-effect-client",
     exports: [
       ".",
+      "./AudioPlayback",
+      "./Character",
       "./CartesiaSpeech",
       "./CoordinatorClient",
       "./H3",
@@ -60,7 +62,7 @@ export const packages = Object.freeze([
   },
   {
     name: "reactor-effect-browser",
-    exports: [".", "./BrowserMedia", "./BrowserPeer"],
+    exports: [".", "./BrowserAudio", "./BrowserCharacter", "./BrowserMedia", "./BrowserPeer"],
     dependsOn: ["reactor-effect-client"],
   },
   {
