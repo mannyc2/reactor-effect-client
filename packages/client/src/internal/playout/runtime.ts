@@ -810,7 +810,11 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
    * Sends one edit batch. Its commit and each withdrawal's outcome are
    * registered first, since the policy may settle them in the step that accepts it.
    */
-  const submitEdits = (edits: ReadonlyArray<Policy.EditInput<Req>>, batch: boolean) =>
+  const submitEdits = (
+    edits: ReadonlyArray<Policy.EditInput<Req>>,
+    batch: boolean,
+    protect: "deadlines" | undefined,
+  ) =>
     Effect.gen(function* () {
       const id = yield* nextId;
       const reply = yield* Deferred.make<Reply>();
@@ -830,7 +834,7 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
         (index) => claim(withdrawals, `${id}:${index}`),
         { discard: true },
       ).pipe(Effect.andThen(claim(commits, id)));
-      yield* offer({ _tag: "Edit", id, edits, batch }, yield* currentParent);
+      yield* offer({ _tag: "Edit", id, edits, batch, protect }, yield* currentParent);
       const answer = yield* unlessStopped(reply, closed).pipe(
         Effect.ensuring(claim(replies, id)),
         Effect.onError(() => forget),
@@ -936,10 +940,10 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
           return { _tag: "Withdraw", key: yield* itemKey(edit.key) };
       }
     });
-  const edit = (input: ReadonlyArray<Playout.Edit<Req>>, batch: boolean) =>
+  const edit = (input: ReadonlyArray<Playout.Edit<Req>>, batch: boolean, protect?: "deadlines") =>
     Effect.gen(function* () {
       const edits = yield* Effect.forEach(input, toEdit);
-      const { commit, outcomes, results } = yield* submitEdits(edits, batch);
+      const { commit, outcomes, results } = yield* submitEdits(edits, batch, protect);
       const mapped = yield* Effect.forEach(
         results,
         (result, index): Effect.Effect<Playout.EditResult> => {
@@ -1031,8 +1035,11 @@ export const make = Effect.fnUntraced(function* <R, Req extends Playout.ClipRequ
         ? first.handle
         : yield* Effect.die("a replace returned no handle");
     }),
-    edit: Effect.fn("Playout.edit")(function* (edits: ReadonlyArray<Playout.Edit<Req>>) {
-      const { commit, results } = yield* edit(edits, true);
+    edit: Effect.fn("Playout.edit")(function* (
+      edits: ReadonlyArray<Playout.Edit<Req>>,
+      options?: { readonly protect?: "deadlines" | undefined },
+    ) {
+      const { commit, results } = yield* edit(edits, true, options?.protect);
       return { results, committed: unlessStopped(commit, closed) };
     }),
     release: Effect.fn("Playout.release")(function* (key: ItemKey) {

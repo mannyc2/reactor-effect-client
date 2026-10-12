@@ -151,6 +151,7 @@ export type Input<Req extends ClipRequest = Request> =
       readonly id: number;
       readonly edits: ReadonlyArray<EditInput<Req>>;
       readonly batch: boolean;
+      readonly protect?: "deadlines" | undefined;
     }
   | { readonly _tag: "Release"; readonly id: number; readonly key: ItemKey }
   | { readonly _tag: "Drain"; readonly id: number; readonly finish: "playing" | "accepted" }
@@ -1539,8 +1540,11 @@ interface Run {
   readonly gone: ReadonlyMap<PlanItem, { readonly reason: DropReason; readonly at: number }>;
 }
 
-/** Where a forward run stops: once `limit` clips aired, or once it placed every item it can. */
-type Until = { readonly _tag: "Clips"; readonly limit: number } | { readonly _tag: "Placed" };
+/** Where a forward run stops: a clip count, a time, or every item it can place. */
+type Until =
+  | { readonly _tag: "Clips"; readonly limit: number }
+  | { readonly _tag: "Time"; readonly at: number }
+  | { readonly _tag: "Placed" };
 
 /**
  * Why a forward run cannot place an item: held until released, sent with its outcome never seen,
@@ -2406,7 +2410,12 @@ const decide = <Req extends ClipRequest>(
       ? Math.max(anchor.order - 1, ...sameLane.filter((order) => order < anchor.order))
       : Math.min(anchor.order + 1, ...sameLane.filter((order) => order > anchor.order));
   };
-  const applyEdit = (id: number, edits: ReadonlyArray<EditInput<Req>>, batched: boolean): void => {
+  const applyEdit = (
+    id: number,
+    edits: ReadonlyArray<EditInput<Req>>,
+    batched: boolean,
+    protect: "deadlines" | undefined,
+  ): void => {
     // A drain stops admissions, not withdrawals.
     if (state.closed || (!state.accepting && edits.some((edit) => edit._tag !== "Withdraw"))) {
       actions.push({ _tag: "Refused", id, refusal: { _tag: "PlayoutClosed" } });
@@ -2658,8 +2667,43 @@ const decide = <Req extends ClipRequest>(
           break;
       }
     }
-    // An edit refused below, as an item it adds would wait on itself or miss its deadline, leaves
-    // the plan as it was.
+    const protectedDeadlines =
+      protect === "deadlines"
+        ? [...items.values()].flatMap((item) => {
+            if (!live(item) || item.phase === "Started" || item.withdraw !== undefined) return [];
+            const bounds: Array<number> = [];
+            if (item.spec.window?.firm === true && item.startBy !== undefined)
+              bounds.push(item.startBy);
+            const at = atMono(item);
+            if (at !== undefined && item.spec.start._tag === "At" && item.keptLate !== true)
+              bounds.push(lateAt(at, item.spec.start.late));
+            return bounds.filter(Number.isFinite);
+          })
+        : [];
+    // Admission includes cutting lanes, which a public forecast leaves unplaced. Protection
+    // runs through the deadlines themselves: subsecond filler can exhaust a clip count sooner.
+    const runThrough = (deadlines: ReadonlyArray<number>): Run =>
+      forward(
+        undefined,
+        protect === "deadlines"
+          ? { _tag: "Time", at: Math.max(now.mono, ...deadlines) }
+          : {
+              _tag: "Clips",
+              limit:
+                [...items.values()].filter(live).length +
+                Math.ceil((Math.max(...deadlines) - now.mono) / 1000) +
+                1,
+            },
+      );
+    const alreadyLate =
+      protectedDeadlines.length === 0
+        ? undefined
+        : new Set(
+            [...runThrough(protectedDeadlines).gone].flatMap(([item, drop]) =>
+              drop.reason === "late" ? [item.spec.key] : [],
+            ),
+          );
+    // A refused edit leaves the plan as it was.
     const saved = {
       items: new Map(items),
       groups: new Map(groups),
@@ -2943,18 +2987,10 @@ const decide = <Req extends ClipRequest>(
       return item.spec.window?.firm === true && item.startBy !== undefined ? [item.startBy] : [];
     });
     // A clip not Ready a margin before its boundary gives that boundary to the next one Ready,
-    // filler included, which only a forward run projects. It runs on until about a clip a second
-    // has aired up to the last deadline, so each item has aired or gone by then; it is taken once,
-    // for the first item the projection does not refuse.
+    // filler included, which only a forward run projects. New firm admission and protection
+    // share one run of the staged plan.
     let run: Run | undefined;
-    const forwardRun = (): Run =>
-      (run ??= forward(undefined, {
-        _tag: "Clips",
-        limit:
-          [...items.values()].filter(live).length +
-          Math.ceil((Math.max(...deadlines) - now.mono) / 1000) +
-          1,
-      }));
+    const forwardRun = (): Run => (run ??= runThrough([...deadlines, ...protectedDeadlines]));
     const memo = emptyMemo();
     for (const key of adds) {
       const item = items.get(key)!;
@@ -2975,6 +3011,25 @@ const decide = <Req extends ClipRequest>(
       ) {
         restore();
         return refuse({ _tag: "WouldMissDeadline", key });
+      }
+    }
+    if (alreadyLate !== undefined) {
+      const excluded = new Set([
+        ...targets.map((target) => target.key),
+        ...edits.flatMap((edit) => (edit._tag === "Replace" ? [edit.key] : [])),
+      ]);
+      const missed = [...forwardRun().gone]
+        .filter(
+          ([item, drop]) =>
+            drop.reason === "late" &&
+            saved.items.has(item.spec.key) &&
+            !alreadyLate.has(item.spec.key) &&
+            !excluded.has(item.spec.key),
+        )
+        .sort((a, b) => a[1].at - b[1].at)[0];
+      if (missed !== undefined) {
+        restore();
+        return refuse({ _tag: "WouldMissDeadline", key: missed[0].spec.key });
       }
     }
     for (const index of notFound)
@@ -3669,7 +3724,7 @@ const decide = <Req extends ClipRequest>(
 
   switch (input._tag) {
     case "Edit":
-      applyEdit(input.id, input.edits, input.batch);
+      applyEdit(input.id, input.edits, input.batch, input.protect);
       break;
     case "Release": {
       // A group key releases its first place: the part and any replacement, which takes its mode.
@@ -5674,8 +5729,8 @@ const decide = <Req extends ClipRequest>(
    * to the replacement once one is open, or from the lead before the cap, when the plan opens one;
    * until then what cannot air before the cap waits for it, and the air moves to it once the
    * session on air has nothing left. With `hypothesis`, the run ends once it aired and a clip after
-   * it did, or once it is gone; without, as `until` says: after `limit` clips, or once each item it
-   * can place aired or went.
+   * it did, or once it is gone; without, as `until` says: after `limit` clips, through a time, or
+   * once each item it can place aired or went.
    */
   function forward(hypothesis: Hypothesis | undefined, until: Until): Run {
     const air = session(state.air);
@@ -6691,10 +6746,16 @@ const decide = <Req extends ClipRequest>(
       return true;
     };
     const finished = (): boolean => {
-      if (hypothesis === undefined)
-        return until._tag === "Clips"
-          ? aired.length >= until.limit
-          : toPlace.every((item) => done.has(item) || gone.has(item));
+      if (hypothesis === undefined) {
+        switch (until._tag) {
+          case "Clips":
+            return aired.length >= until.limit;
+          case "Time":
+            return clock >= until.at;
+          case "Placed":
+            return toPlace.every((item) => done.has(item) || gone.has(item));
+        }
+      }
       if (gone.has(hypothesis.item)) return true;
       const index = aired.findIndex((entry) => entry.clip.item === hypothesis.item);
       return index >= 0 && aired.length > index + 1;

@@ -83,7 +83,7 @@ A submission is refused before anything is sent with one of these tagged errors:
 | `InvalidItem`       | The request is outside its model's limits (H3's by default), naming each field and limit, or names an unknown lane or anchor |
 | `KeyMismatch`       | The key is in use with a different spec                                 |
 | `LaneBusy`          | The lane skips new items while one waits or plays                       |
-| `WouldMissDeadline` | The plan cannot start the item before its firm `startBy`                |
+| `WouldMissDeadline` | A new firm item cannot meet `startBy`, or a protected edit newly makes an admitted item late |
 | `PlayoutClosed`     | The playout is draining or closed                                       |
 
 An item whose request omits `seconds` is sent at its model's `defaultSeconds` (5 s for H3).
@@ -337,6 +337,19 @@ item or group it adds is refused with `InvalidItem`. An insert placed before an 
 not hold, with no firm window of
 its own, is held like any other add, so it may air after that add: give it a firm window too, or
 send it as its own edit.
+
+Use `edit(edits, { protect: "deadlines" })` when an edit must respect items already admitted.
+Before accepting the batch, the playout compares the plan before and after it using the same
+projection as firm admission. It refuses with `WouldMissDeadline { key }` for the first item
+newly projected to drop as `late`: a firm `startBy`, `readyBy` judgment or `skipIfLaterThan` bound.
+Items the batch withdraws or replaces do not count, nor do items already projected late. A refusal
+admits nothing and performs no withdrawal or replacement. Without the option, admission checks
+only the new firm items.
+
+This is a projection using measured build timing, with the same ten-minute horizon and at most
+one renewal. Cutting lanes are included in admission's projected order, but the projection does
+not simulate interrupting a clip already playing. Slower builds, uncertain outcomes and work
+beyond the projection can still change what airs.
 
 A replacement builds ahead of every other item waiting in its lane except an `Asap` one and the
 adds a pending batch does not hold. It takes its item's start and window, `notBefore` and
