@@ -1054,52 +1054,25 @@ layer(hosted)("time", (it) => {
     }),
   );
 
-  // A projected time is seldom a whole nanosecond, as the virtual clock counts: the playout waits
-  // until the clock reaches it, rather than just short of it and on until the clock steps again.
-  it.effect("drops a firm item as its projection reaches its startBy, not at a later step", () =>
+  it.effect("refuses a cutting item whose notBefore and measured build miss its deadline", () =>
     Effect.gen(function* () {
-      const { playout, events } = yield* start();
+      const { playout } = yield* start();
       // Three builds measured, so the plan projects each item's build from the median.
       const measured = yield* Effect.forEach(["a", "b", "c"], (name) =>
         playout.submit({ key: key(name), lane: "line", request: clip(name) }),
       );
       for (const handle of measured) yield* handle.outcome;
-      const median = (yield* playout.state).estimates.build?.median ?? 0;
-      assert.isAbove(median, 0);
-      // The plan counts a build per second of the length H3 builds, and each build measured asked
-      // for 5 s.
-      const perBuilt = (median * 5) / H3Source.model.builtSeconds(5);
-      // Nothing airs, and none may build before 5 s: each would miss its startBy from 8 s less
-      // its own build on, a time for each length. Each goes alone, on the lane that cuts, which
-      // airs a clip once it is Ready, so only that projection decides it.
-      const lengths = [8, 9, 10, 11, 12, 13];
-      for (const seconds of lengths) {
-        const firm = yield* playout.submit({
-          key: key(`firm ${String(seconds)}`),
+      // An eight-second request takes over three seconds to build, after the five-second hold.
+      const firm = yield* playout
+        .submit({
+          key: key("firm"),
           lane: "urgent",
-          request: clip(`firm ${String(seconds)}`, seconds),
+          request: clip("firm", 8),
           window: { notBefore: "5 seconds", startBy: "8 seconds", firm: true },
-        });
-        assert.deepStrictEqual(yield* firm.outcome, { _tag: "Dropped", reason: "late" });
-      }
-      const all = yield* events;
-      const at = (name: string, status: string) =>
-        all.flatMap((event) =>
-          event._tag === "AsRun" && event.event.key === name && event.event.status._tag === status
-            ? [event.event.at]
-            : [],
-        )[0] ?? Number.NaN;
-      const late = lengths.map((seconds) => {
-        const name = `firm ${String(seconds)}`;
-        const build = H3Source.model.builtSeconds(seconds) * perBuilt * 1_000;
-        return at(name, "Dropped") - at(name, "Accepted") - (8_000 - build);
-      });
-      // The virtual clock's wall and monotonic readings part by less than a microsecond here.
-      assert.deepStrictEqual(
-        late.map((ms) => Math.abs(ms) < 0.01),
-        lengths.map(() => true),
-        `dropped late by ${late.map((ms) => ms.toFixed(6)).join(", ")} ms`,
-      );
+        })
+        .pipe(Effect.result);
+      assert.isTrue(Result.isFailure(firm));
+      if (Result.isFailure(firm)) assert.strictEqual(firm.failure._tag, "WouldMissDeadline");
     }),
   );
 
@@ -1333,7 +1306,11 @@ layer(seamed)("follows", (it) => {
       yield* playout.submit({ key: key("x"), lane: "urgent", request: clip("x") });
       const placement = yield* playout.place({ key: key("u") });
       if (placement === null) return;
-      const spec = { key: key("u"), request: clip("u"), follows: placement.after };
+      const spec = {
+        key: key("u"),
+        request: clip("u"),
+        follows: placement.anchor === key("x") ? undefined : placement.after,
+      };
       yield* placement.anchor === "next"
         ? playout.submit({ ...spec, lane: "quiet", start: { _tag: "Asap" } })
         : playout.insert({ ...spec, after: placement.anchor });
@@ -1995,7 +1972,7 @@ layer(seamed, { timeout: "10 minutes" })("forecast", (it) => {
     }),
   );
 
-  it.effect("a forecast holds a batch's add behind a cutting add it does not project", () =>
+  it.effect("a forecast places a batch's cutting add and the add held with it", () =>
     Effect.gen(function* () {
       const { playout } = yield* start({ filler: gridFiller("8 seconds", "16 seconds") });
       yield* eventually(playout.state, (state) => state.estimates.build !== undefined);
@@ -2005,16 +1982,9 @@ layer(seamed, { timeout: "10 minutes" })("forecast", (it) => {
         { _tag: "Submit", item: { key: key("mate"), lane: "line", request: clip("mate") } },
       ]);
       const projected = yield* playout.forecast;
-      assert.deepStrictEqual(Playout.forecastFor(projected, key("cut")), {
-        _tag: "Unplaced",
-        why: "cut",
-      });
-      // The batch holds mate until the cut is Ready, and the forecast does not project the cut.
-      assert.deepStrictEqual(Playout.forecastFor(projected, key("mate")), {
-        _tag: "Unplaced",
-        why: "blocked",
-      });
-      // Nothing it can place is left, so it projects no filler past the clip on air.
+      assert.strictEqual(Playout.forecastFor(projected, key("cut"))._tag, "Airs");
+      assert.strictEqual(Playout.forecastFor(projected, key("mate"))._tag, "Airs");
+      // The run ends once both items are placed.
       const lastStart = projected.clips.at(-1)?.startsAt ?? projected.at;
       assert.isBelow(lastStart - projected.at, 60_000);
     }),

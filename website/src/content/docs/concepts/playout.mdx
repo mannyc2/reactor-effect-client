@@ -528,8 +528,10 @@ the simulated Reactor and in the policy's property checks, not on hosted H3.
 
 Some clips depend on the clips around them, such as an acknowledgement written for what just
 aired. `place` projects where a clip would land if you submitted it `submitIn` from now, before
-you write it. Submitted with `follows: placement.after`, the clip airs right after that clip,
-across a renewal too, or is dropped as `displaced`.
+you write it. In a lane without cuts, submit with `follows: placement.after`: the clip airs right
+after that clip, across a renewal too, or is dropped as `displaced`. The example below uses lanes
+without cuts. In a cutting lane, omit `follows` and use the same `anchor`; `after` describes the
+projected predecessor without enforcing adjacency.
 
 ```ts
 import { Effect } from "effect";
@@ -587,7 +589,8 @@ with a provider command, a round trip after the boundary that `startsAt` does no
 command whose outcome is unknown can hold the air dark there until H3's reply deadline. A follower
 of an item in a pending batch may be built and then dropped before the batch commits. `place`
 answers a boundary only with a clip projected Ready a readiness margin and one provider command
-before it, and on a replacement only if it airs there before that session's cap.
+before it, and on a replacement only if it airs there before that session's cap. A cutting lane
+can instead place the clip at a projected cut, once Ready plus the readiness margin.
 
 ## Forecast
 
@@ -630,11 +633,18 @@ and the places it drops then appear only in `drops`.
 
 A forecast does not project what the plan cannot know. `unplaced` lists each item it neither airs
 nor drops, and why: a held `Manual` item (`held`), one whose enqueue's outcome is unknown
-(`unknown`), one waiting to cut a lower lane (`cut`), one waiting behind any of these as a member
-of its group, as the clip it follows or as another add of its pending batch (`blocked`), and one
+(`unknown`), one waiting on the outcome of a cut already in progress (`cut`), one waiting behind
+any of these as a member of its group, as the clip it follows or as another add of its pending
+batch (`blocked`), and one
 beyond what it projects: past the ten minutes it looks ahead or the looks its run takes, or with
 no session on air yet (`beyond`). It projects one renewal at most, and `basis` is `unmeasured`
 until three builds were measured, when every build counts as instant.
+
+Forecast, placement and firm admission project cuts on the session on air. A cutting lane's
+Ready item at the front interrupts filler or a strictly lower lane while more than a second
+remains; a projected build also gets the readiness margin. The interrupted clip's projected end
+is shortened. A clip already subject to a cut is never cut again, and replacement-session items
+wait for that session to take the air. Cut command latency is not projected.
 
 A forecast is a projection at the build rates the plan has measured, not a promise. It changes as
 builds are measured and items arrive, and it ages between changes: a build that runs longer than
