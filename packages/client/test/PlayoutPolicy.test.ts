@@ -1968,6 +1968,39 @@ describe("PlayoutPolicy, edits", () => {
     assert.deepStrictEqual(statuses(policy.actions, "urgent").at(-1), "Started");
   });
 
+  // A dispatched cut still owes the cutter its airtime. Omitting it admitted another item in
+  // the same lane whose deadline expired while the cutter played. Hold the Stop reply to
+  // exercise the command window before the provider confirms either clip's fate.
+  it.each(["Follow", "Asap"] as const)(
+    "counts a pending cutter before admitting a firm %s item in its lane",
+    (start) => {
+      const policy = drive({ from: measured });
+      policy.tick(0);
+      policy.open();
+      const long = clip("c-long", item("long"), 15);
+      const cutter = clip("c-urgent", item("urgent"));
+      policy.submit(spec("long", 1, 15), 10);
+      policy.reply({ _tag: "Done", clipId: long.clipId }, 20);
+      policy.observe({ ready: [long] }, "s1", 6_010);
+      policy.event({ _tag: "Started", clip: long }, "s1", 6_020);
+      policy.observe({ playing: long });
+      policy.submit(spec("urgent", 0), 16_000);
+      policy.reply({ _tag: "Done", clipId: cutter.clipId });
+      policy.observe({ playing: long, ready: [cutter] }, "s1", 18_000);
+      policy.reply({ _tag: "Done" }, 18_020);
+      assert.deepStrictEqual(policy.busy(), { _tag: "Stop", clipId: long.clipId });
+      assert.strictEqual(policy.state().cutting?.stage, "stopping");
+      // long has 3 s left, but urgent must still play its 5 s and a peer cannot cut it.
+      const refused = policy
+        .submit(
+          { ...spec("f", 0), start: { _tag: start }, window: { startByMs: 4_000, firm: true } },
+          18_103,
+        )
+        .actions.flatMap((action) => (action._tag === "Refused" ? [action.refusal._tag] : []));
+      assert.deepStrictEqual(refused, ["WouldMissDeadline"]);
+    },
+  );
+
   // 0.7.0 answered a group key's withdrawal `withdrawn` if any part was; the first Playout
   // answered with the first part's outcome.
   it("answers withdrawn for a group whose first part aired and whose next part it drops", () => {

@@ -5705,8 +5705,9 @@ const decide = <Req extends ClipRequest>(
     let refilling = state.filler.refilling;
     let probeReady: number | undefined;
     let probeContinued = false;
-    // The outcome of a cut already dispatched is not known until its source reports it.
-    const leftOut = cutPending;
+    // Forecasts leave a dispatched cut unplaced until the source reports its outcome. Admission
+    // and placement still count its cutter's air by projecting the cut's completion below.
+    const leftOut = (item: PlanItem): boolean => until._tag === "Placed" && cutPending(item);
 
     let pending: Array<PlanItem> = [...items.values()].filter(
       (item) =>
@@ -6693,6 +6694,16 @@ const decide = <Req extends ClipRequest>(
       t = start + head.seconds * 1000;
       current = true;
     };
+    const startCut = (front: Projected, time: number): void => {
+      const previous = aired.at(-1);
+      // A stopped clip never resumes. Its shortened air also determines forecast ends and drain.
+      if (current && previous !== undefined)
+        aired[aired.length - 1] = {
+          ...previous,
+          clip: { ...previous.clip, seconds: Math.max(0, time - previous.start) / 1000 },
+        };
+      startClip(front, time + config.timing.seamMs);
+    };
     const cutAt = (time: number): void => {
       const previous = aired.at(-1);
       if (!current || previous === undefined || time < previous.start || t - time <= cutMarginMs)
@@ -6715,12 +6726,7 @@ const decide = <Req extends ClipRequest>(
       )[0];
       if (front?.item === undefined || !cutsLower(front.item, clip.tag, clip.item?.spec.lane))
         return;
-      // A stopped clip never resumes. Its shortened air also determines forecast ends and drain.
-      aired[aired.length - 1] = {
-        ...previous,
-        clip: { ...clip, seconds: Math.max(0, time - previous.start) / 1000 },
-      };
-      startClip(front, time + config.timing.seamMs);
+      startCut(front, time);
     };
     const finished = (): boolean => {
       if (hypothesis === undefined)
@@ -6733,6 +6739,26 @@ const decide = <Req extends ClipRequest>(
     };
 
     let clock = now.mono;
+    // Once dispatched, a cut plays its named cutter before ordinary queue ordering resumes.
+    // Resolve that transition for admission and placement, even if Stop has already ended the
+    // old clip. Forecasts keep its uncertain outcome unplaced until the source reports it.
+    const cutting = state.cutting;
+    if (
+      until._tag === "Clips" &&
+      cutting !== undefined &&
+      cutting.stage !== "failed" &&
+      cutting.sessionId === onAir &&
+      (playing === undefined || playing.clipId === cutting.clipId)
+    ) {
+      const cutter = pool.find(
+        (clip) =>
+          clip.sessionId === cutting.sessionId &&
+          clip.clipId === cutting.next &&
+          clip.item?.phase === "Ready" &&
+          airsAt(clip, clock),
+      );
+      if (cutter !== undefined) startCut(cutter, clock);
+    }
     dispatch(clock);
     for (let look = 0; look < 4000 && !finished() && t <= horizon; look++) {
       cutAt(clock);
