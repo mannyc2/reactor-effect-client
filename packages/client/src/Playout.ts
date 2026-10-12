@@ -1092,8 +1092,16 @@ export interface Service<Req extends ClipRequest = Request> {
    * `InvalidItem`. An insert before an add the batch does not
    * hold, with no firm window of its own, is held, so it may air after that
    * add: give it a firm window too, or send it as its own edit.
+   *
+   * With `protect: "deadlines"`, refuses an edit that newly projects an already admitted item
+   * dropping as `late`, with `WouldMissDeadline` naming the first such drop. Items the batch
+   * withdraws or replaces are excluded. This uses the admission projection's measured timing
+   * and bounded horizon, not a guarantee of airing. By default only new firm items are checked.
    */
-  readonly edit: (edits: ReadonlyArray<Edit<Req>>) => Effect.Effect<EditHandle, SubmitError>;
+  readonly edit: (
+    edits: ReadonlyArray<Edit<Req>>,
+    options?: { readonly protect?: "deadlines" | undefined },
+  ) => Effect.Effect<EditHandle, SubmitError>;
   /**
    * Releases a held `Manual` item to air at the next boundary. A group key releases the group's
    * held first part, and any replacement of it; the rest follow it.

@@ -2692,6 +2692,215 @@ layer(
 });
 
 layer(hosted)("local renderer", (it) => {
+  const deadlinePlan = Effect.fnUntraced(function* (
+    cut: boolean,
+    model: Playout.ClipModel<H3.Request> = H3Source.model,
+  ) {
+    yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+    const idle = model.builtSeconds(model.lengths.min);
+    const playout = yield* Playout.make({
+      model,
+      open: LocalSource.open({
+        model,
+        build: (local) =>
+          local.tag._tag === "Filler"
+            ? Effect.succeed({ value: undefined })
+            : Effect.as(
+                Effect.sleep(local.request.prompt === "slow" ? "15 seconds" : "300 millis"),
+                { value: undefined },
+              ),
+      }),
+      lanes: [{ name: "line", strict: true, cut }],
+      filler: {
+        runway: { floor: "15 seconds", target: "15 seconds" },
+        clip: ({ index }) => clip(`idle ${index}`, idle),
+        lengths: { min: idle, max: idle },
+      },
+    });
+    yield* playout.events.pipe(
+      Stream.filter((event) => event._tag === "Filler" && event.phase === "Started"),
+      Stream.take(3),
+      Stream.runDrain,
+    );
+    return playout;
+  });
+
+  const insertAhead = (seconds: number): Playout.Edit<H3.Request> => ({
+    _tag: "InsertGroup",
+    insert: {
+      key: key("N"),
+      before: key("b1"),
+      parts: [{ key: key("n1"), request: clip("n1", seconds) }],
+      window: { startBy: "30 seconds", firm: true },
+    },
+  });
+
+  for (const cut of [true, false])
+    for (const deadline of ["readyBy", "firm", "skipIfLaterThan"] as const)
+      it.effect(`protects an admitted ${deadline} deadline with cut ${cut}`, () =>
+        Effect.gen(function* () {
+          const playout = yield* deadlinePlan(cut);
+          const now = yield* Clock.currentTimeMillis;
+          const group = yield* playout.submitGroup({
+            key: key("B"),
+            lane: "line",
+            parts: [{ key: key("b1"), request: clip("b1") }],
+            ...(deadline === "firm"
+              ? { window: { startBy: "6 seconds", firm: true } as const }
+              : {
+                  start: {
+                    _tag: "At",
+                    time: now + 2000,
+                    late: { _tag: deadline, by: "10 seconds" },
+                  } as const,
+                }),
+          });
+          if (deadline !== "firm")
+            yield* playout.events.pipe(
+              Stream.filter(
+                (event) =>
+                  event._tag === "AsRun" &&
+                  event.event.key === key("b1") &&
+                  event.event.status._tag === "Ready",
+              ),
+              Stream.runHead,
+            );
+          const refused = yield* Effect.result(
+            playout.edit([insertAhead(15)], { protect: "deadlines" }),
+          );
+          assert.strictEqual(
+            Result.isFailure(refused) ? refused.failure._tag : "admitted",
+            "WouldMissDeadline",
+          );
+          if (Result.isFailure(refused) && refused.failure._tag === "WouldMissDeadline")
+            assert.strictEqual(refused.failure.key, key("b1"));
+          if (deadline !== "firm") {
+            // Reusing the refused keys proves the refusal did not leave the group admitted.
+            const accepted = yield* playout.edit([insertAhead(5)], { protect: "deadlines" });
+            const [inserted] = accepted.results;
+            assert.strictEqual(inserted?._tag, "AddedGroup");
+            if (inserted?._tag === "AddedGroup") {
+              assert.strictEqual((yield* inserted.handle.outcome)._tag, "Aired");
+              const before = yield* inserted.handle.started;
+              const after = yield* group.started;
+              if (before._tag === "Started" && after._tag === "Started")
+                assert.isBelow(before.at, after.at);
+            }
+          }
+          assert.strictEqual((yield* group.outcome)._tag, "Aired");
+        }),
+      );
+
+  it.effect("protecting deadlines reaches the bound through subsecond filler", () =>
+    Effect.gen(function* () {
+      const playout = yield* deadlinePlan(false, {
+        name: "short-clips",
+        lengths: { min: 0.1, max: 30 },
+        defaultSeconds: 5,
+        builtSeconds: (seconds) => seconds,
+        check: () => [],
+      });
+      const now = yield* Clock.currentTimeMillis;
+      const group = yield* playout.submitGroup({
+        key: key("B"),
+        lane: "line",
+        parts: [{ key: key("b1"), request: clip("b1") }],
+        start: { _tag: "At", time: now + 15_000, late: { _tag: "readyBy", by: "10 seconds" } },
+      });
+      const refused = yield* Effect.result(
+        playout.edit([insertAhead(15)], { protect: "deadlines" }),
+      );
+      assert.strictEqual(
+        Result.isFailure(refused) ? refused.failure._tag : "admitted",
+        "WouldMissDeadline",
+      );
+      if (Result.isFailure(refused) && refused.failure._tag === "WouldMissDeadline")
+        assert.strictEqual(refused.failure.key, key("b1"));
+      assert.strictEqual((yield* group.outcome)._tag, "Aired");
+    }),
+  );
+
+  it.effect("protecting deadlines allows a batch to withdraw its earlier group", () =>
+    Effect.gen(function* () {
+      const playout = yield* deadlinePlan(true);
+      const now = yield* Clock.currentTimeMillis;
+      const group = yield* playout.submitGroup({
+        key: key("B"),
+        lane: "line",
+        parts: [{ key: key("b1"), request: clip("b1") }],
+        start: { _tag: "At", time: now + 2000, late: { _tag: "readyBy", by: "10 seconds" } },
+      });
+      const batch = yield* playout.edit(
+        [
+          { _tag: "Withdraw", key: group.key },
+          {
+            _tag: "SubmitGroup",
+            group: {
+              key: key("N"),
+              lane: "line",
+              parts: [{ key: key("n1"), request: clip("n1", 15) }],
+              window: { startBy: "30 seconds", firm: true },
+            },
+          },
+        ],
+        { protect: "deadlines" },
+      );
+      yield* batch.committed;
+      assert.strictEqual((yield* group.outcome)._tag, "NotAired");
+      const [withdrawn, inserted] = batch.results;
+      if (withdrawn?._tag === "Withdrawal")
+        assert.strictEqual(yield* withdrawn.outcome, "withdrawn");
+      if (inserted?._tag === "AddedGroup")
+        assert.strictEqual((yield* inserted.handle.outcome)._tag, "Aired");
+    }),
+  );
+
+  it.effect("protecting deadlines excludes an item the batch replaces even while it covers", () =>
+    Effect.gen(function* () {
+      const playout = yield* deadlinePlan(false);
+      const now = yield* Clock.currentTimeMillis;
+      const group = yield* playout.submitGroup({
+        key: key("B"),
+        lane: "line",
+        parts: [{ key: key("b1"), request: clip("b1") }],
+        start: { _tag: "At", time: now + 2000, late: { _tag: "readyBy", by: "10 seconds" } },
+      });
+      const batch = yield* playout.edit(
+        [
+          insertAhead(15),
+          { _tag: "Replace", key: key("b1"), next: { key: key("b2"), request: clip("slow") } },
+        ],
+        { protect: "deadlines" },
+      );
+      yield* batch.committed;
+      const [inserted] = batch.results;
+      if (inserted?._tag === "AddedGroup")
+        assert.strictEqual((yield* inserted.handle.outcome)._tag, "Aired");
+      assert.strictEqual((yield* group.outcome)._tag, "NotAired");
+    }),
+  );
+
+  it.effect("protecting deadlines ignores a miss already admitted without protection", () =>
+    Effect.gen(function* () {
+      const playout = yield* deadlinePlan(false);
+      const now = yield* Clock.currentTimeMillis;
+      const group = yield* playout.submitGroup({
+        key: key("B"),
+        lane: "line",
+        parts: [{ key: key("b1"), request: clip("b1") }],
+        start: { _tag: "At", time: now + 2000, late: { _tag: "readyBy", by: "10 seconds" } },
+      });
+      yield* playout.edit([insertAhead(15)]);
+      const batch = yield* playout.edit(
+        [{ _tag: "Submit", item: { key: key("tail"), lane: "line", request: clip("tail") } }],
+        { protect: "deadlines" },
+      );
+      const [tail] = batch.results;
+      if (tail?._tag === "Added") assert.strictEqual((yield* tail.handle.outcome)._tag, "Ended");
+      assert.strictEqual((yield* group.outcome)._tag, "NotAired");
+    }),
+  );
+
   it.effect("airs a local renderer's clip shorter than H3's shortest, under its own model", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
