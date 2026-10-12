@@ -575,11 +575,24 @@ when it would start (`startsAt`), how to submit it (`anchor`: insert after that 
 `ready`, `projected` or `unmeasured`).
 
 `place` projects the plan as it is, at the median build rates, and reserves nothing: each lane's
-items and filler at their own rate once three of their builds are measured, per second of the
-length their model builds. `before` is not enforced, since a clip submitted after the call may
+items and filler at their own rate once three of their builds are measured, per cost unit when
+supplied, otherwise per second of the length their model builds. `before` is not enforced, since a clip submitted after the call may
 come between. A clip not built yet counts at the length the last clip that asked for as much aired
 at, else at the length its model builds for it. A `follows` clip gets no filler cover, and a
 cutting lane refuses it.
+
+When build work follows content, set a finite, positive `cost` on each item, group part, insert
+or replacement, and on the matching `place` probe. Use the same unit throughout the lane.
+For a renderer that takes 100 ms plus 60 ms per word, use `cost: 100 + 60 * words`: 160 for
+one word and 12,100 for 200 words, regardless of their clip durations. Raw word count would
+fold the fixed overhead into the learned rate and overestimate a long line after short ones.
+
+Each lane learns its explicit cost rate from its own builds; filler and other lanes cannot
+teach it a rate in different units. Until three such builds are measured, projections using
+that rate report `unmeasured` and count those builds as instant. Independent and continued
+builds remain separate. The same costs govern forecasts, firm deadline admission and filler
+protection. Without `cost`, duration-based estimates retain their existing behavior, including
+fallback to other measured builds. Cost does not change aired length, queue capacity or order.
 
 While a follower waits, autoplay is fenced before its build once a clip H3 reported starting plays
 on that session, so an early end cannot air it before the clip it follows. A follower not Ready,
@@ -784,7 +797,9 @@ export const asRunLog = (
 left to play. `playout.state` holds the clip on air, the lanes, each session's role (`on-air`,
 `replacement` or `retiring`), the runway and the build estimates the playout has learned: over
 every build, and each lane's and filler's apart (`estimates.lanes`, `estimates.filler`), which
-it projects that lane's items and filler with.
+it projects that lane's items and filler with. Lane spreads report build seconds per explicit
+cost unit when supplied, otherwise per requested second. Aggregate and filler spreads remain
+per requested second.
 `playout.video` and `playout.audio` are the on-air picture and sound as decoded frames, continuing
 across renewals.
 

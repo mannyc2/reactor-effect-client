@@ -2685,6 +2685,40 @@ describe("PlayoutPolicy, wakes", () => {
     assert.strictEqual(policy.tick(3_068.15).wake, 6_096.3);
   });
 
+  it.each([1, 2])(
+    "waits for a Ready predecessor with an unmeasured cost rate and %i build slots",
+    (maxBuildsInFlight) => {
+      const settings = { ...config, maxBuildsInFlight };
+      const policy = drive({ config: settings, from: measured });
+      policy.tick(0);
+      policy.send({ _tag: "Opened", sessionId: "s1", lifetimeMs: 600_000 }, 10);
+      const x = clip("x", undefined, 7.986);
+      policy.event({ _tag: "Started", clip: x }, "s1", 10.3);
+      policy.observe({ playing: x });
+      policy.reply({ _tag: "Done" });
+      policy.submit(spec("a"));
+      policy.reply({ _tag: "Done", clipId: "ca" });
+      policy.observe({ playing: x, building: [clip("ca", item("a"))] });
+      const submitted = policy.submit(
+        { ...spec("u", 1, 1), cost: 1_000_000, follows: item("a") },
+        40,
+      );
+      const nextWake = policy.tick(3_068.15).wake;
+      // Less than the exposure margin remains, but the Ready predecessor can air first.
+      policy.observe({ playing: x, ready: [clip("ca", item("a"), 1)] }, "s1", 7_600);
+      const forecast = forecastFor(
+        Policy.forecast(settings, policy.state(), { mono: 7_600, wall: 7_600 }),
+        key("u"),
+      );
+      assert(forecast._tag === "Airs");
+      assert.approximately(forecast.clip.startsAt, 9_076.3, 1);
+      assert.strictEqual(forecast.clip.session, "on-air");
+      assert.deepStrictEqual(commands(submitted.actions), []);
+      assert.strictEqual(submitted.wake, 7_746.3);
+      assert.strictEqual(nextWake, 7_746.3);
+    },
+  );
+
   // x, a clip of its own, has ended with k Ready behind it, and f, which follows k, holds the
   // build turn until k starts. p's enqueue reply was lost, so x2, which continues from p, waits
   // ahead of f; it fits before s1's cap only until 34,010, and with a 1 s lead no replacement

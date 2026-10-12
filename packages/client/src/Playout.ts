@@ -136,6 +136,13 @@ interface ClipSpec<Req extends ClipRequest> {
   readonly key: ItemKey;
   /** `request.seconds` is the requested length; the playout asks for its model's default length without it. */
   readonly request: Req;
+  /**
+   * Finite, positive build workload in the caller's unit, including fixed overhead.
+   * Defaults to the seconds the model builds. Supply the same unit throughout a lane
+   * and on its placement probes; three explicit-cost builds teach that lane's rate.
+   * This changes build estimates, not the clip's duration.
+   */
+  readonly cost?: number | undefined;
   readonly cues?: ReadonlyArray<Cue> | undefined;
   /**
    * Build it continuing from the clip that airs just before it, when that clip
@@ -154,6 +161,8 @@ export interface PlaceProbe {
   readonly key: ItemKey;
   /** The requested length; the model's default length when absent. */
   readonly seconds?: number | undefined;
+  /** Build workload as on the submitted clip; defaults to the seconds the model builds. */
+  readonly cost?: number | undefined;
   /** As it will be submitted: `"previous"` projects a continued build. */
   readonly continuity?: "previous" | undefined;
   /**
@@ -167,9 +176,9 @@ export interface PlaceProbe {
 /**
  * Where a clip submitted to follow `after` would land. It projects the plan as
  * it is at the call, at the median build rates, each lane's and filler's own
- * once three of their builds are measured, per second of the length their
- * model builds, and reserves nothing: a clip submitted later may still come
- * between the call and the clip, or after it.
+ * once three of their builds are measured, per cost unit when supplied, otherwise
+ * per second of the length their model builds, and reserves nothing: a clip submitted later may
+ * still come between the call and the clip, or after it.
  * A clip not built yet counts at the length the last clip that asked for as
  * much aired at, else at the length its model builds (`ClipModel.builtSeconds`),
  * scaled by the median ratio of the lengths clips aired at to those their model
@@ -200,8 +209,8 @@ export interface Placement {
    * still to be built, a filler clip not yet sent included, or an enqueue with
    * an unknown outcome may hold the build slot; after a filler clip not yet
    * sent, it airs only at the next gap in what ranks above filler.
-   * `unmeasured`: fewer than three builds are measured, so no build time is
-   * counted.
+   * `unmeasured`: a build rate has fewer than three measurements, including
+   * a lane's explicit cost rate; those builds count as instant.
    */
   readonly basis: "ready" | "projected" | "unmeasured";
   /**
@@ -282,7 +291,7 @@ export interface Forecast {
   readonly unplaced: ReadonlyArray<Unplaced>;
   /** When the last item it projects to air ends, in epoch milliseconds; null when none does. */
   readonly drainsAt: number | null;
-  /** `unmeasured` before three builds were measured, when every build counts as instant. */
+  /** `unmeasured` when a projected build rate lacks three samples; those builds count as instant. */
   readonly basis: "measured" | "unmeasured";
 }
 
@@ -735,8 +744,8 @@ export interface State {
     readonly continuedBuild: BuildSpread | undefined;
     readonly length: number;
     /**
-     * Each lane's own builds, per requested second, once three were measured;
-     * the playout projects a lane's items with them.
+     * Each lane's own builds, per explicit cost unit when supplied, otherwise per
+     * requested second, once three were measured. Keep cost units consistent in a lane.
      */
     readonly lanes: ReadonlyArray<{
       readonly name: string;
@@ -748,7 +757,7 @@ export interface State {
   };
 }
 
-/** Build seconds per second of clip over measured builds: their median and their p95. */
+/** Build seconds per unit of work (or duration), as documented by the containing estimate. */
 export interface BuildSpread {
   readonly median: number;
   readonly p95: number;

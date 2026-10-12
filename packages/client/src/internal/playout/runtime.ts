@@ -43,6 +43,8 @@ import {
 import type { SubmitError } from "./errors.js";
 import * as Policy from "./policy.js";
 
+const validCost = Schema.is(Schema.Finite.check(Schema.isGreaterThan(0)));
+
 type Handle = {
   readonly started: Deferred.Deferred<Effect.Success<Playout.ItemHandle["started"]>>;
   readonly outcome: Deferred.Deferred<Playout.Settled>;
@@ -785,6 +787,7 @@ export const make = Effect.fnUntraced(function* <
     input: {
       readonly key: string;
       readonly request: Playout.ItemSpec<Req>["request"];
+      readonly cost?: number | undefined;
       readonly cues?: ReadonlyArray<Playout.Cue> | undefined;
       readonly continuity?: "previous" | undefined;
       readonly window?: Playout.Window | undefined;
@@ -797,6 +800,8 @@ export const make = Effect.fnUntraced(function* <
     Effect.gen(function* () {
       const key = yield* itemKey(input.key);
       const bad = (message: string) => InvalidItem.make({ key, message });
+      if (input.cost !== undefined && !validCost(input.cost))
+        return yield* bad("cost must be finite and positive");
       const issues = model.check(input.request, { _tag: "Item", key }).join("; ");
       if (issues !== "")
         return yield* bad(`the request is outside ${model.name}'s documented limits: ${issues}`);
@@ -841,9 +846,11 @@ export const make = Effect.fnUntraced(function* <
         lane: laneIndex,
         request,
         seconds,
+        cost: input.cost,
         fingerprint: fingerprint([
           laneIndex,
           request,
+          input.cost,
           cues,
           input.continuity,
           window,
@@ -917,6 +924,7 @@ export const make = Effect.fnUntraced(function* <
               {
                 key: part.key,
                 request: part.request,
+                cost: part.cost,
                 cues: part.cues,
                 continuity: part.continuity,
                 ...(partIndex === 0 ? { start: edit.group.start, window: edit.group.window } : {}),
@@ -965,6 +973,7 @@ export const make = Effect.fnUntraced(function* <
               {
                 key: part.key,
                 request: part.request,
+                cost: part.cost,
                 cues: part.cues,
                 continuity: part.continuity,
                 ...(partIndex === 0 ? { start: insert.start, window: insert.window } : {}),
@@ -1109,6 +1118,8 @@ export const make = Effect.fnUntraced(function* <
     }),
     place: Effect.fn("Playout.place")(function* (probe: Playout.PlaceProbe) {
       const key = yield* itemKey(probe.key);
+      if (probe.cost !== undefined && !validCost(probe.cost))
+        return yield* InvalidItem.make({ key, message: "cost must be finite and positive" });
       const seconds = probe.seconds ?? model.defaultSeconds;
       if (!Number.isFinite(seconds) || seconds < model.lengths.min || seconds > model.lengths.max)
         return yield* InvalidItem.make({
@@ -1137,6 +1148,7 @@ export const make = Effect.fnUntraced(function* <
         id,
         probe: {
           seconds,
+          cost: probe.cost,
           continuity: probe.continuity === "previous",
           submitInMs: submitIn.value,
         },
