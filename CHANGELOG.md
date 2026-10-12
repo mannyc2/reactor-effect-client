@@ -63,6 +63,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Firm windows beside waiting `At` items no longer count every Ready filler clip ahead of them. An item that can air before its deadline is admitted and kept for dispatch, including an insert that inherits its anchor's future start. Required predecessors' remaining waits still count, so a cut-lane insert that cannot meet its deadline is refused before it builds.
+
 - Strict-lane ordering uses indexed places instead of repeatedly scanning earlier items. On the same Linux workload, admission of 600 waiting items fell from 174.5 s to 7.7 s, and a forecast from 1.31 s to 85 ms, with identical placement and forecast output. The queue's ordering and forecast horizons are unchanged.
 - Replacement-session admission counts the builds still running on the session on air. An item could previously be admitted past its replacement's cap because those builds counted as no airtime ahead of it.
 - H3 retires completed clips absent from its live queues and current playback when its retained clip facts reach their bound. A session could previously overflow after 4,096 clips had accumulated, even when none of those old clips remained live. Live and unresolved clips remain protected, and their overflow still fails the provider.
