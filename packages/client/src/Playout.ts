@@ -64,8 +64,8 @@ export interface LaneSpec {
    * Air this lane's items in the order of their places, submissions at the end and inserts beside
    * their anchors: an item waits while one placed before it is live and not on air yet, unless
    * that one was sent with its outcome never seen, or is being withdrawn. Later items wait behind
-   * a slow one, so give its items deadlines. `Asap` and `Manual` starts are refused here, since
-   * they would break the order.
+   * a slow one, so give its items deadlines. Submissions with `Asap` and `Manual` starts are
+   * refused. An insert before a waiting `At` item may use `Asap` within the existing order.
    */
   readonly strict?: boolean | undefined;
 }
@@ -186,7 +186,7 @@ export interface PlaceProbe {
  * clips with a provider command, whose latency is not projected.
  */
 export interface Placement {
-  /** The clip it would follow: pass it as `follows`. */
+  /** The clip it would follow: pass it as `follows` unless the destination lane cuts. */
   readonly after: ClipTag;
   /**
    * The clip projected to follow it, from what is queued now; null when
@@ -195,9 +195,10 @@ export interface Placement {
   readonly before: ClipTag | null;
   /**
    * How to submit it: `insert` after this item, or, for `"next"`, `submit`
-   * to the lowest lane with an `Asap` start, which waits for `after` to air.
-   * `"next"` comes only when that lane would take it: one that doesn't cut,
-   * replace what waits there, or skip while busy.
+   * to the lowest lane with an `Asap` start. In a cutting lane omit `follows`:
+   * `after` is the projected predecessor, not an enforced adjacency. `"next"`
+   * comes only when that lane would take it, without replacing waiting items
+   * or skipping while busy; a strict lane requires an insert instead.
    */
   readonly anchor: ItemKey | "next";
   /** When it would start, in epoch milliseconds. */
@@ -258,8 +259,8 @@ export interface ForecastedDrop {
 export interface Unplaced {
   readonly key: ItemKey;
   /**
-   * `held` until released; `unknown`, sent with its outcome never seen; `cut`, waiting to cut a
-   * lower lane, which the projection does not model; `blocked` behind one of these: a member of
+   * `held` until released; `unknown`, sent with its outcome never seen; `cut`, waiting on the
+   * outcome of a cut already in progress; `blocked` behind one of these: a member of
    * its group, the item whose clip it follows, or another add of its pending batch; `beyond` what
    * it projects: past the ten minutes it looks ahead, past the looks its run takes, or with no
    * session on air yet.
@@ -275,6 +276,9 @@ export interface Unplaced {
  * replacement, but the plan keeps sending what fits to the session on air, where such a clip may
  * air a few hundred milliseconds early. A build projected Ready right at a boundary's readiness
  * margin can flip which clip airs first there, and the forecast is then a whole clip off.
+ * A cutting lane interrupts filler or a strictly lower lane on the same session once its clip
+ * is Ready (plus the readiness margin for a projected build), if more than a second remains.
+ * A clip already subject to a cut is never cut again. Provider command latency is not projected.
  */
 export interface Forecast {
   /** When it was taken, in epoch milliseconds. */
@@ -394,8 +398,8 @@ export interface GroupSpec<Req extends ClipRequest> {
 /**
  * A clip that airs immediately before or after an anchor. Give exactly one of the two.
  * `after` an item already playing airs at the next boundary; `before` one refuses.
- * It takes the anchor's lane, place, group and start. After an `At` anchor it
- * does not take the anchor's `late`: past the anchor's time it airs at the next
+ * It takes the anchor's lane, place and group, and its start unless one is supplied.
+ * After an `At` anchor it does not take the anchor's `late`: past its time it airs at the next
  * boundary. Before one, it does, unless the anchor was judged by `readyBy` and
  * kept already: then it airs at the next boundary too.
  */
@@ -403,6 +407,13 @@ export interface InsertSpec<Req extends ClipRequest> extends ClipSpec<Req> {
   readonly before?: ItemKey | undefined;
   readonly after?: ItemKey | undefined;
   readonly window?: Window | undefined;
+  /**
+   * Before a waiting `At` anchor, use `Asap` or an `At` time earlier than the anchor's.
+   * In a strict lane the insert still waits for earlier places. If it overruns the anchor's time,
+   * the anchor waits and is judged by its own late policy. Other explicit starts are refused
+   * with `InvalidItem`. Omit to inherit the anchor's start.
+   */
+  readonly start?: Start | undefined;
   /**
    * The clip it must start right after on air, across a renewal too, or it is
    * dropped as `displaced`: once that clip goes without airing, once another
@@ -440,13 +451,16 @@ export type ReplacementSpec<Req extends ClipRequest> = ClipSpec<Req>;
  * A group placed right before or after an anchor, as `insert` places a clip: give exactly one of
  * `before` and `after`. Its parts form a group of their own, with its handle, `started` and
  * `outcome`, in the anchor's lane between the anchor and its neighbour. The first part takes the
- * anchor's start as an insert does, and `window`; the rest follow it. Only a strict lane keeps
+ * anchor's start as an insert does unless `start` is supplied, and `window`; the rest follow it.
+ * Only a strict lane keeps
  * such a place, so it is refused with `InvalidItem` in any other. Its anchor and side are part of
  * it: sent again under its key with another, it is refused with `KeyMismatch`.
  */
 export type InsertGroupSpec<Req extends ClipRequest> = {
   readonly key: ItemKey;
   readonly parts: readonly [GroupPart<Req>, ...ReadonlyArray<GroupPart<Req>>];
+  /** The first part's start, with the same restrictions and default as `InsertSpec.start`. */
+  readonly start?: Start | undefined;
   /** It applies to the first part. */
   readonly window?: Window | undefined;
 } & (
@@ -1133,7 +1147,7 @@ export interface Service<Req extends ClipRequest, Report, E extends { readonly m
    * other item waiting in its lane except an `Asap` one. An insert, or an
    * inserted group, may anchor on an item or group the batch adds, and beside
    * one the batch holds it is held too, whatever its window: a firm one is then checked as the batch will run,
-   * or as it would be alone if it follows a clip or cuts, and while held is
+   * or as it would be alone if it follows a clip, and while held is
    * dropped as `late` only at its `startBy`. A batch whose
    * `Withdraw` or `Replace` names an item or group it adds is refused with
    * `InvalidItem`. An insert before an add the batch does not
@@ -1152,11 +1166,11 @@ export interface Service<Req extends ClipRequest, Report, E extends { readonly m
    * follow the clip before that boundary, as a submission its lane would
    * take, without dropping or displacing anything submitted already, and
    * with its clip projected Ready a readiness margin and one provider
-   * command's round trip before the boundary. A clip that cannot air before
+   * command's round trip before the boundary. Cutting lanes also place a clip
+   * at a projected cut, with no `follows` fence. A clip that cannot air before
    * the cap of the session on air is placed on its replacement, if it can
    * air there before that one's cap. It never answers after a clip this
-   * playout did not enqueue, nor after a cut not yet on air, which it does
-   * not project. Null once the playout has stopped, with no session on air,
+   * playout did not enqueue. Null once the playout has stopped, with no session on air,
    * or when no boundary is makeable, as before anything has aired.
    */
   readonly place: (probe: PlaceProbe) => Effect.Effect<Placement | null, InvalidItem>;

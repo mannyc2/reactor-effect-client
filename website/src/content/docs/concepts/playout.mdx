@@ -149,8 +149,9 @@ export const lanes: ReadonlyArray<Playout.LaneSpec> = [
   and inserts beside their anchors, whatever their starts: an item waits while one placed before it
   is live and not on air yet, unless that one was sent with its outcome never seen, or is being
   withdrawn. A slow item holds up those after it until it airs or its own deadline drops it, so
-  give the lane's items deadlines. `Asap` and `Manual` starts are refused there with
-  `InvalidItem`. On one Linux machine, admitting 600 waiting items into one strict lane took
+  give the lane's items deadlines. Submissions with `Asap` and `Manual` starts are refused with
+  `InvalidItem`; an insert before a waiting `At` item may use `Asap` in its existing place.
+  On one Linux machine, admitting 600 waiting items into one strict lane took
   7.7 s in all after indexing its places, down from 174.5 s on the same workload; a lane that
   was not strict took 7.5 s. A forecast of that strict lane took 85 ms, down from 1.31 s.
   These measurements do not set a queue-size guarantee: forecasting still grows with the plan
@@ -315,8 +316,8 @@ replaces it is Ready.
 | Method               | What it does                                                                                                                                       |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `submitGroup(group)` | Parts aired in order, each once the one before it started; a higher lane may go between. See [Groups](#groups)                                     |
-| `insert(spec)`       | A clip right `before` or `after` an item, taking its lane, place, group and start                                                                  |
-| `insertGroup(spec)`  | A group right `before` or `after` an item in a strict lane, its first part taking the item's start as an insert does. See [Lines](#lines)          |
+| `insert(spec)`       | A clip right `before` or `after` an item, taking its lane, place and group, and its start unless supplied                                         |
+| `insertGroup(spec)`  | A group right `before` or `after` an item in a strict lane, with an optional start for its first part. See [Lines](#lines)                         |
 | `replace(key, next)` | A new clip for a queued item's place; if the item starts first, `next` is dropped as `withdrawn`                                                   |
 | `edit(edits)`        | Several of these, checked together and applied as one change                                                                                       |
 | `withdraw(key)`      | Answers `withdrawn`, `already-started` or `not-found`                                                                                              |
@@ -511,6 +512,14 @@ anchor's start as an insert does (after an `At` anchor without its lateness, and
 by `readyBy` at the next boundary), and its `window`;
 the rest follow it. It is refused with `InvalidItem` in a lane that is not strict, where what is
 placed after it need not wait for it, and its anchor and side are part of it, as an insert's are.
+To use the gap before a waiting `At` item, give `insert` or `insertGroup` its own
+`start: { _tag: "Asap" }`, or an `At` start earlier than the anchor's time. The insert stays in
+its place in the strict lane, waiting for earlier items; the anchor keeps its own time and late
+policy. If the insert overruns, the anchor waits and its own late policy judges the delay.
+Only the first part of an inserted group takes this start. Other explicit starts, or an explicit
+start with `after` or a non-`At` anchor, are refused with `InvalidItem`. Omit `start` to inherit
+the anchor's timing. A build already running still occupies its slot before the insert can build.
+
 In a batch it follows the batch's rules: a first part due by a firm `startBy` is not held, and it
 may anchor on what the batch adds. Strict lanes, `readyBy` and inserted groups have run only on
 the simulated Reactor and in the policy's property checks, not on hosted H3.
@@ -519,8 +528,10 @@ the simulated Reactor and in the policy's property checks, not on hosted H3.
 
 Some clips depend on the clips around them, such as an acknowledgement written for what just
 aired. `place` projects where a clip would land if you submitted it `submitIn` from now, before
-you write it. Submitted with `follows: placement.after`, the clip airs right after that clip,
-across a renewal too, or is dropped as `displaced`.
+you write it. In a lane without cuts, submit with `follows: placement.after`: the clip airs right
+after that clip, across a renewal too, or is dropped as `displaced`. The example below uses lanes
+without cuts. In a cutting lane, omit `follows` and use the same `anchor`; `after` describes the
+projected predecessor without enforcing adjacency.
 
 ```ts
 import { Effect } from "effect";
@@ -591,7 +602,8 @@ with a provider command, a round trip after the boundary that `startsAt` does no
 command whose outcome is unknown can hold the air dark there until H3's reply deadline. A follower
 of an item in a pending batch may be built and then dropped before the batch commits. `place`
 answers a boundary only with a clip projected Ready a readiness margin and one provider command
-before it, and on a replacement only if it airs there before that session's cap.
+before it, and on a replacement only if it airs there before that session's cap. A cutting lane
+can instead place the clip at a projected cut, once Ready plus the readiness margin.
 
 ## Forecast
 
@@ -634,11 +646,18 @@ and the places it drops then appear only in `drops`.
 
 A forecast does not project what the plan cannot know. `unplaced` lists each item it neither airs
 nor drops, and why: a held `Manual` item (`held`), one whose enqueue's outcome is unknown
-(`unknown`), one waiting to cut a lower lane (`cut`), one waiting behind any of these as a member
-of its group, as the clip it follows or as another add of its pending batch (`blocked`), and one
+(`unknown`), one waiting on the outcome of a cut already in progress (`cut`), one waiting behind
+any of these as a member of its group, as the clip it follows or as another add of its pending
+batch (`blocked`), and one
 beyond what it projects: past the ten minutes it looks ahead or the looks its run takes, or with
 no session on air yet (`beyond`). It projects one renewal at most, and `basis` is `unmeasured`
 until three builds were measured, when every build counts as instant.
+
+Forecast, placement and firm admission project cuts on the session on air. A cutting lane's
+Ready item at the front interrupts filler or a strictly lower lane while more than a second
+remains; a projected build also gets the readiness margin. The interrupted clip's projected end
+is shortened. A clip already subject to a cut is never cut again, and replacement-session items
+wait for that session to take the air. Cut command latency is not projected.
 
 A forecast is a projection at the build rates the plan has measured, not a promise. It changes as
 builds are measured and items arrive, and it ages between changes: a build that runs longer than

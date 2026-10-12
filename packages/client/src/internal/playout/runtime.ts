@@ -795,6 +795,7 @@ export const make = Effect.fnUntraced(function* <
       readonly follows?: Playout.ClipTag | undefined;
     },
     laneIndex: number,
+    inserting = false,
   ): Effect.Effect<Policy.Spec<Req>, InvalidItem> =>
     Effect.gen(function* () {
       const key = yield* itemKey(input.key);
@@ -853,7 +854,7 @@ export const make = Effect.fnUntraced(function* <
           cues,
           input.continuity,
           window,
-          normalized,
+          inserting && input.start === undefined ? undefined : normalized,
           input.follows,
         ]),
         cues,
@@ -949,9 +950,11 @@ export const make = Effect.fnUntraced(function* <
               key: edit.insert.key,
               message: "give exactly one of before and after",
             });
+          const inserted = yield* spec(edit.insert, 0, true);
           return {
             _tag: "Insert",
-            spec: yield* spec(edit.insert, 0),
+            spec: inserted,
+            ...(edit.insert.start === undefined ? {} : { start: inserted.start }),
             anchor: yield* itemKey(anchor),
             side: edit.insert.before === undefined ? "after" : "before",
           };
@@ -964,8 +967,7 @@ export const make = Effect.fnUntraced(function* <
               key: insert.key,
               message: "give exactly one of before and after",
             });
-          // A part is its clip alone: the group's window is its first part's, and its start the
-          // anchor's.
+          // Only the first part has a start and window; the rest follow it.
           const parts = yield* Effect.forEach(insert.parts, (part, partIndex) =>
             spec(
               {
@@ -974,15 +976,17 @@ export const make = Effect.fnUntraced(function* <
                 cost: part.cost,
                 cues: part.cues,
                 continuity: part.continuity,
-                ...(partIndex === 0 ? { window: insert.window } : {}),
+                ...(partIndex === 0 ? { start: insert.start, window: insert.window } : {}),
               },
               0,
+              partIndex === 0,
             ),
           );
           return {
             _tag: "InsertGroup",
             key: yield* itemKey(insert.key),
             parts,
+            ...(insert.start === undefined ? {} : { start: parts[0]?.start }),
             fingerprint: fingerprint(parts.map((part) => part.fingerprint)),
             anchor: yield* itemKey(anchor),
             side: insert.before === undefined ? "after" : "before",

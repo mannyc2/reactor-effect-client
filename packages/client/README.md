@@ -140,6 +140,11 @@ the lane learns build seconds per cost unit for forecasts, placement, deadline a
 filler protection. Filler keeps its own duration rate. Without `cost`, build estimates use
 the seconds the model builds as before. Cost does not change the estimated aired duration.
 
+To fill a gap before a waiting timed item, `insert` and `insertGroup` accept an optional
+`start: { _tag: "Asap" }` or an earlier `At` start with `before`. A strict lane keeps the
+insert in order and the anchor retains its own time and late policy. Without `start`, the
+insert inherits the anchor's timing.
+
 ## A first clip, offline
 
 ```ts
