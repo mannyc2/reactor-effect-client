@@ -90,6 +90,7 @@ export type EditInput<Req extends ClipRequest> =
   | {
       readonly _tag: "Insert";
       readonly spec: Spec<Req>;
+      readonly start?: Spec<Req>["start"] | undefined;
       readonly anchor: ItemKey;
       readonly side: "before" | "after";
     }
@@ -97,6 +98,7 @@ export type EditInput<Req extends ClipRequest> =
   | {
       readonly _tag: "InsertGroup";
       readonly key: ItemKey;
+      readonly start?: Spec<Req>["start"] | undefined;
       readonly parts: ReadonlyArray<Spec<Req>>;
       readonly fingerprint: string;
       readonly anchor: ItemKey;
@@ -2444,7 +2446,14 @@ const decide = <Req extends ClipRequest>(
      * What the batch adds ahead of the edit being checked, as an insert beside it finds it: each
      * item's lane and how it airs, and each group's parts in order.
      */
-    const earlier = new Map<ItemKey, { readonly lane: number; readonly mode: Item<Req>["mode"] }>();
+    const earlier = new Map<
+      ItemKey,
+      {
+        readonly lane: number;
+        readonly mode: Item<Req>["mode"];
+        readonly start: Spec<Req>["start"];
+      }
+    >();
     const earlierGroups = new Map<ItemKey, ReadonlyArray<ItemKey>>();
     /** The anchor an insert beside `key` takes: an item waiting in the plan, or one added ahead. */
     const anchorOf = (
@@ -2456,6 +2465,7 @@ const decide = <Req extends ClipRequest>(
           readonly playing: boolean;
           readonly lane: number;
           readonly mode: Item<Req>["mode"];
+          readonly start: Spec<Req>["start"];
         }
       | undefined => {
       const item = items.get(key) ?? firstOrLastPart(key, side);
@@ -2466,6 +2476,7 @@ const decide = <Req extends ClipRequest>(
           playing: item.phase === "Started",
           lane: item.spec.lane,
           mode: item.mode,
+          start: item.spec.start,
         };
       const parts = earlierGroups.get(key);
       const part = side === "before" ? parts?.[0] : parts?.at(-1);
@@ -2518,6 +2529,22 @@ const decide = <Req extends ClipRequest>(
             _tag: "InvalidItem",
             key: placed.key,
             message: "a held Manual item cannot anchor an insert",
+          });
+        if (
+          (edit._tag === "Insert" || edit._tag === "InsertGroup") &&
+          edit.start !== undefined &&
+          (edit.side !== "before" ||
+            placed.anchor.start._tag !== "At" ||
+            (edit.start._tag !== "Asap" &&
+              (edit.start._tag !== "At" ||
+                !Number.isFinite(edit.start.time) ||
+                edit.start.time >= placed.anchor.start.time)))
+        )
+          return refuse({
+            _tag: "InvalidItem",
+            key: placed.key,
+            message:
+              "an explicit insert start must be Asap or earlier At, before a waiting At anchor",
           });
         // In a lane that is not strict, what is placed after it need not wait for it.
         if (edit._tag === "InsertGroup" && config.lanes[placed.anchor.lane]?.strict !== true)
@@ -2585,7 +2612,11 @@ const decide = <Req extends ClipRequest>(
       switch (edit._tag) {
         case "Submit":
           if (!items.has(edit.spec.key))
-            earlier.set(edit.spec.key, { lane: edit.spec.lane, mode: modeOf(edit.spec.start) });
+            earlier.set(edit.spec.key, {
+              lane: edit.spec.lane,
+              mode: modeOf(edit.spec.start),
+              start: edit.spec.start,
+            });
           break;
         case "SubmitGroup":
           if (groups.has(edit.key)) break;
@@ -2598,30 +2629,36 @@ const decide = <Req extends ClipRequest>(
             earlier.set(part.key, {
               lane: part.lane,
               mode: index === 0 ? modeOf(part.start) : "follow",
+              start: index === 0 ? part.start : { _tag: "Follow" },
             }),
           );
           break;
         case "Insert": {
           const anchor = anchorOf(edit.anchor, edit.side);
-          if (!items.has(edit.spec.key) && anchor !== undefined)
-            earlier.set(edit.spec.key, {
-              lane: anchor.lane,
-              mode: anchor.playing ? "follow" : anchor.mode,
-            });
+          if (items.has(edit.spec.key) || anchor === undefined) break;
+          const mode = edit.start === undefined ? anchor.mode : modeOf(edit.start);
+          earlier.set(edit.spec.key, {
+            lane: anchor.lane,
+            mode: anchor.playing ? "follow" : mode,
+            start: edit.start ?? (anchor.playing ? { _tag: "Follow" } : anchor.start),
+          });
           break;
         }
         case "InsertGroup": {
           const anchor = anchorOf(edit.anchor, edit.side);
           if (groups.has(edit.key) || anchor === undefined) break;
+          const mode = edit.start === undefined ? anchor.mode : modeOf(edit.start);
           earlierGroups.set(
             edit.key,
             edit.parts.map((part) => part.key),
           );
-          // Its first part takes its start from the anchor, as an insert does: the rest follow it.
+          // Only the first part takes an explicit or inherited start; the rest follow it.
           edit.parts.forEach((part, index) =>
             earlier.set(part.key, {
               lane: anchor.lane,
-              mode: index === 0 && !anchor.playing ? anchor.mode : "follow",
+              mode: index === 0 && !anchor.playing ? mode : "follow",
+              start:
+                index === 0 && !anchor.playing ? (edit.start ?? anchor.start) : { _tag: "Follow" },
             }),
           );
           break;
@@ -2629,7 +2666,11 @@ const decide = <Req extends ClipRequest>(
         case "Replace": {
           const old = items.get(edit.key);
           if (!items.has(edit.spec.key) && old !== undefined)
-            earlier.set(edit.spec.key, { lane: old.spec.lane, mode: old.mode });
+            earlier.set(edit.spec.key, {
+              lane: old.spec.lane,
+              mode: old.mode,
+              start: old.spec.start,
+            });
           break;
         }
         case "Withdraw":
@@ -2720,12 +2761,17 @@ const decide = <Req extends ClipRequest>(
           if (!items.has(edit.spec.key)) {
             const anchor = items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side)!;
             const playing = anchor.phase === "Started";
+            const mode = edit.start === undefined ? anchor.mode : modeOf(edit.start);
             const order = (anchor.order + neighbourOf(anchor, edit.side)) / 2;
             // Beside an insert that sits behind a later member, it sits behind that member too.
             const behind = anchor.behind === undefined ? undefined : items.get(anchor.behind);
             put(
               newItem(
-                { ...edit.spec, lane: anchor.spec.lane, start: insertStart(anchor, edit.side) },
+                {
+                  ...edit.spec,
+                  lane: anchor.spec.lane,
+                  start: edit.start ?? insertStart(anchor, edit.side),
+                },
                 {
                   order,
                   group:
@@ -2734,7 +2780,7 @@ const decide = <Req extends ClipRequest>(
                       : { key: anchor.group.key, index: anchor.group.index },
                   inserted: true,
                   anchor: { key: edit.anchor, side: edit.side },
-                  mode: playing ? "follow" : anchor.mode,
+                  mode: playing ? "follow" : mode,
                   behind: behind !== undefined && behind.order > order ? anchor.behind : undefined,
                 },
               ),
@@ -2748,6 +2794,7 @@ const decide = <Req extends ClipRequest>(
           if (!groups.has(edit.key)) {
             const anchor = items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side)!;
             const playing = anchor.phase === "Started";
+            const mode = edit.start === undefined ? anchor.mode : modeOf(edit.start);
             const neighbour = neighbourOf(anchor, edit.side);
             const count = edit.parts.length;
             groups.set(edit.key, {
@@ -2759,7 +2806,7 @@ const decide = <Req extends ClipRequest>(
             // Beside an insert that sits behind a later item, it sits behind that item too.
             const behind = anchor.behind === undefined ? undefined : items.get(anchor.behind);
             // Its parts take consecutive places between the anchor and its neighbour, the first
-            // part the anchor's start and the window, as an insert does; the rest follow it.
+            // part the explicit or inherited start and the window; the rest follow it.
             edit.parts.forEach((part, partIndex) => {
               const step = edit.side === "after" ? partIndex + 1 : count - partIndex;
               const order = anchor.order + ((neighbour - anchor.order) * step) / (count + 1);
@@ -2767,13 +2814,17 @@ const decide = <Req extends ClipRequest>(
               put(
                 newItem(
                   partIndex === 0
-                    ? { ...part, lane: anchor.spec.lane, start: insertStart(anchor, edit.side) }
+                    ? {
+                        ...part,
+                        lane: anchor.spec.lane,
+                        start: edit.start ?? insertStart(anchor, edit.side),
+                      }
                     : { ...rest, lane: anchor.spec.lane, start: { _tag: "Follow" } },
                   {
                     order,
                     group: { key: edit.key, index: partIndex },
                     anchor: { key: edit.anchor, side: edit.side },
-                    mode: partIndex === 0 && !playing ? anchor.mode : "follow",
+                    mode: partIndex === 0 && !playing ? mode : "follow",
                     behind:
                       behind !== undefined && behind.order > order ? anchor.behind : undefined,
                   },
