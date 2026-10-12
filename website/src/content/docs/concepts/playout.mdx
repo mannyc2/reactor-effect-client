@@ -149,8 +149,9 @@ export const lanes: ReadonlyArray<Playout.LaneSpec> = [
   and inserts beside their anchors, whatever their starts: an item waits while one placed before it
   is live and not on air yet, unless that one was sent with its outcome never seen, or is being
   withdrawn. A slow item holds up those after it until it airs or its own deadline drops it, so
-  give the lane's items deadlines. `Asap` and `Manual` starts are refused there with
-  `InvalidItem`. On one Linux machine, admitting 600 waiting items into one strict lane took
+  give the lane's items deadlines. Submissions with `Asap` and `Manual` starts are refused with
+  `InvalidItem`; an insert before a waiting `At` item may use `Asap` in its existing place.
+  On one Linux machine, admitting 600 waiting items into one strict lane took
   7.7 s in all after indexing its places, down from 174.5 s on the same workload; a lane that
   was not strict took 7.5 s. A forecast of that strict lane took 85 ms, down from 1.31 s.
   These measurements do not set a queue-size guarantee: forecasting still grows with the plan
@@ -315,8 +316,8 @@ replaces it is Ready.
 | Method               | What it does                                                                                                                                       |
 | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `submitGroup(group)` | Parts aired in order, each once the one before it started; a higher lane may go between. See [Groups](#groups)                                     |
-| `insert(spec)`       | A clip right `before` or `after` an item, taking its lane, place, group and start                                                                  |
-| `insertGroup(spec)`  | A group right `before` or `after` an item in a strict lane, its first part taking the item's start as an insert does. See [Lines](#lines)          |
+| `insert(spec)`       | A clip right `before` or `after` an item, taking its lane, place and group, and its start unless supplied                                         |
+| `insertGroup(spec)`  | A group right `before` or `after` an item in a strict lane, with an optional start for its first part. See [Lines](#lines)                         |
 | `replace(key, next)` | A new clip for a queued item's place; if the item starts first, `next` is dropped as `withdrawn`                                                   |
 | `edit(edits)`        | Several of these, checked together and applied as one change                                                                                       |
 | `withdraw(key)`      | Answers `withdrawn`, `already-started` or `not-found`                                                                                              |
@@ -511,6 +512,14 @@ anchor's start as an insert does (after an `At` anchor without its lateness, and
 by `readyBy` at the next boundary), and its `window`;
 the rest follow it. It is refused with `InvalidItem` in a lane that is not strict, where what is
 placed after it need not wait for it, and its anchor and side are part of it, as an insert's are.
+To use the gap before a waiting `At` item, give `insert` or `insertGroup` its own
+`start: { _tag: "Asap" }`, or an `At` start earlier than the anchor's time. The insert stays in
+its place in the strict lane, waiting for earlier items; the anchor keeps its own time and late
+policy. If the insert overruns, the anchor waits and its own late policy judges the delay.
+Only the first part of an inserted group takes this start. Other explicit starts, or an explicit
+start with `after` or a non-`At` anchor, are refused with `InvalidItem`. Omit `start` to inherit
+the anchor's timing. A build already running still occupies its slot before the insert can build.
+
 In a batch it follows the batch's rules: a first part due by a firm `startBy` is not held, and it
 may anchor on what the batch adds. Strict lanes, `readyBy` and inserted groups have run only on
 the simulated Reactor and in the policy's property checks, not on hosted H3.

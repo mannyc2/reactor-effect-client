@@ -133,6 +133,11 @@ Events and media use `SourceError`; the scheduler's own terminal failures use `P
 or `PlayoutClosed`. Original adapter diagnostics remain redacted. See
 [Playout](https://mannyc2.github.io/reactor-effect-client/concepts/playout/) for the contracts.
 
+To fill a gap before a waiting timed item, `insert` and `insertGroup` accept an optional
+`start: { _tag: "Asap" }` or an earlier `At` start with `before`. A strict lane keeps the
+insert in order and the anchor retains its own time and late policy. Without `start`, the
+insert inherits the anchor's timing.
+
 ## A first clip, offline
 
 ```ts
