@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-12
+
+0.11.1 fixes firm items incorrectly refused or dropped beside waiting timed clips, and adds opt-in deadline protection for edits. Existing calls remain compatible; the Effect peers stay `~4.0.0`, and the native Rust sources are unchanged.
+
+The scheduling changes are covered by regression tests on `ReactorTest`. Deadline protection uses measured build timing and a bounded projection; it does not guarantee that a clip airs before its deadline. No paid hosted run has exercised 0.11.1.
+
 ### Added
 
 - `Playout.edit(edits, { protect: "deadlines" })` refuses a batch that would newly project an already admitted item dropping as `late`, with `WouldMissDeadline` naming that item. It checks firm `startBy` and timed lateness with the existing admission projection, excludes items the batch withdraws or replaces, and leaves the plan unchanged on refusal. Calls without protection retain their existing admission behavior.
@@ -701,7 +707,8 @@ Qualification: on September 22, 2026, before the canonical API migration and the
 - `reactor-effect-browser`: an `RTCPeerConnection` host with generation-scoped tracks, media conversion and recording.
 - `reactor-effect-native`: a libwebrtc bridge in Rust, loaded through Koffi (native ABI 2), with decoded media, file upload and staged libraries for linux-x64 and darwin-arm64, on Node and Bun.
 
-[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/2418ac1f5ebbf86f38c2cda2c622bf79aec77a31...main
+[unreleased]: https://github.com/mannyc2/reactor-effect-client/compare/4f146bf42576e6eacfa3ecc01d6fea5a67d914d0...main
+[0.11.1]: https://www.npmjs.com/package/reactor-effect-client/v/0.11.1
 [0.11.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.11.0
 [0.10.0]: https://www.npmjs.com/package/reactor-effect-client/v/0.10.0
 [0.9.2]: https://www.npmjs.com/package/reactor-effect-client/v/0.9.2
