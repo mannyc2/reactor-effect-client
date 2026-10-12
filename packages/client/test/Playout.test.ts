@@ -2679,6 +2679,96 @@ layer(
 });
 
 layer(hosted)("local renderer", (it) => {
+  for (const placement of ["group-asap", "item-at", "inherited"] as const)
+    it.effect(`inserts before a timed strict-lane item with ${placement} timing`, () =>
+      Effect.gen(function* () {
+        yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+        const began = yield* Clock.currentTimeMillis;
+        const idle = H3Source.model.builtSeconds(5);
+        const playout = yield* Playout.make({
+          model: H3Source.model,
+          evidence: LocalSource.evidence,
+          open: LocalSource.open({
+            model: H3Source.model,
+            build: (local) =>
+              local.tag._tag === "Filler"
+                ? Effect.succeed({ value: undefined })
+                : Effect.as(Effect.sleep("300 millis"), { value: undefined }),
+          }),
+          lanes: [{ name: "line", strict: true, cut: true }],
+          filler: {
+            runway: { floor: "15 seconds", target: "15 seconds" },
+            clip: ({ index }) => clip(`idle ${index}`, idle),
+            lengths: { min: idle, max: idle },
+          },
+        });
+        // Let filler occupy the air before placing a timed line.
+        yield* Effect.sleep("12 seconds");
+        const now = yield* Clock.currentTimeMillis;
+        const anchor = yield* playout.submitGroup({
+          key: key("B"),
+          lane: "line",
+          parts: [{ key: key("b1"), request: clip("b1") }],
+          start: {
+            _tag: "At",
+            time: now + (placement === "inherited" ? 2_000 : 8_000),
+            late: { _tag: "readyBy", by: placement === "inherited" ? "10 seconds" : "4 seconds" },
+          },
+        });
+        const refused = yield* Effect.flip(
+          playout.submitGroup({
+            key: key("X"),
+            lane: "line",
+            parts: [{ key: key("x1"), request: clip("x1") }],
+            start: { _tag: "Asap" },
+          }),
+        );
+        assert.strictEqual(refused._tag, "InvalidItem");
+        if (placement === "inherited") yield* Effect.sleep("500 millis");
+        const group: Playout.InsertGroupSpec<H3.Request> = {
+          key: key("N"),
+          before: key("b1"),
+          parts: [{ key: key("n1"), request: clip("n1") }],
+          ...(placement === "inherited" ? {} : { start: { _tag: "Asap" } }),
+          window: { startBy: placement === "inherited" ? "30 seconds" : "6 seconds", firm: true },
+        };
+        const item: Playout.InsertSpec<H3.Request> = {
+          key: key("n1"),
+          before: key("b1"),
+          request: clip("n1"),
+          start: { _tag: "At", time: now + 1_000, late: { _tag: "nextBoundary" } },
+        };
+        const inserted = yield* placement === "item-at"
+          ? playout.insert(item)
+          : playout.insertGroup(group);
+        const first = yield* inserted.started;
+        assert.strictEqual(first._tag, "Started");
+        if (first._tag !== "Started") return;
+        // LocalSource finishes the anchor's 300 ms build before the insert's 300 ms build.
+        const expected = { "group-asap": 12_600, "item-at": 13_000, inherited: 14_000 }[placement];
+        assert.isAtLeast(first.at - began, expected);
+        assert.isAtMost(first.at - began, expected + 100);
+        yield* inserted.outcome;
+        const next = yield* anchor.started;
+        assert.strictEqual(next._tag, "Started");
+        if (next._tag !== "Started") return;
+        if (placement === "inherited") assert.isAbove(next.at, first.at + 5_000);
+        else assert.approximately(next.at - began, 20_000, 100);
+        yield* anchor.outcome;
+        if (placement !== "item-at") {
+          assert.strictEqual((yield* playout.insertGroup(group)).key, inserted.key);
+          const changed: Playout.InsertGroupSpec<H3.Request> = {
+            ...group,
+            start: { _tag: "Follow" },
+          };
+          assert.strictEqual(
+            (yield* Effect.flip(playout.insertGroup(changed)))._tag,
+            "KeyMismatch",
+          );
+        }
+      }),
+    );
+
   it.effect("airs a local renderer's clip shorter than H3's shortest, under its own model", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));

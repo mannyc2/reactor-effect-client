@@ -90,6 +90,7 @@ export type EditInput<Req extends ClipRequest> =
   | {
       readonly _tag: "Insert";
       readonly spec: Spec<Req>;
+      readonly start?: Spec<Req>["start"] | undefined;
       readonly anchor: ItemKey;
       readonly side: "before" | "after";
     }
@@ -97,6 +98,7 @@ export type EditInput<Req extends ClipRequest> =
   | {
       readonly _tag: "InsertGroup";
       readonly key: ItemKey;
+      readonly start?: Spec<Req>["start"] | undefined;
       readonly parts: ReadonlyArray<Spec<Req>>;
       readonly fingerprint: string;
       readonly anchor: ItemKey;
@@ -1435,10 +1437,16 @@ const behindPlaces = <I extends PlanItem>(
  */
 interface Memo {
   readonly ranks: Map<PlanItem, Rank>;
+  readonly untimedRanks: Map<PlanItem, Rank>;
   readonly projections: Map<PlanItem, { readonly from: number; readonly after: number }>;
   readonly kept: Map<PlanItem, boolean>;
 }
-const emptyMemo = (): Memo => ({ ranks: new Map(), projections: new Map(), kept: new Map() });
+const emptyMemo = (): Memo => ({
+  ranks: new Map(),
+  untimedRanks: new Map(),
+  projections: new Map(),
+  kept: new Map(),
+});
 
 /** A group's answer from its parts': `withdrawn` if any was, else `already-started` if any started. */
 const combined = (outcomes: ReadonlyArray<WithdrawOutcome>): WithdrawOutcome => {
@@ -1814,11 +1822,11 @@ const decide = <Req extends ClipRequest>(
    * Whether an item is held from the air for its own sake: by its start, its time, its batch or
    * the clip it follows.
    */
-  const heldBack = (item: Item<Req>): boolean => {
+  const heldBack = (item: Item<Req>, time: number): boolean => {
     const at = atMono(item);
     return (
       item.mode === "held" ||
-      (at !== undefined && now.mono < at) ||
+      (at !== undefined && time < at) ||
       item.batch !== undefined ||
       (heldForFollows(item) && !waitsOnAnchor(item))
     );
@@ -1847,20 +1855,24 @@ const decide = <Req extends ClipRequest>(
    * of its group, just behind the last of their places to air, if that is later, each place at
    * its earliest item. A member behind a place held back is held behind it, and one behind places
    * that air keeps its place. Where its session's queue has it never counts. Every reader that
-   * orders or places clips reads this. `ranks` keeps what one look worked out, while the plan
-   * holds still.
+   * orders or places clips reads this. `time` determines only whether an `At` start still holds
+   * it. `ranks` keeps what one look at that time worked out, while the plan holds still.
    */
-  const placeRank = (item: Item<Req>, ranks: Map<PlanItem, Rank> = new Map()): Rank => {
+  const placeRank = (
+    item: Item<Req>,
+    ranks: Map<PlanItem, Rank> = new Map(),
+    time = now.mono,
+  ): Rank => {
     const known = ranks.get(item);
     if (known !== undefined) return known;
-    const own = heldBack(item) ? heldRank(item) : airRank(item, ranks);
+    const own = heldBack(item, time) ? heldRank(item) : airRank(item, ranks, time);
     const holders = holdersBefore(item);
-    rankEarlier(holders, ranks, holdersBefore, (other) => placeRank(other, ranks));
+    rankEarlier(holders, ranks, holdersBefore, (other) => placeRank(other, ranks, time));
     const rank = behindPlaces(
       own,
       holders,
       (other) => seatOf(roster, other),
-      (other) => placeRank(other, ranks),
+      (other) => placeRank(other, ranks, time),
     );
     ranks.set(item, rank);
     return rank;
@@ -1979,7 +1991,7 @@ const decide = <Req extends ClipRequest>(
    * Where an item airs of its own, held by nothing: right behind the clip it follows, at once if
    * `Asap`, else by lane, standing and order.
    */
-  const airRank = (item: Item<Req>, ranks: Map<PlanItem, Rank>): Rank => {
+  const airRank = (item: Item<Req>, ranks: Map<PlanItem, Rank>, time: number): Rank => {
     // Its build continues the Ready clip it follows on its session, so it airs right behind that
     // clip until that clip starts. An item accepted again for a rebuild follows nothing yet.
     const followed =
@@ -1990,7 +2002,7 @@ const decide = <Req extends ClipRequest>(
       // Clips that follow one another back to this item never air: it ranks as held.
       if (following.has(item.spec.key)) return heldRank(item);
       following.add(item.spec.key);
-      const behind = rankClip(followed, ranks);
+      const behind = rankClip(followed, ranks, time);
       following.delete(item.spec.key);
       return [behind[0], behind[1], behind[2], behind[3] + 0.5, behind[4]];
     }
@@ -2016,11 +2028,11 @@ const decide = <Req extends ClipRequest>(
     ];
   };
   /** Where a clip airs: its item's `placeRank`, filler below every lane, and a clip of no item first. */
-  const rankClip = (clip: SourceClip, ranks?: Map<PlanItem, Rank>): Rank => {
+  const rankClip = (clip: SourceClip, ranks?: Map<PlanItem, Rank>, time = now.mono): Rank => {
     if (clip.tag === undefined) return [-1, 0, 0, 0, 0];
     if (clip.tag._tag === "Filler") return [lanes, 1, clip.tag.index, 0, 0];
     const item = items.get(clip.tag.key);
-    return item === undefined ? [-1, 0, 0, 0, 0] : placeRank(item, ranks);
+    return item === undefined ? [-1, 0, 0, 0, 0] : placeRank(item, ranks, time);
   };
   /**
    * Which of two waiting items takes the build slot first, `unheld` naming each add a pending batch
@@ -2198,30 +2210,48 @@ const decide = <Req extends ClipRequest>(
     const target = preferred() ?? session(state.air);
     // A cutting item's air ahead can be shortened by its own cut or another item's. Only its
     // builds establish this early-drop bound; admission checks the air in the forward run.
-    const rank = cuts(item) ? undefined : placeRank(item, memo.ranks);
-    const readyMs = waitingOf(target)
-      .filter((clip) => {
-        const other = itemOf(clip);
-        return (
-          rank !== undefined &&
-          compareRank(rankClip(clip, memo.ranks), rank) < 0 &&
-          other?.withdraw === undefined &&
-          (other === undefined || (live(other) && keeps(other, memo)))
-        );
-      })
-      .reduce((total, clip) => total + clip.seconds * 1000, 0);
-    const unbuilt = [...items.values()].filter(
+    const rank = cuts(item) ? undefined : placeRank(item, memo.untimedRanks, Infinity);
+    // A future time holds an item behind filler now, not for its whole wait. The optimistic
+    // projection removes only that hold. An unrelated timed item can air later, so it counts
+    // ahead only if its rank at this item's own time agrees, or the line requires it first.
+    const time = Math.max(now.mono, atMono(item) ?? now.mono);
+    const ranks = time === now.mono ? memo.ranks : new Map<PlanItem, Rank>();
+    const ahead = (other: Item<Req>): boolean => {
+      const untimed = placeRank(other, memo.untimedRanks, Infinity);
+      return (
+        rank !== undefined &&
+        compareRank(untimed, rank) < 0 &&
+        (compareRank(untimed, placeRank(other, ranks, time)) === 0 || holds(roster, other, item))
+      );
+    };
+    const ready = waitingOf(target).filter((clip) => {
+      const other = itemOf(clip);
+      return (
+        rank !== undefined &&
+        (other === undefined ? compareRank(rankClip(clip), rank) < 0 : ahead(other)) &&
+        other?.withdraw === undefined &&
+        (other === undefined || (live(other) && keeps(other, memo)))
+      );
+    });
+    const pending = [...items.values()].filter(
       (other) =>
         rank !== undefined &&
         other.spec.key !== item.spec.key &&
         (other.phase === "Accepted" ||
           (other.phase === "Building" && other.sessionId === target?.id)) &&
-        airsAtPlace(roster, other, now) &&
+        queuedAtPlace(roster, other) &&
         // A replacement and what it replaces take one place, which airs once.
         (other.replaces === undefined || !live(replacedOf(other))) &&
-        compareRank(placeRank(other, memo.ranks), rank) < 0 &&
+        ahead(other) &&
         keeps(other, memo),
     );
+    const unbuilt = pending.filter((other) => timeCome(other, now));
+    const readyMs = ready
+      .filter((clip) => {
+        const other = itemOf(clip);
+        return other === undefined || timeCome(other, now);
+      })
+      .reduce((total, clip) => total + clip.seconds * 1000, 0);
     const unbuiltMs = unbuilt.reduce(
       (total, other) => total + lengthOf(other.spec.seconds) * 1000,
       0,
@@ -2229,8 +2259,50 @@ const decide = <Req extends ClipRequest>(
     const aheadMs = readyMs + unbuiltMs;
     const air = session(state.air);
     const end = rank === undefined ? now.mono : playingEndOf(air);
+    const queued = [
+      ...ready.map((clip) => ({
+        item: itemOf(clip),
+        ms: clip.seconds * 1000,
+        rank: rankClip(clip, memo.untimedRanks, Infinity),
+      })),
+      ...pending.map((other) => ({
+        item: other,
+        ms: lengthOf(other.spec.seconds) * 1000,
+        rank: placeRank(other, memo.untimedRanks, Infinity),
+      })),
+    ].sort((a, b) => compareRank(a.rank, b.rank));
+    let earliest = end ?? -Infinity;
+    for (const clip of queued) {
+      const other = clip.item;
+      const at = other === undefined ? undefined : atMono(other);
+      let expires = Infinity;
+      if (
+        at !== undefined &&
+        at > now.mono &&
+        other?.spec.start._tag === "At" &&
+        other.keptLate !== true
+      )
+        expires = lateAt(at, other.spec.start.late);
+      if (
+        at !== undefined &&
+        at > now.mono &&
+        other?.spec.window?.firm === true &&
+        other.startBy !== undefined
+      )
+        expires = Math.min(
+          expires,
+          other.startBy - (lateWhenProjected(other) ? projection(other, memo).after : 0),
+        );
+      // A future predecessor releases its place by airing or expiring. Only the clips after
+      // that place add to its wait. Its absolute bound lasts until the wake at its At time;
+      // thereafter its length contributes to `after`, as other eligible clips' lengths do.
+      earliest = Math.max(
+        earliest,
+        Math.min(Math.max(earliest, at ?? -Infinity) + clip.ms, expires),
+      );
+    }
     const playable = {
-      from: (end ?? -Infinity) + aheadMs,
+      from: Math.max(atMono(item) ?? -Infinity, earliest),
       after: (end === undefined ? playingRestMs(air) : 0) + aheadMs,
     };
     // Until builds are measured none is counted; then each item's builds at its own lane's median.
@@ -2454,7 +2526,14 @@ const decide = <Req extends ClipRequest>(
      * What the batch adds ahead of the edit being checked, as an insert beside it finds it: each
      * item's lane and how it airs, and each group's parts in order.
      */
-    const earlier = new Map<ItemKey, { readonly lane: number; readonly mode: Item<Req>["mode"] }>();
+    const earlier = new Map<
+      ItemKey,
+      {
+        readonly lane: number;
+        readonly mode: Item<Req>["mode"];
+        readonly start: Spec<Req>["start"];
+      }
+    >();
     const earlierGroups = new Map<ItemKey, ReadonlyArray<ItemKey>>();
     /** The anchor an insert beside `key` takes: an item waiting in the plan, or one added ahead. */
     const anchorOf = (
@@ -2466,6 +2545,7 @@ const decide = <Req extends ClipRequest>(
           readonly playing: boolean;
           readonly lane: number;
           readonly mode: Item<Req>["mode"];
+          readonly start: Spec<Req>["start"];
         }
       | undefined => {
       const item = items.get(key) ?? firstOrLastPart(key, side);
@@ -2476,6 +2556,7 @@ const decide = <Req extends ClipRequest>(
           playing: item.phase === "Started",
           lane: item.spec.lane,
           mode: item.mode,
+          start: item.spec.start,
         };
       const parts = earlierGroups.get(key);
       const part = side === "before" ? parts?.[0] : parts?.at(-1);
@@ -2528,6 +2609,22 @@ const decide = <Req extends ClipRequest>(
             _tag: "InvalidItem",
             key: placed.key,
             message: "a held Manual item cannot anchor an insert",
+          });
+        if (
+          (edit._tag === "Insert" || edit._tag === "InsertGroup") &&
+          edit.start !== undefined &&
+          (edit.side !== "before" ||
+            placed.anchor.start._tag !== "At" ||
+            (edit.start._tag !== "Asap" &&
+              (edit.start._tag !== "At" ||
+                !Number.isFinite(edit.start.time) ||
+                edit.start.time >= placed.anchor.start.time)))
+        )
+          return refuse({
+            _tag: "InvalidItem",
+            key: placed.key,
+            message:
+              "an explicit insert start must be Asap or earlier At, before a waiting At anchor",
           });
         // In a lane that is not strict, what is placed after it need not wait for it.
         if (edit._tag === "InsertGroup" && config.lanes[placed.anchor.lane]?.strict !== true)
@@ -2595,7 +2692,11 @@ const decide = <Req extends ClipRequest>(
       switch (edit._tag) {
         case "Submit":
           if (!items.has(edit.spec.key))
-            earlier.set(edit.spec.key, { lane: edit.spec.lane, mode: modeOf(edit.spec.start) });
+            earlier.set(edit.spec.key, {
+              lane: edit.spec.lane,
+              mode: modeOf(edit.spec.start),
+              start: edit.spec.start,
+            });
           break;
         case "SubmitGroup":
           if (groups.has(edit.key)) break;
@@ -2608,30 +2709,36 @@ const decide = <Req extends ClipRequest>(
             earlier.set(part.key, {
               lane: part.lane,
               mode: index === 0 ? modeOf(part.start) : "follow",
+              start: index === 0 ? part.start : { _tag: "Follow" },
             }),
           );
           break;
         case "Insert": {
           const anchor = anchorOf(edit.anchor, edit.side);
-          if (!items.has(edit.spec.key) && anchor !== undefined)
-            earlier.set(edit.spec.key, {
-              lane: anchor.lane,
-              mode: anchor.playing ? "follow" : anchor.mode,
-            });
+          if (items.has(edit.spec.key) || anchor === undefined) break;
+          const mode = edit.start === undefined ? anchor.mode : modeOf(edit.start);
+          earlier.set(edit.spec.key, {
+            lane: anchor.lane,
+            mode: anchor.playing ? "follow" : mode,
+            start: edit.start ?? (anchor.playing ? { _tag: "Follow" } : anchor.start),
+          });
           break;
         }
         case "InsertGroup": {
           const anchor = anchorOf(edit.anchor, edit.side);
           if (groups.has(edit.key) || anchor === undefined) break;
+          const mode = edit.start === undefined ? anchor.mode : modeOf(edit.start);
           earlierGroups.set(
             edit.key,
             edit.parts.map((part) => part.key),
           );
-          // Its first part takes its start from the anchor, as an insert does: the rest follow it.
+          // Only the first part takes an explicit or inherited start; the rest follow it.
           edit.parts.forEach((part, index) =>
             earlier.set(part.key, {
               lane: anchor.lane,
-              mode: index === 0 && !anchor.playing ? anchor.mode : "follow",
+              mode: index === 0 && !anchor.playing ? mode : "follow",
+              start:
+                index === 0 && !anchor.playing ? (edit.start ?? anchor.start) : { _tag: "Follow" },
             }),
           );
           break;
@@ -2639,7 +2746,11 @@ const decide = <Req extends ClipRequest>(
         case "Replace": {
           const old = items.get(edit.key);
           if (!items.has(edit.spec.key) && old !== undefined)
-            earlier.set(edit.spec.key, { lane: old.spec.lane, mode: old.mode });
+            earlier.set(edit.spec.key, {
+              lane: old.spec.lane,
+              mode: old.mode,
+              start: old.spec.start,
+            });
           break;
         }
         case "Withdraw":
@@ -2730,12 +2841,17 @@ const decide = <Req extends ClipRequest>(
           if (!items.has(edit.spec.key)) {
             const anchor = items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side)!;
             const playing = anchor.phase === "Started";
+            const mode = edit.start === undefined ? anchor.mode : modeOf(edit.start);
             const order = (anchor.order + neighbourOf(anchor, edit.side)) / 2;
             // Beside an insert that sits behind a later member, it sits behind that member too.
             const behind = anchor.behind === undefined ? undefined : items.get(anchor.behind);
             put(
               newItem(
-                { ...edit.spec, lane: anchor.spec.lane, start: insertStart(anchor, edit.side) },
+                {
+                  ...edit.spec,
+                  lane: anchor.spec.lane,
+                  start: edit.start ?? insertStart(anchor, edit.side),
+                },
                 {
                   order,
                   group:
@@ -2744,7 +2860,7 @@ const decide = <Req extends ClipRequest>(
                       : { key: anchor.group.key, index: anchor.group.index },
                   inserted: true,
                   anchor: { key: edit.anchor, side: edit.side },
-                  mode: playing ? "follow" : anchor.mode,
+                  mode: playing ? "follow" : mode,
                   behind: behind !== undefined && behind.order > order ? anchor.behind : undefined,
                 },
               ),
@@ -2758,6 +2874,7 @@ const decide = <Req extends ClipRequest>(
           if (!groups.has(edit.key)) {
             const anchor = items.get(edit.anchor) ?? firstOrLastPart(edit.anchor, edit.side)!;
             const playing = anchor.phase === "Started";
+            const mode = edit.start === undefined ? anchor.mode : modeOf(edit.start);
             const neighbour = neighbourOf(anchor, edit.side);
             const count = edit.parts.length;
             groups.set(edit.key, {
@@ -2769,7 +2886,7 @@ const decide = <Req extends ClipRequest>(
             // Beside an insert that sits behind a later item, it sits behind that item too.
             const behind = anchor.behind === undefined ? undefined : items.get(anchor.behind);
             // Its parts take consecutive places between the anchor and its neighbour, the first
-            // part the anchor's start and the window, as an insert does; the rest follow it.
+            // part the explicit or inherited start and the window; the rest follow it.
             edit.parts.forEach((part, partIndex) => {
               const step = edit.side === "after" ? partIndex + 1 : count - partIndex;
               const order = anchor.order + ((neighbour - anchor.order) * step) / (count + 1);
@@ -2777,13 +2894,17 @@ const decide = <Req extends ClipRequest>(
               put(
                 newItem(
                   partIndex === 0
-                    ? { ...part, lane: anchor.spec.lane, start: insertStart(anchor, edit.side) }
+                    ? {
+                        ...part,
+                        lane: anchor.spec.lane,
+                        start: edit.start ?? insertStart(anchor, edit.side),
+                      }
                     : { ...rest, lane: anchor.spec.lane, start: { _tag: "Follow" } },
                   {
                     order,
                     group: { key: edit.key, index: partIndex },
                     anchor: { key: edit.anchor, side: edit.side },
-                    mode: partIndex === 0 && !playing ? anchor.mode : "follow",
+                    mode: partIndex === 0 && !playing ? mode : "follow",
                     behind:
                       behind !== undefined && behind.order > order ? anchor.behind : undefined,
                   },

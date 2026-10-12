@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `Playout.insert` and `insertGroup` accept an optional `start` before a waiting `At` item: `Asap` or an earlier `At` time. Inserts can use the gap before a timed item while keeping strict-lane order; omitted starts still inherit the anchor's timing.
 - `AudioPlayback.Playback` and `Character.Renderer`, portable contracts for streaming PCM playback and persistent character rendering, with typed playback and character failures and redacted host diagnostics.
 - `BrowserAudio.make`, scoped audible PCM playback with an output-level meter and a real audio track. It preserves the source stream's errors and requirements, waits for the last sample to play, silences scheduled audio on interruption or failure, and rejects concurrent playback with `Busy`.
 - `BrowserCharacter.animate`, browser animation and mouth movement driven by the audio actually playing, and `capture`, scoped canvas-to-video-track output for application recording or publishing. Render failures reach the caller and interruption cancels the frame loop.
@@ -61,6 +62,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Every replacement takes its item's window, `notBefore` and `startBy` alike, as a group part's replacement did: a firm item's replacement is dropped as `late` at the deadline it took over. It is not checked against that deadline when admitted, nor, while the item it replaces may still air as cover, dropped earlier for a projected miss.
 
 ### Fixed
+
+- Firm windows beside waiting `At` items no longer count every Ready filler clip ahead of them. An item that can air before its deadline is admitted and kept for dispatch, including an insert that inherits its anchor's future start. Required predecessors' remaining waits still count, so a cut-lane insert that cannot meet its deadline is refused before it builds.
 
 - Strict-lane ordering uses indexed places instead of repeatedly scanning earlier items. On the same Linux workload, admission of 600 waiting items fell from 174.5 s to 7.7 s, and a forecast from 1.31 s to 85 ms, with identical placement and forecast output. The queue's ordering and forecast horizons are unchanged.
 - Replacement-session admission counts the builds still running on the session on air. An item could previously be admitted past its replacement's cap because those builds counted as no airtime ahead of it.
