@@ -2305,13 +2305,11 @@ const decide = <Req extends ClipRequest>(
           expires,
           other.startBy - (lateWhenProjected(other) ? projection(other, memo).after : 0),
         );
-      // A future predecessor releases its place by airing or expiring. Only the clips after
-      // that place add to its wait. Its absolute bound lasts until the wake at its At time;
-      // thereafter its length contributes to `after`, as other eligible clips' lengths do.
-      earliest = Math.max(
-        earliest,
-        Math.min(Math.max(earliest, at ?? -Infinity) + clip.ms, expires),
-      );
+      // A future predecessor that starts before expiry occupies its full length. Only the
+      // clips after that place add to its wait. Its absolute bound lasts until the wake at
+      // its At time; thereafter its length contributes to `after`, as other eligible clips do.
+      const begins = Math.max(earliest, at ?? -Infinity);
+      earliest = begins < expires ? begins + clip.ms : Math.max(earliest, expires);
     }
     const playable = {
       from: Math.max(atMono(item) ?? -Infinity, earliest),

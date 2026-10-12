@@ -43,13 +43,66 @@ const start = Effect.fnUntraced(function* (lane: Playout.LaneSpec) {
 
 describe("firm windows beside timed items", () => {
   it.effect.each([
-    { strict: false, ready: false },
-    { strict: true, ready: false },
-    { strict: false, ready: true },
-    { strict: true, ready: true },
-  ])("refuses a cut insert behind a timed item that outlasts its window, %j", ({ strict, ready }) =>
+    { strict: false, ready: false, late: { _tag: "readyBy", by: "120 seconds" } },
+    { strict: true, ready: false, late: { _tag: "readyBy", by: "120 seconds" } },
+    { strict: false, ready: true, late: { _tag: "readyBy", by: "120 seconds" } },
+    { strict: true, ready: true, late: { _tag: "readyBy", by: "120 seconds" } },
+    { strict: false, ready: false, late: { _tag: "skipIfLaterThan", by: "1 second" } },
+    { strict: true, ready: true, late: { _tag: "readyBy", by: "1 second" } },
+  ] satisfies ReadonlyArray<{
+    strict: boolean;
+    ready: boolean;
+    late: Extract<Playout.Start, { _tag: "At" }>["late"];
+  }>)(
+    "refuses a cut insert behind a timed item that outlasts its window, %j",
+    ({ strict, ready, late }) =>
+      Effect.gen(function* () {
+        const playout = yield* start({ name: "line", strict, cut: true });
+        const a = yield* playout.submit({
+          key: key("a"),
+          lane: "line",
+          request: { prompt: "a", seconds: 15 },
+        });
+        yield* a.started;
+        const now = yield* Clock.currentTimeMillis;
+        yield* playout.submit({
+          key: key("b"),
+          lane: "line",
+          request: { prompt: "b", seconds: 5 },
+          start: { _tag: "At", time: now + 25_000, late },
+        });
+        if (ready)
+          yield* playout.asRun.pipe(
+            Stream.filter((event) => event.key === key("b") && event.status._tag === "Ready"),
+            Stream.runHead,
+          );
+        assert.isBelow(yield* Clock.currentTimeMillis, now + 25_000);
+        const n = yield* Effect.result(
+          strict
+            ? playout
+                .insertGroup({
+                  key: key("N"),
+                  after: key("b"),
+                  parts: parts("n"),
+                  window: { startBy: "28 seconds", firm: true },
+                })
+                .pipe(Effect.asVoid)
+            : playout
+                .insert({
+                  key: key("n"),
+                  after: key("b"),
+                  request: { prompt: "n", seconds: 5 },
+                  window: { startBy: "28 seconds", firm: true },
+                })
+                .pipe(Effect.asVoid),
+        );
+        assert.strictEqual(Result.isFailure(n) ? n.failure._tag : "admitted", "WouldMissDeadline");
+      }),
+  );
+
+  it.effect("admits a cut insert whose timed predecessor expires before it can start", () =>
     Effect.gen(function* () {
-      const playout = yield* start({ name: "line", strict, cut: true });
+      const playout = yield* start({ name: "line", cut: true });
       const a = yield* playout.submit({
         key: key("a"),
         lane: "line",
@@ -57,38 +110,22 @@ describe("firm windows beside timed items", () => {
       });
       yield* a.started;
       const now = yield* Clock.currentTimeMillis;
-      yield* playout.submit({
+      const b = yield* playout.submit({
         key: key("b"),
         lane: "line",
         request: { prompt: "b", seconds: 5 },
-        start: { _tag: "At", time: now + 25_000, late: { _tag: "readyBy", by: "120 seconds" } },
+        start: { _tag: "At", time: now + 25_000, late: { _tag: "drop" } },
       });
-      if (ready)
-        yield* playout.asRun.pipe(
-          Stream.filter((event) => event.key === key("b") && event.status._tag === "Ready"),
-          Stream.runHead,
-        );
-      assert.isBelow(yield* Clock.currentTimeMillis, now + 25_000);
-      const n = yield* Effect.result(
-        strict
-          ? playout
-              .insertGroup({
-                key: key("N"),
-                after: key("b"),
-                parts: parts("n"),
-                window: { startBy: "28 seconds", firm: true },
-              })
-              .pipe(Effect.asVoid)
-          : playout
-              .insert({
-                key: key("n"),
-                after: key("b"),
-                request: { prompt: "n", seconds: 5 },
-                window: { startBy: "28 seconds", firm: true },
-              })
-              .pipe(Effect.asVoid),
-      );
-      assert.strictEqual(Result.isFailure(n) ? n.failure._tag : "admitted", "WouldMissDeadline");
+      const n = yield* playout.insert({
+        key: key("n"),
+        after: key("b"),
+        request: { prompt: "n", seconds: 5 },
+        window: { startBy: "28 seconds", firm: true },
+      });
+      assert.deepStrictEqual(yield* b.started, { _tag: "Dropped", reason: "late" });
+      const started = yield* n.started;
+      assert.strictEqual(started._tag, "Started");
+      if (started._tag === "Started") assert.isBelow(started.at - now, 28_000);
     }),
   );
 
