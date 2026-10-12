@@ -4909,9 +4909,10 @@ const decide = <Req extends ClipRequest>(
    * ahead of it, and ends before it does (`followContinuation`).
    */
   function followCovered(item: Item<Req>): boolean {
-    // Before three builds are measured its build may outlast any air ahead: it goes once the clip
-    // it follows is Ready ahead of it, which airs first.
-    if (estimates().build === undefined) return followedReady(item);
+    // Until this item's build rate is measured, its build may outlast any air ahead: it goes
+    // once the clip it follows is Ready ahead of it, which airs first.
+    if (buildRate(item.spec.lane, "median", false, item.spec.cost) === undefined)
+      return followedReady(item);
     const spare = followSpareMs(item);
     // It stops at the instant `followUncoveredAt` wakes for, whatever rounding gives there.
     return (
@@ -4958,7 +4959,7 @@ const decide = <Req extends ClipRequest>(
   }
   /** When `followCovered` stops holding for `item` as the clip on air plays; undefined if not. */
   function followUncoveredAt(item: Item<Req>): number | undefined {
-    if (estimates().build === undefined) return undefined;
+    if (buildRate(item.spec.lane, "median", false, item.spec.cost) === undefined) return undefined;
     const spare = followSpareMs(item);
     return spare === undefined || spare > 0
       ? undefined
@@ -6192,7 +6193,7 @@ const decide = <Req extends ClipRequest>(
     /** As `followCovered`, at `time`. */
     const coveredFor = (item: PlanItem, time: number): boolean => {
       const follows = item.spec.follows;
-      if (estimates().build === undefined)
+      if (buildRate(item.spec.lane, "median", false, item.spec.cost) === undefined)
         return (
           follows !== undefined &&
           pool.some(
