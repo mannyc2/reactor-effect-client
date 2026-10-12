@@ -4,6 +4,12 @@ All notable changes to `reactor-effect-client`, `reactor-effect-browser` and `re
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Firm windows beside waiting `At` items no longer count every Ready filler clip ahead of them. An item that can air before its deadline is admitted and kept for dispatch, including an insert that inherits its anchor's future start.
+
 ## [0.11.0] - 2026-10-10
 
 0.11.0 adds `FastH3`, a provider for Reactor's FastH3, and `FastH3Source`, so a playout airs it, with `Playout.ClipModel` planning for either model. It adds the `Ledger`, which records each paid session before it connects and ends it until Reactor confirms the end; `References`, which loads reference images and voice samples; `Playout.forecast`; strict lanes with inserted groups; and `readyBy` lateness. `At.late`, `Edit`, `Playout.Service` and `GroupHandle` gain members, so an exhaustive switch or a hand-written service needs the new cases listed under Changed. The Effect peers stay `~4.0.0`, and the native Rust sources are unchanged since 0.10.0.
