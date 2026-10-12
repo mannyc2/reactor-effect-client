@@ -10,9 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `AudioPlayback.Playback` and `Character.Renderer`, portable contracts for streaming PCM playback and persistent character rendering, with typed playback and character failures and redacted host diagnostics.
 - `BrowserAudio.make`, scoped audible PCM playback with an output-level meter and a real audio track. It preserves the source stream's errors and requirements, waits for the last sample to play, silences scheduled audio on interruption or failure, and rejects concurrent playback with `Busy`.
-- `BrowserCharacter.animate`, browser animation and mouth movement driven by the audio actually playing, and `capture`, scoped canvas-to-video-track output for application recording or publishing. Render failures reach the caller and interruption cancels the frame loop. The Live2D example now consumes these library APIs while keeping its SDK loader, assets, UI and speech server in the application.
+- `BrowserCharacter.animate`, browser animation and mouth movement driven by the audio actually playing, and `capture`, scoped canvas-to-video-track output for application recording or publishing. Render failures reach the caller and interruption cancels the frame loop.
 - `OpenRouterSpeech`, a streaming `SpeechModel` provider for OpenRouter's audio API, with explicit model and voice selection and PCM format read from response metadata.
-- A browser character example with audio-only playback or a persistent Live2D character driven by the same speech output. Cubism and the Hiyori sample are configured locally and are not bundled in the packages.
+- A browser character page: one voice from `SpeechModel`, streamed by a server that keeps the provider key, heard on its own or spoken by a persistent Live2D character whose mouth follows what Web Audio plays. It plays through `BrowserAudio` and animates through `BrowserCharacter`; its Cubism loader, UI and speech server stay in the example. A line ends when it has been heard, and Say or Stop interrupts it at once. The Live2D adapter builds against a Cubism SDK for Web each user supplies; no Core or model ships here.
 - `Playout.ClipModel` and the `model` option of `Playout.make` and `LocalSource.open`, so a playout plans for a model other than H3 and a local renderer can air clips shorter than 5 s. Both constructors require the model explicitly.
 - `Source.model`; the playout refuses a source whose model name differs from its own before sending commands.
 - `H3Source.model`, the H3 clip model and its documented request limits.
@@ -60,7 +60,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Browser PCM playback splits large input blocks before scheduling them, so a single block cannot bypass the one-second device scheduling bound.
 - Strict-lane ordering uses indexed places instead of repeatedly scanning earlier items. On the same Linux workload, admission of 600 waiting items fell from 174.5 s to 7.7 s, and a forecast from 1.31 s to 85 ms, with identical placement and forecast output. The queue's ordering and forecast horizons are unchanged.
 - Replacement-session admission counts the builds still running on the session on air. An item could previously be admitted past its replacement's cap because those builds counted as no airtime ahead of it.
 - H3 retires completed clips absent from its live queues and current playback when its retained clip facts reach their bound. A session could previously overflow after 4,096 clips had accumulated, even when none of those old clips remained live. Live and unresolved clips remain protected, and their overflow still fails the provider.
@@ -80,7 +79,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - The session and cost-control guidance no longer promises that Reactor ends a dropped session after 30 seconds. Reactor documents that deadline, but a hosted session whose owner was killed stayed live past 60 seconds and was billed until the API key ended it. End sessions explicitly and cap them.
 - The cost-control guide records and ends sessions with the `Ledger`, in place of its hand-written owner records and start-up pass, and the livestream example opens its sessions through the ledger, kept in `ledger-<mode>.json` in place of `allocations.jsonl`.
 - The H3 guide loads references with `References`, and the terminal, avatar and native capture examples read theirs through it; the capture example refuses a bad image before it mints a token.
-- The browser examples add a character page: one voice from `SpeechModel`, streamed by a server that keeps the provider key, heard on its own or spoken by a persistent Live2D character whose mouth follows what Web Audio plays. A line ends when it has been heard, and Say or Stop interrupts it at once. The Live2D adapter builds against a Cubism SDK for Web each user supplies; no Core or model ships here.
 
 ## [0.10.0] - 2026-10-02
 
