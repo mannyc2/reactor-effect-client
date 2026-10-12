@@ -1,0 +1,19 @@
+{
+  // The Live2D adapter, compiled with the Cubism SDK for Web linked at cubism/.
+  // The SDK's Framework sources compile under its own, looser settings rather
+  // than this repository's, so this program does not extend the shared config.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable", "ESNext.Disposable"],
+    "allowImportingTsExtensions": true,
+    "strict": false,
+    "useDefineForClassFields": false,
+    "noImplicitAny": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["live2d/adapter.ts", "cubism/Core/live2dcubismcore.d.ts"]
+}

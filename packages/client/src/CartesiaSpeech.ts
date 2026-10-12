@@ -9,7 +9,7 @@ import * as Model from "effect/ai/Model";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
-import type { AudioFrame } from "./Media.js";
+import * as SpeechPcm from "./internal/speechPcm.js";
 import { SpeechError, SpeechModel } from "./SpeechModel.js";
 
 export interface Options {
@@ -26,52 +26,6 @@ const Body = Schema.Struct({
     encoding: Schema.Literal("pcm_s16le"),
     sample_rate: Schema.Literal(24000),
   }),
-});
-
-interface DecoderState {
-  readonly pending: number | undefined;
-  readonly sequence: bigint;
-}
-
-/** HTTP chunks may split a sample; only a trailing half-sample at EOF is malformed. */
-const decode = Effect.fnUntraced(function* (
-  state: DecoderState,
-  chunk: Uint8Array | undefined,
-): Effect.fn.Return<readonly [DecoderState, ReadonlyArray<AudioFrame>], SpeechError> {
-  if (chunk === undefined) {
-    if (state.pending !== undefined || state.sequence === 0n)
-      return yield* SpeechError.make({
-        reason: {
-          _tag: "InvalidAudio",
-          message: "Speech response is empty or ends with an incomplete PCM sample",
-        },
-        outcome: "replied",
-      });
-    return [state, []];
-  }
-  const offset = state.pending === undefined ? 0 : 1;
-  const bytes = new Uint8Array(chunk.byteLength + offset);
-  if (state.pending !== undefined) bytes[0] = state.pending;
-  bytes.set(chunk, offset);
-  const samples = new Int16Array(Math.floor(bytes.byteLength / 2));
-  const view = new DataView(bytes.buffer);
-  for (let index = 0; index < samples.length; index++)
-    samples[index] = view.getInt16(index * 2, true);
-  const pending = bytes.byteLength % 2 === 0 ? undefined : bytes.at(-1);
-  if (samples.length === 0) return [{ ...state, pending }, []];
-  return [
-    { pending, sequence: state.sequence + 1n },
-    [
-      {
-        _tag: "AudioFrame",
-        track: "speech",
-        sampleRate: 24000,
-        channels: 1,
-        sequence: state.sequence,
-        samples,
-      },
-    ],
-  ];
 });
 
 /**
@@ -150,11 +104,7 @@ export const model = (name: string, options: Options) =>
                       detail: Redacted.make(cause),
                     }),
                   ),
-                  Stream.concat(Stream.succeed(undefined)),
-                  Stream.mapAccumEffect(
-                    (): DecoderState => ({ pending: undefined, sequence: 0n }),
-                    decode,
-                  ),
+                  SpeechPcm.decode({ sampleRate: 24000, channels: 1 }),
                 );
               }),
             ).pipe(Stream.withSpan("CartesiaSpeech.stream", { captureStackTrace: false })),

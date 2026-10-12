@@ -11,3 +11,6 @@ coverage/
 packages/native/rust/target/
 *.tsbuildinfo
 .channel/
+
+# A local Cubism SDK for Web, under its own licence, for the character page.
+packages/browser/examples/cubism

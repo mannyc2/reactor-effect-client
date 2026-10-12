@@ -2,10 +2,12 @@
 
 The portable core of [reactor-effect](https://github.com/mannyc2/reactor-effect-client), for live
 audio and video production with [Effect](https://effect.website). `SpeechModel` streams generated
-speech through a provider selected at the application boundary; `CartesiaSpeech` supplies the
-first TTS adapter. Reactor is the provider behind `Reactor`, `Session`, `H3`, `FastH3` and
-`ViduS2Avatar`. `Playout` schedules finite clips from Reactor or application renderers, with the
-model and cleanup evidence selected explicitly by the application.
+speech through a provider selected at the application boundary; `CartesiaSpeech` and
+`OpenRouterSpeech` supply TTS adapters. `AudioPlayback` and `Character` define streaming playback
+and persistent rendering independently of the provider or host. Reactor is the provider behind
+`Reactor`, `Session`, `H3`, `FastH3` and `ViduS2Avatar`. `Playout` schedules finite clips from
+Reactor or application renderers, with the model and cleanup evidence selected explicitly by the
+application.
 
 The core runs on Node, Bun and browsers and loads no native code. HTTP speech requires an Effect
 `HttpClient`. Reactor media transport comes from `reactor-effect-browser` or
@@ -75,6 +77,40 @@ an unknown final duration does not yet have a playout adapter. For an unbuilt cl
 admission and deadline decisions use past clips with the same requested duration, or the model's
 estimate. Those decisions can be wrong when content determines length. The Cartesia path has no
 hosted qualification; Reactor's recorded evidence does not qualify another provider.
+
+For OpenRouter, provide `OpenRouterSpeech.layerConfig` with `FetchHttpClient.layer` instead.
+Set `OPENROUTER_API_KEY`, `OPENROUTER_SPEECH_MODEL` and `OPENROUTER_SPEECH_VOICE`, or use
+`OpenRouterSpeech.model(name, { apiKey, voice })`. Model and voice have no defaults: select an
+available speech model and one of its supported voices from OpenRouter's
+[models API](https://openrouter.ai/api/v1/models?output_modalities=speech).
+
+The [speech endpoint](https://openrouter.ai/docs/api/api-reference/tts/create-speech) returns
+signed 16-bit little-endian PCM. The adapter reads the sample rate and channel count from its
+`audio/pcm` Content-Type parameters and rejects missing metadata instead of assuming a playback
+rate. Split samples and multichannel frames are carried across chunks; an incomplete final frame
+fails. Keep credentials server-side when serving browser playback. This adapter has not been
+qualified with a paid OpenRouter generation.
+
+## Playback and persistent characters
+
+`AudioPlayback.Playback` consumes a `Stream<Media.AudioFrame, E, R>` through `play`, preserving
+the stream's errors and requirements and adding `PlaybackError`. Completion means its last sample
+finished local playback. Interruption or failure silences queued audio; concurrent calls fail
+with `Busy`, leaving the application to interrupt or queue utterances. Its `level` effect reads
+the current output's RMS amplitude from zero to one.
+
+`Character.Renderer` advances and draws one loaded character through
+`render({ seconds, mouth })`: elapsed seconds since the previous frame and mouth opening from
+zero to one. The caller acquires the renderer in a scope and owns its lifetime, including idle
+animation between utterances. `CharacterError` distinguishes loading, rendering, capture,
+invalid input and unsupported-host failures. Both error types keep foreign diagnostics redacted.
+
+The [browser package](../browser#streaming-audio-and-characters) implements PCM playback with
+`BrowserAudio.make` and provides animation and canvas capture through `BrowserCharacter`.
+Applications supply the character renderer and its assets; the
+[Live2D example](../browser/examples#character-page) adapts a locally supplied Cubism SDK.
+Streaming audio and persistent characters have no finite clip duration. To use them with
+`Playout`, first build a bounded clip with a measured duration and present it through `LocalSource`.
 
 ## Choosing a playout source
 
@@ -171,7 +207,10 @@ a namespace. Nothing under `internal/` is reachable.
 | Module                                                                                          | What it is                                                                                                                   |
 | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `SpeechModel`                                                                                   | Provider-neutral text-to-PCM stream and speech failures                                                                      |
+| `OpenRouterSpeech`                                                                              | OpenRouter speech implementation as an Effect `Model`, plus environment configuration                                        |
 | `CartesiaSpeech`                                                                                | Cartesia speech implementation as an Effect `Model`, plus environment configuration                                          |
+| `AudioPlayback`                                                                                 | Provider-neutral streaming PCM playback, output level and typed playback failures                                            |
+| `Character`                                                                                     | Persistent renderer contract: elapsed frame time, mouth opening and typed character failures                                 |
 | [`Reactor`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)                 | The service that acquires sessions: `create` allocates one this process owns, `attach` joins one                             |
 | [`Session`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)                 | One session: status, events, commands, uploads, recordings, media, reconnects and its close report                           |
 | [`CoordinatorClient`](https://mannyc2.github.io/reactor-effect-client/concepts/sessions/)       | Reactor's HTTP API: pricing, tokens (`tokens`, `fixedTokens`), inspection, termination, recordings                           |

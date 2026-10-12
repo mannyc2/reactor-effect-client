@@ -138,12 +138,15 @@ const workspace = {
       ".": entry("index"),
       ...Object.fromEntries(
         [
+          "AudioPlayback",
+          "Character",
           "CartesiaSpeech",
           "CoordinatorClient",
           "H3",
           "H3Source",
           "LocalSource",
           "Media",
+          "OpenRouterSpeech",
           "Peer",
           "Playout",
           "Reactor",
@@ -164,6 +167,8 @@ const workspace = {
     directory: "packages/browser",
     exports: {
       ".": entry("index"),
+      "./BrowserAudio": entry("BrowserAudio"),
+      "./BrowserCharacter": entry("BrowserCharacter"),
       "./BrowserMedia": entry("BrowserMedia"),
       "./BrowserPeer": entry("BrowserPeer"),
     },

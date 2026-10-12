@@ -141,6 +141,10 @@
     "packages/native/rust/**",
     "release-tools/node_modules/**",
     "website/**",
-    ".release/**"
+    ".release/**",
+    // The Live2D adapter compiles only against a Cubism SDK someone links locally, under its
+    // own licence, and `bun run build:live2d` typechecks it there.
+    "packages/browser/examples/live2d/**",
+    "packages/browser/examples/cubism/**"
   ]
 }

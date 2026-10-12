@@ -1,4 +1,6 @@
 /** Portable entry point: importing it selects no host and loads no native code. */
+export * as AudioPlayback from "./AudioPlayback.js";
+export * as Character from "./Character.js";
 export * as CartesiaSpeech from "./CartesiaSpeech.js";
 export * as CoordinatorClient from "./CoordinatorClient.js";
 export * as FastH3 from "./FastH3.js";
@@ -8,6 +10,7 @@ export * as H3Source from "./H3Source.js";
 export * as Ledger from "./Ledger.js";
 export * as LocalSource from "./LocalSource.js";
 export * as Media from "./Media.js";
+export * as OpenRouterSpeech from "./OpenRouterSpeech.js";
 export * as Peer from "./Peer.js";
 export * as Playout from "./Playout.js";
 export * as Reactor from "./Reactor.js";

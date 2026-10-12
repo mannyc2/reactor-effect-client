@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `AudioPlayback.Playback` and `Character.Renderer`, portable contracts for streaming PCM playback and persistent character rendering, with typed playback and character failures and redacted host diagnostics.
+- `BrowserAudio.make`, scoped audible PCM playback with an output-level meter and a real audio track. It preserves the source stream's errors and requirements, waits for the last sample to play, silences scheduled audio on interruption or failure, and rejects concurrent playback with `Busy`.
+- `BrowserCharacter.animate`, browser animation and mouth movement driven by the audio actually playing, and `capture`, scoped canvas-to-video-track output for application recording or publishing. Render failures reach the caller and interruption cancels the frame loop.
+- `OpenRouterSpeech`, a streaming `SpeechModel` provider for OpenRouter's audio API, with explicit model and voice selection and PCM format read from response metadata.
+- A browser character page: one voice from `SpeechModel`, streamed by a server that keeps the provider key, heard on its own or spoken by a persistent Live2D character whose mouth follows what Web Audio plays. It plays through `BrowserAudio` and animates through `BrowserCharacter`; its Cubism loader, UI and speech server stay in the example. A line ends when it has been heard, and Say or Stop interrupts it at once. The Live2D adapter builds against a Cubism SDK for Web each user supplies; no Core or model ships here.
 - `Playout.ClipModel` and the `model` option of `Playout.make` and `LocalSource.open`, so a playout plans for a model other than H3 and a local renderer can air clips shorter than 5 s. Both constructors require the model explicitly.
 - `Source.model`; the playout refuses a source whose model name differs from its own before sending commands.
 - `H3Source.model`, the H3 clip model and its documented request limits.
