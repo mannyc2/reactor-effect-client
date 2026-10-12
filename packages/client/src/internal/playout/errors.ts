@@ -12,7 +12,7 @@ export class KeyMismatch extends Schema.TaggedError<KeyMismatch>()("KeyMismatch"
   key: ItemKey,
 }) {}
 
-/** The item could not start before its firm `startBy`, as far as the playout can project. */
+/** A new firm item would miss `startBy`, or a protected edit would newly make this item late. */
 export class WouldMissDeadline extends Schema.TaggedError<WouldMissDeadline>()(
   "WouldMissDeadline",
   { key: ItemKey },
