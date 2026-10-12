@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Optional `cost` on playout clip specs and placement probes: lanes learn build seconds per caller-defined unit for forecasts, placement, deadline admission, filler protection and continuation decisions. Filler and clips without a cost retain duration-based estimates.
 - `AudioPlayback.Playback` and `Character.Renderer`, portable contracts for streaming PCM playback and persistent character rendering, with typed playback and character failures and redacted host diagnostics.
 - `BrowserAudio.make`, scoped audible PCM playback with an output-level meter and a real audio track. It preserves the source stream's errors and requirements, waits for the last sample to play, silences scheduled audio on interruption or failure, and rejects concurrent playback with `Busy`.
 - `BrowserCharacter.animate`, browser animation and mouth movement driven by the audio actually playing, and `capture`, scoped canvas-to-video-track output for application recording or publishing. Render failures reach the caller and interruption cancels the frame loop.

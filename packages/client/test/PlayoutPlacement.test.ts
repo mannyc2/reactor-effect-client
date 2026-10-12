@@ -22,6 +22,70 @@ const simulated = environment({
 // A covering clip can stop while its follower builds. H3's automatic start can beat removal,
 // so the predecessor must still be kept through the actual command/message boundary.
 layer(simulated)("Playout placement", (it) => {
+  it.effect("projects content build cost independently of the clip's duration", () =>
+    Effect.gen(function* () {
+      yield* Effect.forkScoped(ReactorTest.flow("20 millis"));
+      const idle = H3Source.model.builtSeconds(5);
+      const playout = yield* Playout.make({
+        evidence: LocalSource.evidence,
+        model: H3Source.model,
+        open: LocalSource.open({
+          model: H3Source.model,
+          build: Effect.fnUntraced(function* (clip) {
+            if (clip.tag._tag === "Item")
+              yield* Effect.sleep(100 + 60 * Number(clip.request.metadata));
+            return { value: undefined };
+          }),
+        }),
+        lanes: [{ name: "line" }],
+        filler: {
+          runway: { floor: "15 seconds", target: "15 seconds" },
+          clip: ({ index }): H3.Request => ({ prompt: `idle ${index}`, seconds: idle }),
+          lengths: { min: idle, max: idle },
+        },
+      });
+      yield* playout.events.pipe(
+        Stream.filter(
+          (event) => event._tag === "Filler" && event.phase === "Started" && event.index >= 2,
+        ),
+        Stream.runHead,
+      );
+      // Include the renderer's fixed overhead in the caller's unit of work.
+      const line = (
+        name: string,
+        words: number,
+        seconds: number,
+      ): Playout.ItemSpec<H3.Request> => ({
+        key: key(name),
+        lane: "line",
+        request: { prompt: name, seconds, metadata: String(words) },
+        cost: 100 + 60 * words,
+      });
+      for (const name of ["short1", "short2", "short3", "short4"]) {
+        const short = yield* playout.submit(line(name, 1, 5));
+        if (name === "short1") {
+          assert.strictEqual((yield* playout.forecast).basis, "unmeasured");
+          const unmeasured = yield* playout.place({ key: key("probe"), seconds: 5, cost: 160 });
+          assert.strictEqual(unmeasured?.basis, "unmeasured");
+        }
+        yield* short.started;
+      }
+      const probe: Playout.PlaceProbe = {
+        key: key("long"),
+        seconds: 15,
+        cost: 12_100,
+      };
+      const placement = yield* playout.place(probe);
+      const long = yield* playout.submit(line("long", 200, 15));
+      const forecast = Playout.forecastFor(yield* playout.forecast, key("long"));
+      const started = yield* long.started;
+      if (placement === null || forecast._tag !== "Airs" || started._tag !== "Started")
+        return yield* Effect.die("the long line has no projected or actual start");
+      assert.approximately(forecast.clip.startsAt, started.at, idle * 1000);
+      assert.approximately(placement.startsAt, started.at, idle * 1000);
+    }),
+  );
+
   it.effect("fences a follower before a reorder whose reply is still pending at the boundary", () =>
     Effect.gen(function* () {
       yield* Effect.forkScoped(ReactorTest.flow("20 millis"));

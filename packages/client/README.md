@@ -133,6 +133,13 @@ Events and media use `SourceError`; the scheduler's own terminal failures use `P
 or `PlayoutClosed`. Original adapter diagnostics remain redacted. See
 [Playout](https://mannyc2.github.io/reactor-effect-client/concepts/playout/) for the contracts.
 
+Clip specs and `place` probes accept a finite, positive `cost` when build work follows content.
+Use one unit consistently within a lane, including any fixed build overhead: a renderer that
+takes 100 ms plus 60 ms per word can use `cost: 100 + 60 * words`. After three such builds,
+the lane learns build seconds per cost unit for forecasts, placement, deadline admission and
+filler protection. Filler keeps its own duration rate. Without `cost`, build estimates use
+the seconds the model builds as before. Cost does not change the estimated aired duration.
+
 ## A first clip, offline
 
 ```ts
