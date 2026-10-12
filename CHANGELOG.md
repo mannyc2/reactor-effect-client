@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `Playout.edit(edits, { protect: "deadlines" })` refuses a batch that would newly project an already admitted item dropping as `late`, with `WouldMissDeadline` naming that item. It checks firm `startBy` and timed lateness with the existing admission projection, excludes items the batch withdraws or replaces, and leaves the plan unchanged on refusal. Calls without protection retain their existing admission behavior.
 
+### Fixed
+
+- Firm windows beside waiting `At` items no longer count every Ready filler clip ahead of them. An item that can air before its deadline is admitted and kept for dispatch, including an insert that inherits its anchor's future start. Required predecessors' remaining waits still count, so a cut-lane insert that cannot meet its deadline is refused before it builds.
+
 ## [0.11.0] - 2026-10-10
 
 0.11.0 adds `FastH3`, a provider for Reactor's FastH3, and `FastH3Source`, so a playout airs it, with `Playout.ClipModel` planning for either model. It adds the `Ledger`, which records each paid session before it connects and ends it until Reactor confirms the end; `References`, which loads reference images and voice samples; `Playout.forecast`; strict lanes with inserted groups; and `readyBy` lateness. `At.late`, `Edit`, `Playout.Service` and `GroupHandle` gain members, so an exhaustive switch or a hand-written service needs the new cases listed under Changed. The Effect peers stay `~4.0.0`, and the native Rust sources are unchanged since 0.10.0.
