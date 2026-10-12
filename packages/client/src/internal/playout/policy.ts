@@ -2223,36 +2223,43 @@ const decide = <Req extends ClipRequest>(
     const target = preferred() ?? session(state.air);
     // A future time holds an item behind filler now, not for its whole wait. The optimistic
     // projection removes only that hold. An unrelated timed item can air later, so it counts
-    // ahead only if its current rank agrees, or the line requires it before this item.
+    // ahead only if its rank at this item's own time agrees, or the line requires it first.
     const rank = placeRank(item, memo.untimedRanks, Infinity);
+    const time = Math.max(now.mono, atMono(item) ?? now.mono);
+    const ranks = time === now.mono ? memo.ranks : new Map<PlanItem, Rank>();
     const ahead = (other: Item<Req>): boolean => {
       const untimed = placeRank(other, memo.untimedRanks, Infinity);
       return (
         compareRank(untimed, rank) < 0 &&
-        (compareRank(untimed, placeRank(other, memo.ranks)) === 0 || holds(roster, other, item))
+        (compareRank(untimed, placeRank(other, ranks, time)) === 0 || holds(roster, other, item))
       );
     };
-    const readyMs = waitingOf(target)
-      .filter((clip) => {
-        const other = itemOf(clip);
-        return (
-          (other === undefined ? compareRank(rankClip(clip), rank) < 0 : ahead(other)) &&
-          other?.withdraw === undefined &&
-          (other === undefined || (live(other) && keeps(other, memo)))
-        );
-      })
-      .reduce((total, clip) => total + clip.seconds * 1000, 0);
-    const unbuilt = [...items.values()].filter(
+    const ready = waitingOf(target).filter((clip) => {
+      const other = itemOf(clip);
+      return (
+        (other === undefined ? compareRank(rankClip(clip), rank) < 0 : ahead(other)) &&
+        other?.withdraw === undefined &&
+        (other === undefined || (live(other) && keeps(other, memo)))
+      );
+    });
+    const pending = [...items.values()].filter(
       (other) =>
         other.spec.key !== item.spec.key &&
         (other.phase === "Accepted" ||
           (other.phase === "Building" && other.sessionId === target?.id)) &&
-        airsAtPlace(roster, other, now) &&
+        queuedAtPlace(roster, other) &&
         // A replacement and what it replaces take one place, which airs once.
         (other.replaces === undefined || !live(replacedOf(other))) &&
         ahead(other) &&
         keeps(other, memo),
     );
+    const unbuilt = pending.filter((other) => timeCome(other, now));
+    const readyMs = ready
+      .filter((clip) => {
+        const other = itemOf(clip);
+        return other === undefined || timeCome(other, now);
+      })
+      .reduce((total, clip) => total + clip.seconds * 1000, 0);
     const unbuiltMs = unbuilt.reduce(
       (total, other) => total + lengthOf(other.spec.seconds) * 1000,
       0,
@@ -2260,8 +2267,50 @@ const decide = <Req extends ClipRequest>(
     const aheadMs = readyMs + unbuiltMs;
     const air = session(state.air);
     const end = playingEndOf(air);
+    const queued = [
+      ...ready.map((clip) => ({
+        item: itemOf(clip),
+        ms: clip.seconds * 1000,
+        rank: rankClip(clip, memo.untimedRanks, Infinity),
+      })),
+      ...pending.map((other) => ({
+        item: other,
+        ms: lengthOf(other.spec.seconds) * 1000,
+        rank: placeRank(other, memo.untimedRanks, Infinity),
+      })),
+    ].sort((a, b) => compareRank(a.rank, b.rank));
+    let earliest = end ?? -Infinity;
+    for (const clip of queued) {
+      const other = clip.item;
+      const at = other === undefined ? undefined : atMono(other);
+      let expires = Infinity;
+      if (
+        at !== undefined &&
+        at > now.mono &&
+        other?.spec.start._tag === "At" &&
+        other.keptLate !== true
+      )
+        expires = lateAt(at, other.spec.start.late);
+      if (
+        at !== undefined &&
+        at > now.mono &&
+        other?.spec.window?.firm === true &&
+        other.startBy !== undefined
+      )
+        expires = Math.min(
+          expires,
+          other.startBy - (lateWhenProjected(other) ? projection(other, memo).after : 0),
+        );
+      // A future predecessor releases its place by airing or expiring. Only the clips after
+      // that place add to its wait. Its absolute bound lasts until the wake at its At time;
+      // thereafter its length contributes to `after`, as other eligible clips' lengths do.
+      earliest = Math.max(
+        earliest,
+        Math.min(Math.max(earliest, at ?? -Infinity) + clip.ms, expires),
+      );
+    }
     const playable = {
-      from: Math.max(atMono(item) ?? -Infinity, (end ?? -Infinity) + aheadMs),
+      from: Math.max(atMono(item) ?? -Infinity, earliest),
       after: (end === undefined ? playingRestMs(air) : 0) + aheadMs,
     };
     // Until builds are measured none is counted; then each item's builds at its own lane's median.

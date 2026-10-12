@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { Array, Clock, Duration, Effect, Stream } from "effect";
+import { Array, Clock, Duration, Effect, Result, Stream } from "effect";
 import * as H3 from "../src/H3.js";
 import * as LocalSource from "../src/LocalSource.js";
 import * as Playout from "../src/Playout.js";
@@ -42,6 +42,56 @@ const start = Effect.fnUntraced(function* (lane: Playout.LaneSpec) {
 });
 
 describe("firm windows beside timed items", () => {
+  it.effect.each([
+    { strict: false, ready: false },
+    { strict: true, ready: false },
+    { strict: false, ready: true },
+    { strict: true, ready: true },
+  ])("refuses a cut insert behind a timed item that outlasts its window, %j", ({ strict, ready }) =>
+    Effect.gen(function* () {
+      const playout = yield* start({ name: "line", strict, cut: true });
+      const a = yield* playout.submit({
+        key: key("a"),
+        lane: "line",
+        request: { prompt: "a", seconds: 15 },
+      });
+      yield* a.started;
+      const now = yield* Clock.currentTimeMillis;
+      yield* playout.submit({
+        key: key("b"),
+        lane: "line",
+        request: { prompt: "b", seconds: 5 },
+        start: { _tag: "At", time: now + 25_000, late: { _tag: "readyBy", by: "120 seconds" } },
+      });
+      if (ready)
+        yield* playout.asRun.pipe(
+          Stream.filter((event) => event.key === key("b") && event.status._tag === "Ready"),
+          Stream.runHead,
+        );
+      assert.isBelow(yield* Clock.currentTimeMillis, now + 25_000);
+      const n = yield* Effect.result(
+        strict
+          ? playout
+              .insertGroup({
+                key: key("N"),
+                after: key("b"),
+                parts: parts("n"),
+                window: { startBy: "28 seconds", firm: true },
+              })
+              .pipe(Effect.asVoid)
+          : playout
+              .insert({
+                key: key("n"),
+                after: key("b"),
+                request: { prompt: "n", seconds: 5 },
+                window: { startBy: "28 seconds", firm: true },
+              })
+              .pipe(Effect.asVoid),
+      );
+      assert.strictEqual(Result.isFailure(n) ? n.failure._tag : "admitted", "WouldMissDeadline");
+    }),
+  );
+
   // Ready filler does not all air before a timed item held behind a playing group. Both
   // admission and the check before dispatch must place the firm insert behind the timed item.
   it.effect.each([30, 36])("airs an insert behind a waiting group with startBy %s s", (startBy) =>

@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Firm windows beside waiting `At` items no longer count every Ready filler clip ahead of them. An item that can air before its deadline is admitted and kept for dispatch, including an insert that inherits its anchor's future start.
+- Firm windows beside waiting `At` items no longer count every Ready filler clip ahead of them. An item that can air before its deadline is admitted and kept for dispatch, including an insert that inherits its anchor's future start. Required predecessors' remaining waits still count, so a cut-lane insert that cannot meet its deadline is refused before it builds.
 
 ## [0.11.0] - 2026-10-10
 
