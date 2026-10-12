@@ -1516,7 +1516,7 @@ type Until = { readonly _tag: "Clips"; readonly limit: number } | { readonly _ta
 
 /**
  * Why a forward run cannot place an item: held until released, sent with its outcome never seen,
- * waiting to cut a lower lane, which the run does not project, or waiting behind one of these.
+ * waiting on a cut already in progress, or waiting behind one of these.
  */
 type Unplaceable = Exclude<Unplaced["why"], "beyond">;
 
@@ -1867,6 +1867,13 @@ const decide = <Req extends ClipRequest>(
   };
   const heldForFollows = (item: Item<Req>): boolean => followHeldOf(roster, item);
   const cuts = (item: PlanItem): boolean => config.lanes[item.spec.lane]?.cut === true;
+  const cutsLower = (item: PlanItem, tag: ClipTag | undefined, lane: number | undefined): boolean =>
+    cuts(item) && (tag?._tag === "Filler" || (lane !== undefined && lane > item.spec.lane));
+  const cutPending = (item: PlanItem): boolean =>
+    state.cutting !== undefined &&
+    state.cutting.stage !== "failed" &&
+    item.sessionId === state.cutting.sessionId &&
+    item.clipId === state.cutting.next;
   /**
    * Why a forward run cannot place `item`, airing or dropping it, or undefined: one settled,
    * started or being withdrawn is placed already. A member waits behind those of its group that
@@ -1899,7 +1906,7 @@ const decide = <Req extends ClipRequest>(
     if (placedAlready(item)) return undefined;
     if (item.mode === "held") return "held";
     if (item.phase === "Unknown") return "unknown";
-    if (cuts(item)) return "cut";
+    if (cutPending(item)) return "cut";
     const follows = item.spec.follows;
     const followed =
       follows?._tag === "Item" && item.followsAired !== true ? items.get(follows.key) : undefined;
@@ -2189,11 +2196,14 @@ const decide = <Req extends ClipRequest>(
     memo: Memo,
   ): { readonly from: number; readonly after: number } => {
     const target = preferred() ?? session(state.air);
-    const rank = placeRank(item, memo.ranks);
+    // A cutting item's air ahead can be shortened by its own cut or another item's. Only its
+    // builds establish this early-drop bound; admission checks the air in the forward run.
+    const rank = cuts(item) ? undefined : placeRank(item, memo.ranks);
     const readyMs = waitingOf(target)
       .filter((clip) => {
         const other = itemOf(clip);
         return (
+          rank !== undefined &&
           compareRank(rankClip(clip, memo.ranks), rank) < 0 &&
           other?.withdraw === undefined &&
           (other === undefined || (live(other) && keeps(other, memo)))
@@ -2202,6 +2212,7 @@ const decide = <Req extends ClipRequest>(
       .reduce((total, clip) => total + clip.seconds * 1000, 0);
     const unbuilt = [...items.values()].filter(
       (other) =>
+        rank !== undefined &&
         other.spec.key !== item.spec.key &&
         (other.phase === "Accepted" ||
           (other.phase === "Building" && other.sessionId === target?.id)) &&
@@ -2217,7 +2228,7 @@ const decide = <Req extends ClipRequest>(
     );
     const aheadMs = readyMs + unbuiltMs;
     const air = session(state.air);
-    const end = playingEndOf(air);
+    const end = rank === undefined ? now.mono : playingEndOf(air);
     const playable = {
       from: (end ?? -Infinity) + aheadMs,
       after: (end === undefined ? playingRestMs(air) : 0) + aheadMs,
@@ -2287,13 +2298,12 @@ const decide = <Req extends ClipRequest>(
   };
   /**
    * Whether a forward run of the plan, taken only if needed, starts `item` before `startBy`: it
-   * airs it in time, or stopped short of both the item and `startBy`, and so cannot tell. Two are
-   * left to `misses`: an item in a lane that cuts, which airs once Ready rather than at a
-   * boundary, and the run projects no cut; and one that follows a clip, which `misses` puts behind
+   * airs it in time, or stopped short of both the item and `startBy`, and so cannot tell. An item
+   * that follows a clip is left to `misses`, which puts it behind
    * everything queued, since until it is admitted nothing records whether that clip has aired.
    */
   const startsBefore = (item: Item<Req>, startBy: number, forwardRun: () => Run): boolean => {
-    if (cuts(item) || item.spec.follows !== undefined) return true;
+    if (item.spec.follows !== undefined || cutPending(item)) return true;
     const run = forwardRun();
     if (run.gone.has(item)) return false;
     const aired = run.aired.find((entry) => entry.clip.item === item);
@@ -2942,9 +2952,10 @@ const decide = <Req extends ClipRequest>(
       // A group's later part has the group's time, none of its own; an insert beside it has its own.
       if (item.group !== undefined && item.group.index > 0 && !item.inserted) continue;
       // One its batch holds airs once the batch commits, which the run plays out, and a projection
-      // of its rank, behind everything while held, does not. The run leaves one that cuts or
-      // follows a clip to that projection, held or not.
-      const projected = item.batch === undefined || cuts(item) || item.spec.follows !== undefined;
+      // of its rank, behind everything while held, does not. Cuts use the forward run too;
+      // followers use their bound while admission has not yet recorded their predecessor.
+      const projected =
+        !cuts(item) && (item.batch === undefined || item.spec.follows !== undefined);
       if (
         item.spec.window?.firm === true &&
         item.startBy !== undefined &&
@@ -4517,11 +4528,7 @@ const decide = <Req extends ClipRequest>(
       playingRestMs(value) > cutMarginMs
     ) {
       // Only filler or a clip of a strictly lower lane is cut, never one of the cutter's lane or above.
-      const playingItem = itemOf(playing);
-      const lower =
-        playing.tag?._tag === "Filler" ||
-        (playingItem !== undefined && playingItem.spec.lane > cutItem.spec.lane);
-      if (lower && airs(front)) {
+      if (cutsLower(cutItem, playing.tag, itemOf(playing)?.spec.lane) && airs(front)) {
         state = {
           ...state,
           cut: { sessionId: value.id, clipId: playing.clipId },
@@ -5450,12 +5457,11 @@ const decide = <Req extends ClipRequest>(
   }
   /**
    * Where a clip like `probe` would land: the first clip of the projected air order it can follow.
-   * After an item, it goes as an insert after that item; after a filler clip, or an item in a
-   * cutting lane, as an `Asap` item in the lowest lane that waits for that clip. A boundary counts
+   * After an item, it goes as an insert after that item; after filler or a held item, as an
+   * `Asap` item in the lowest lane. A boundary counts
    * when a forward run with the clip submitted there airs it right after that clip, Ready a
-   * readiness margin before the boundary, and drops nothing the run without it airs. A clip this
-   * playout did not enqueue can't be followed, nor a cut not on air yet, which the run doesn't
-   * project.
+   * readiness margin before the boundary, or cuts it, and drops nothing the run without it airs.
+   * A clip this playout did not enqueue can't be followed.
    */
   function place(probe: Probe): Placement | null {
     const air = session(state.air);
@@ -5498,8 +5504,6 @@ const decide = <Req extends ClipRequest>(
     for (const candidate of candidates) {
       const tag = candidate.clip.tag;
       if (tag === undefined) continue;
-      const item = candidate.clip.item;
-      if (item !== undefined && cuts(item) && item.phase !== "Started") continue;
       const hypothesis = hypothesize(candidate.clip, tag, candidate.aired, probe);
       if (hypothesis === undefined) continue;
       const run = forward(hypothesis, { _tag: "Clips", limit: 0 });
@@ -5514,7 +5518,11 @@ const decide = <Req extends ClipRequest>(
       // wait for. With nothing on air, the first clip Ready airs at once.
       const boundary = before === undefined ? Infinity : before.start + before.clip.seconds * 1000;
       const readyAt = run.probe.readyAt ?? now.mono;
-      if (readyAt + config.timing.readinessMarginMs + config.timing.commandMs > boundary) continue;
+      if (
+        !cuts(hypothesis.item) &&
+        readyAt + config.timing.readinessMarginMs + config.timing.commandMs > boundary
+      )
+        continue;
       const start = run.aired[index]?.start ?? now.mono;
       const next = run.aired[index + 1]?.clip;
       const built =
@@ -5534,8 +5542,8 @@ const decide = <Req extends ClipRequest>(
   /**
    * The clip `place` asks about, as an edit would admit it right after `clip`: an insert after a
    * waiting or playing item, which takes its lane, place, group and start, or else an `Asap` item
-   * in the lowest lane; either way following `clip`. Undefined when that lane would refuse it or
-   * have it replace what waits there.
+   * in the lowest lane. A cutting lane omits the follows fence. Undefined when that lane would
+   * refuse it or have it replace what waits there.
    */
   function hypothesize(
     clip: Projected,
@@ -5544,14 +5552,13 @@ const decide = <Req extends ClipRequest>(
     probe: Probe,
   ): Hypothesis | undefined {
     const anchor =
-      clip.item !== undefined && live(clip.item) && clip.item.mode !== "held" && !cuts(clip.item)
+      clip.item !== undefined && live(clip.item) && clip.item.mode !== "held"
         ? clip.item
         : undefined;
     const lowest = config.lanes[lanes - 1];
     if (
       anchor === undefined &&
       (lowest === undefined ||
-        lowest.cut ||
         lowest.conflict === "replace" ||
         lowest.strict ||
         laneBusy(lanes - 1))
@@ -5565,7 +5572,7 @@ const decide = <Req extends ClipRequest>(
       cues: [],
       continuity: probe.continuity,
       start: anchor === undefined ? { _tag: "Asap" } : insertStart(anchor, "after"),
-      follows: tag,
+      ...(config.lanes[anchor?.spec.lane ?? lanes - 1]?.cut === true ? {} : { follows: tag }),
     };
     const submitAt = now.mono + probe.submitInMs;
     if (anchor === undefined)
@@ -5656,7 +5663,8 @@ const decide = <Req extends ClipRequest>(
    * order: those in flight, then what the plan would send as each slot frees, the best eligible
    * item by build order, else a filler refill below the floor. At each boundary the best clip by
    * rank airs among those Ready a readiness margin before it, or else the first Ready; with nothing
-   * Ready the air goes dark until something is. Items that follow a clip keep to it. New work goes
+   * Ready the air goes dark until something is. Between boundaries a cutting lane's Ready head
+   * can stop filler or a lower lane with more than a second left. Items that follow a clip keep to it. New work goes
    * to the replacement once one is open, or from the lead before the cap, when the plan opens one;
    * until then what cannot air before the cap waits for it, and the air moves to it once the
    * session on air has nothing left. With `hypothesis`, the run ends once it aired and a clip after
@@ -5697,9 +5705,8 @@ const decide = <Req extends ClipRequest>(
     let refilling = state.filler.refilling;
     let probeReady: number | undefined;
     let probeContinued = false;
-    // A run until placed leaves a cutting lane's items out of its air, since it projects no cut;
-    // `place` and admission skip them themselves.
-    const leftOut = (item: PlanItem): boolean => until._tag === "Placed" && cuts(item);
+    // The outcome of a cut already dispatched is not known until its source reports it.
+    const leftOut = cutPending;
 
     let pending: Array<PlanItem> = [...items.values()].filter(
       (item) =>
@@ -6449,9 +6456,17 @@ const decide = <Req extends ClipRequest>(
       const consider = (at: number | undefined): void => {
         if (at !== undefined && at > time && at < soonest) soonest = at;
       };
+      // A cutter may become eligible during the seam, before the next clip actually starts.
+      if (current) consider(aired.at(-1)?.start);
       for (const clip of pool) {
         consider(clip.readyAt);
-        if (clip.item !== undefined && !gone.has(clip.item)) consider(deadline(clip.item));
+        if (clip.item !== undefined && !gone.has(clip.item)) {
+          consider(deadline(clip.item));
+          if (cuts(clip.item)) {
+            consider(atMono(clip.item));
+            if (clip.projected) consider(clip.readyAt + config.timing.readinessMarginMs);
+          }
+        }
       }
       for (const item of pending)
         if (pendingIn(item)) {
@@ -6653,7 +6668,10 @@ const decide = <Req extends ClipRequest>(
         current = false;
         return true;
       }
-      const start = current ? t + config.timing.seamMs : t;
+      startClip(head, current ? t + config.timing.seamMs : t);
+      return true;
+    };
+    const startClip = (head: Projected, start: number): void => {
       aired.push({ clip: head, start });
       remove(head);
       const item = head.item;
@@ -6674,7 +6692,35 @@ const decide = <Req extends ClipRequest>(
           else if (item.replaces === other.spec.key) drop(other, "replaced", start);
       t = start + head.seconds * 1000;
       current = true;
-      return true;
+    };
+    const cutAt = (time: number): void => {
+      const previous = aired.at(-1);
+      if (!current || previous === undefined || time < previous.start || t - time <= cutMarginMs)
+        return;
+      const clip = previous.clip;
+      if (
+        clip.clipId !== undefined &&
+        state.cut?.sessionId === clip.sessionId &&
+        state.cut.clipId === clip.clipId
+      )
+        return;
+      const front = airOrderIn(
+        pool.filter(
+          (candidate) =>
+            candidate.sessionId === onAir &&
+            candidate.readyAt + (candidate.projected ? config.timing.readinessMarginMs : 0) <=
+              time &&
+            airsAt(candidate, time),
+        ),
+      )[0];
+      if (front?.item === undefined || !cutsLower(front.item, clip.tag, clip.item?.spec.lane))
+        return;
+      // A stopped clip never resumes. Its shortened air also determines forecast ends and drain.
+      aired[aired.length - 1] = {
+        ...previous,
+        clip: { ...clip, seconds: Math.max(0, time - previous.start) / 1000 },
+      };
+      startClip(front, time + config.timing.seamMs);
     };
     const finished = (): boolean => {
       if (hypothesis === undefined)
@@ -6689,6 +6735,8 @@ const decide = <Req extends ClipRequest>(
     let clock = now.mono;
     dispatch(clock);
     for (let look = 0; look < 4000 && !finished() && t <= horizon; look++) {
+      cutAt(clock);
+      if (finished()) break;
       const soon = nextDispatch(clock);
       if (soon !== undefined && soon <= t) {
         clock = soon;

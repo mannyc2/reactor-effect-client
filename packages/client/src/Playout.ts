@@ -177,7 +177,7 @@ export interface PlaceProbe {
  * clips with a provider command, whose latency is not projected.
  */
 export interface Placement {
-  /** The clip it would follow: pass it as `follows`. */
+  /** The clip it would follow: pass it as `follows` unless the destination lane cuts. */
   readonly after: ClipTag;
   /**
    * The clip projected to follow it, from what is queued now; null when
@@ -186,9 +186,10 @@ export interface Placement {
   readonly before: ClipTag | null;
   /**
    * How to submit it: `insert` after this item, or, for `"next"`, `submit`
-   * to the lowest lane with an `Asap` start, which waits for `after` to air.
-   * `"next"` comes only when that lane would take it: one that doesn't cut,
-   * replace what waits there, or skip while busy.
+   * to the lowest lane with an `Asap` start. In a cutting lane omit `follows`:
+   * `after` is the projected predecessor, not an enforced adjacency. `"next"`
+   * comes only when that lane would take it, without replacing waiting items
+   * or skipping while busy; a strict lane requires an insert instead.
    */
   readonly anchor: ItemKey | "next";
   /** When it would start, in epoch milliseconds. */
@@ -249,8 +250,8 @@ export interface ForecastedDrop {
 export interface Unplaced {
   readonly key: ItemKey;
   /**
-   * `held` until released; `unknown`, sent with its outcome never seen; `cut`, waiting to cut a
-   * lower lane, which the projection does not model; `blocked` behind one of these: a member of
+   * `held` until released; `unknown`, sent with its outcome never seen; `cut`, waiting on the
+   * outcome of a cut already in progress; `blocked` behind one of these: a member of
    * its group, the item whose clip it follows, or another add of its pending batch; `beyond` what
    * it projects: past the ten minutes it looks ahead, past the looks its run takes, or with no
    * session on air yet.
@@ -266,6 +267,9 @@ export interface Unplaced {
  * replacement, but the plan keeps sending what fits to the session on air, where such a clip may
  * air a few hundred milliseconds early. A build projected Ready right at a boundary's readiness
  * margin can flip which clip airs first there, and the forecast is then a whole clip off.
+ * A cutting lane interrupts filler or a strictly lower lane on the same session once its clip
+ * is Ready (plus the readiness margin for a projected build), if more than a second remains.
+ * A clip already subject to a cut is never cut again. Provider command latency is not projected.
  */
 export interface Forecast {
   /** When it was taken, in epoch milliseconds. */
@@ -1124,7 +1128,7 @@ export interface Service<Req extends ClipRequest, Report, E extends { readonly m
    * other item waiting in its lane except an `Asap` one. An insert, or an
    * inserted group, may anchor on an item or group the batch adds, and beside
    * one the batch holds it is held too, whatever its window: a firm one is then checked as the batch will run,
-   * or as it would be alone if it follows a clip or cuts, and while held is
+   * or as it would be alone if it follows a clip, and while held is
    * dropped as `late` only at its `startBy`. A batch whose
    * `Withdraw` or `Replace` names an item or group it adds is refused with
    * `InvalidItem`. An insert before an add the batch does not
@@ -1143,11 +1147,11 @@ export interface Service<Req extends ClipRequest, Report, E extends { readonly m
    * follow the clip before that boundary, as a submission its lane would
    * take, without dropping or displacing anything submitted already, and
    * with its clip projected Ready a readiness margin and one provider
-   * command's round trip before the boundary. A clip that cannot air before
+   * command's round trip before the boundary. Cutting lanes also place a clip
+   * at a projected cut, with no `follows` fence. A clip that cannot air before
    * the cap of the session on air is placed on its replacement, if it can
    * air there before that one's cap. It never answers after a clip this
-   * playout did not enqueue, nor after a cut not yet on air, which it does
-   * not project. Null once the playout has stopped, with no session on air,
+   * playout did not enqueue. Null once the playout has stopped, with no session on air,
    * or when no boundary is makeable, as before anything has aired.
    */
   readonly place: (probe: PlaceProbe) => Effect.Effect<Placement | null, InvalidItem>;
